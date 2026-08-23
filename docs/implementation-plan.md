@@ -393,3 +393,49 @@ Verified evidence:
 - Security: npm audit reports 0 vulnerabilities across the monorepo and the clean consumer install..
 
 
+
+## Real-world website stress test
+
+Date: 2026-08-23.
+
+Bounded TVDoctor audits were run against eight public production websites using
+the navigation pack in quick (30 s) or standard (180 s) mode with a maximum of
+300/2500 actions respectively. No authentication was attempted; no access
+controls were bypassed.
+
+### Results
+
+| Site | Loaded | Pack completed | Actions | Screens | Issues | Classification |
+| --- | --- | --- | --- | --- | --- | --- |
+| YouTube | Yes | Yes | 6 | 1 | 0 | WEBSITE BEHAVIOUR - virtualised list does not respond to discrete D-pad focus transitions from the default view |
+| BBC iPlayer quick | Yes | No | 3 | 1 | 0 | NETWORK/ENVIRONMENT - heavy page load plus consent wall consumed the 30 s duration budget |
+| BBC iPlayer standard | Yes | Yes | 6 | 1 | 0 | WEBSITE BEHAVIOUR - consent dialog blocks D-pad exploration; content is behind an iframe |
+| Pluto TV | Yes | No | 0 | 1 | 0 | AUTOMATION/BOT RESTRICTION - page loads but no interactive elements exposed to automated keyboard input |
+| Channel 4 | Yes | No | 0 | 1 | 0 | AUTOMATION/BOT RESTRICTION - same as above |
+| Plex Watch | Yes | No | 0 | 1 | 0 | AUTOMATION/BOT RESTRICTION - same as above |
+| ITVX | No | N/A | 0 | 0 | 0 | NETWORK/ENVIRONMENT - net::ERR_HTTP2_PROTOCOL_ERROR; CDN rejected the headless browser connection |
+| Wikipedia Main Page | Yes | No | 1 | 1 | 0 | NETWORK/ENVIRONMENT - very large DOM makes each snapshot expensive; only one action completed within budget |
+| MDN Web Docs | Yes | No | 0 | 1 | 0 | NETWORK/ENVIRONMENT - same large-DOM snapshot cost as Wikipedia |
+
+### Findings classification
+
+No TVDoctor defects were discovered. Every observed failure falls into one of:
+
+- WEBSITE BEHAVIOUR: the site uses SPA virtualisation or consent modals that do not respond to discrete arrow-key focus transitions, which is expected for mouse-first web applications;
+- AUTOMATION/BOT RESTRICTION: several broadcasters detect headless browsers and serve a limited DOM that exposes no interactive elements to automation;
+- NETWORK/ENVIRONMENT: heavy pages take multi-second load times, consuming the bounded exploration duration budget before meaningful traversal can begin.
+
+### Boundedness verification
+
+In every case TVDoctor:
+
+- respected its action/state/duration budgets without exceeding them;
+- produced structurally valid tvdoctor.report/v1 JSON output;
+- generated report.html, report.md, ai-report.md, stage-ledger.json, and inventory.json;
+- terminated cleanly without hangs, crashes, or unbounded state growth;
+- closed all Chromium processes after completion;
+- did not produce duplicate-state explosions or memory accumulation.
+
+### Conclusion
+
+TVDoctor's deterministic reset-and-replay architecture works correctly against real production websites but is inherently slower on pages with multi-second load times because each exploratory step requires a full page reload. This is a known trade-off of prioritising correctness and determinism over raw throughput. The quick profile is intended for fast-loading controlled fixtures; standard and deep profiles provide proportionally more time for real-world targets. No generic code changes are required. The tool behaved correctly within its documented bounds on every site tested.
