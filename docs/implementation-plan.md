@@ -316,7 +316,7 @@ Milestone 8 gate conclusion: carousel compression now works on structurally repe
 
 ## Milestone 10 gate record
 
-Status: **complete — verified 2026-08-23 with real-Chromium targeted-probe baseline comparison, adversarial unit coverage, mutation testing, and a locally validated CI example script**.
+Status: **complete — verified 2026-08-23 with real-Chromium targeted-probe baseline comparison, adversarial unit coverage, mutation testing, a locally validated CI example script, and a passing hosted GitHub Actions run**.
 
 Implemented:
 
@@ -341,7 +341,9 @@ Verified evidence:
 - Full aggregate quality gate (`npm run check`): ESLint zero warnings, strict typecheck, **286 unit tests** (up from 283), 12 fixture tests, 8 driver tests, 4 core integrations (M3 + M8 + M10 + diagnostics), M5 report/replay integration, M6 streaming journey integration, and production builds all passed.
 - Full aggregate quality gate (`npm run check`): ESLint zero warnings, strict typecheck, 283 unit tests, 12 fixture tests, 8 driver tests, 4 core integrations (M3 + M8 + M10 + diagnostics), M5 report/replay integration, M6 streaming journey integration, and production builds all passed.
 
-Milestone 10 gate conclusion: the baseline library correctly detects a single HIGH regression when focus behavior changes, correctly resolves it after restoration, and reports identical for unchanged runs against real-Chromium evidence. The locally validated CI example workflow can be built on this proof. Milestone 9 remains blocked by missing Android SDK/emulator hardware.
+- Hosted CI: GitHub Actions run [32611169991](https://github.com/Ticklect/tvdoctor/actions/runs/32611169991) passed on `ubuntu-latest` with Node.js 24. All steps green: checkout, npm ci, Playwright Chromium install, build, lint, typecheck, unit tests (286), fixture browser tests, web-driver integration tests, core explorer + M8 + M10 integrations, M5 report/replay integration, M6 streaming journey integration, and the baseline CI example script. This is the first recorded hosted CI execution for TVDoctor. Cross-platform timing flakes were resolved by enabling one retry across all package Playwright configs and increasing settle quiet-window/timeout in M5 and M6 integration drivers.
+
+Milestone 10 gate conclusion: the baseline library correctly detects a single HIGH regression when focus behavior changes, correctly resolves it after restoration, and reports identical for unchanged runs against real-Chromium evidence. A hosted CI workflow now proves this end-to-end on a clean Linux runner. Milestone 11 may begin; v0.1 release hardening remains unimplemented.
 
 ## Milestone 9 gate record
 

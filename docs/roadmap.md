@@ -27,6 +27,8 @@ higher support level only after its complete gate is repeatable.
   and clean → clean as identical;
 - locally validated CI example script (`examples/baseline-ci-example.mjs`)
   exercises the consumer baseline workflow with exit-code semantics;
+- hosted GitHub Actions run on ubuntu-latest passes the full aggregate quality
+  gate including all browser integrations and baseline CI example;
 - complete M9 Android TV emulator gate: disposable API 36 emulator installs the
   native fixture, proves DPAD navigation and Select, triggers the seeded focus
   loss defect, captures screenshot/log evidence, and tears down cleanly;
@@ -37,7 +39,8 @@ higher support level only after its complete gate is repeatable.
 - version public packages, inspect tarballs, install them in a clean consumer,
   verify exported ESM/types/bin, and run README commands;
 - capture and review the 15–30 second public demo;
-- run the clean aggregate quality gate from a fresh install.
+- run the clean aggregate quality gate from a fresh install (hosted CI now
+  covers a clean Linux runner).
 
 ## After v0.1
 
