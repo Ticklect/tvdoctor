@@ -115,7 +115,7 @@ function createFixtureDriver(artifactsDirectory?: string): PlaywrightWebDriver {
     ...(artifactsDirectory === undefined ? {} : { artifactsDirectory }),
     settle: {
       noResponseGraceMs: 15,
-      quietWindowMs: 20,
+      quietWindowMs: 100,
       timeoutMs: 5_000,
     },
   });
