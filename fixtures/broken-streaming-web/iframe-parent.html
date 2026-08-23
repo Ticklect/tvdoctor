@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>TVDoctor same-origin iframe parent</title></head>
+  <body data-screen="iframe-parent">
+    <button data-tv-id="parent-control" autofocus>Parent</button>
+    <iframe title="Same-origin catalogue" src="/iframe-child.html" style="width:100%;height:240px;border:1px solid #666"></iframe>
+    <script>
+      window.addEventListener("keydown", (event) => {
+        const frame = document.querySelector("iframe");
+        if (event.key === "ArrowRight"
+          && document.activeElement?.getAttribute("data-tv-id") === "parent-control") {
+          event.preventDefault();
+          frame.contentDocument.querySelector('[data-tv-id="child-first"]')?.focus();
+        }
+      });
+    </script>
+  </body>
+</html>

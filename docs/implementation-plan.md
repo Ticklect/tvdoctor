@@ -398,6 +398,11 @@ Verified evidence:
 
 Date: 2026-08-23.
 
+> Status correction (same day): review reopened this section because its
+> conclusions exceeded the observations. The earlier text below is retained as
+> baseline only. The controlling record is
+> [`docs/m11-production-stress-status.md`](./m11-production-stress-status.md).
+
 Bounded TVDoctor audits were run against eight public production websites using
 the navigation pack in quick (30 s) or standard (180 s) mode with a maximum of
 300/2500 actions respectively. No authentication was attempted; no access
@@ -493,6 +498,25 @@ In every case TVDoctor:
 
 ### Conclusion
 
-TVDoctor's deterministic reset-and-replay architecture works correctly against real production websites but is inherently slower on pages with multi-second load times because each exploratory step requires a full page reload. This is a known trade-off of prioritising correctness and determinism over raw throughput. The quick profile is intended for fast-loading controlled fixtures; standard and deep profiles provide proportionally more time for real-world targets. No generic code changes are required. The tool behaved correctly within its documented bounds on every site tested.
+Earlier conclusion (superseded): TVDoctor's deterministic reset-and-replay
+architecture works correctly against real production websites but is inherently
+slower on pages with multi-second load times because each exploratory step
+requires a full page reload. This was described as a deliberate correctness
+trade-off. It also claimed that no generic code changes were required.
+
+## Reopened production stress investigation
+
+Status: **closed with evidence**. Component profiling overturned the earlier claim that no
+generic code changes were required. TVDoctor defects were found and fixed in
+stable-snapshot option handling, oversized evidence serialization, ambient-churn
+settle behavior, same-origin iframe observation, nonstandard frame children,
+consent diagnostics, and report reproduction handling. Deterministic fixtures now
+cover these regressions. Direct probes invalidated blanket bot-restriction
+claims and replaced them with evidence-backed classifications. The complete
+M11 aggregate quality gate passed on rerun.
+
+The controlling evidence, measured before/after results, corrected
+classifications, production reruns, and remaining closure requirements are in
+[`docs/m11-production-stress-status.md`](./m11-production-stress-status.md).
 
 

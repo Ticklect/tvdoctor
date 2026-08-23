@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TVDoctor ambient churn fixture</title>
+    <style>
+      body { margin: 0; font: 16px system-ui, sans-serif; }
+      nav { display: flex; gap: 10px; padding: 16px; }
+      button { width: 120px; height: 60px; }
+      button:focus { outline: 3px solid #0af; }
+      .banner { transition: opacity 80ms linear; }
+      .spinner { animation: spin 1s linear infinite; width: 24px; height: 24px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body data-screen="ambient-churn">
+    <nav aria-label="Ambient churn navigation">
+      <button data-tv-id="churn-left">Left</button>
+      <button data-tv-id="churn-right">Right</button>
+    </nav>
+    <time id="clock">00:00</time>
+    <div class="banner" id="banner">Rotating original banner</div>
+    <span id="noise">noise</span>
+    <div class="spinner" aria-hidden="true"></div>
+    <main id="lazy"></main>
+    <script type="module">
+      let focusIndex = 0;
+      let sequence = 0;
+      const ids = ["churn-left", "churn-right"];
+
+      function focusCurrent() {
+        document.querySelector(`[data-tv-id="${ids[focusIndex]}"]`)?.focus({ preventScroll: true });
+      }
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight") focusIndex = Math.min(focusIndex + 1, ids.length - 1);
+        if (event.key === "ArrowLeft") focusIndex = Math.max(focusIndex - 1, 0);
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault();
+          focusCurrent();
+        }
+      });
+
+      window.setInterval(() => {
+        sequence += 1;
+        const noise = document.getElementById("noise");
+        if (noise) noise.textContent = `raw mutation ${sequence}`;
+        const banner = document.getElementById("banner");
+        if (banner) {
+          banner.style.opacity = String(0.35 + (sequence % 4) * 0.2);
+          banner.setAttribute("aria-label", `Banner frame ${sequence}`);
+        }
+        const clock = document.getElementById("clock");
+        if (clock) clock.textContent = new Date().toISOString().slice(11, 19);
+      }, 40);
+
+      if (new URLSearchParams(window.location.search).get("lazy") === "true") {
+        window.setInterval(() => {
+          sequence += 1;
+          const section = document.createElement("section");
+          section.setAttribute("aria-label", `Lazy section ${sequence}`);
+          section.textContent = `Late item ${sequence}`;
+          document.getElementById("lazy")?.append(section);
+        }, 80);
+      }
+
+      focusCurrent();
+    </script>
+  </body>
+</html>

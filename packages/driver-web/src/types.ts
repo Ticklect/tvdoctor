@@ -37,8 +37,18 @@ export interface WebDomNodeSnapshot extends UiNodeSnapshot {
 
 export interface WebUiTreeMetadata {
   readonly capturedNodeCount: number;
+  readonly domElementCount: number;
   readonly maxNodeCount: number;
   readonly truncated: boolean;
+}
+
+export interface WebObservationTimings {
+  readonly browserEvaluationMs: number;
+  readonly domEnumerationMs: number;
+  readonly semanticAnalysisMs: number;
+  readonly auxiliaryObservationMs: number;
+  readonly transportAndSanitisationMs: number;
+  readonly browserRoundTripAndQueueingMs: number;
 }
 
 export interface WebViewportSnapshot {

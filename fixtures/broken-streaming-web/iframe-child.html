@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>TVDoctor same-origin iframe child</title></head>
+  <body data-screen="iframe-child">
+    <button data-tv-id="child-first">First child control</button>
+    <button data-tv-id="child-second">Second child control</button>
+    <script>
+      window.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+        event.preventDefault();
+        const current = document.activeElement?.getAttribute("data-tv-id");
+        if (event.key === "ArrowRight") {
+          if (current === "child-first") document.querySelector('[data-tv-id="child-second"]')?.focus();
+          return;
+        }
+        if (current === "child-second") {
+          document.querySelector('[data-tv-id="child-first"]')?.focus();
+        } else {
+          window.parent.document.querySelector('[data-tv-id="parent-control"]')?.focus();
+        }
+      });
+    </script>
+  </body>
+</html>

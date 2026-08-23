@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TVDoctor dynamic rail fixture</title>
+    <style>
+      body { margin: 0; font: 16px system-ui, sans-serif; background: #101724; color: white; }
+      nav { display: flex; gap: 12px; padding: 20px; }
+      button { width: 120px; height: 72px; border: 2px solid transparent; background: #223; color: inherit; }
+      button[aria-current] { border-color: #6ff; }
+      button:focus { outline: none; border-color: yellow; }
+      .pulse { animation: pulse 80ms linear infinite alternate; height: 4px; background: #456; margin: 0 20px; }
+      @keyframes pulse { from { opacity: .35 } to { opacity: 1 } }
+    </style>
+  </head>
+  <body data-screen="dynamic-rail">
+    <nav aria-label="Continuously replaced rail" id="rail"></nav>
+    <div class="pulse" aria-hidden="true"></div>
+    <main><p>The rail is intentionally replaced on every animation frame.</p></main>
+    <script type="module">
+      let focusedIndex = 0;
+      let generation = 0;
+
+      function renderRail() {
+        generation += 1;
+        const next = document.createElement("div");
+        for (let index = 0; index < 8; index += 1) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.tvId = `rail-${index}`;
+          button.textContent = `Item ${index + 1}`;
+          if (index === 0) button.setAttribute("aria-current", "true");
+          next.append(button);
+        }
+      const currentRail = document.getElementById("rail");
+        currentRail.replaceChildren(next);
+        const focused = next.querySelectorAll("button")[focusedIndex];
+        focused?.focus({ preventScroll: true });
+        requestAnimationFrame(renderRail);
+      }
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          focusedIndex = Math.min(focusedIndex + 1, 7);
+        } else if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          focusedIndex = Math.max(focusedIndex - 1, 0);
+        }
+      });
+
+      renderRail();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TVDoctor large DOM fixture</title>
+    <style>
+      body { margin: 0; font: 16px/1.4 system-ui, sans-serif; }
+      main { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; padding: 10px; }
+      .cell { border: 1px solid #889; padding: 3px; min-height: 34px; overflow: hidden; }
+      button:focus-visible, a:focus-visible { outline: 3px solid #0af; outline-offset: 2px; }
+    </style>
+  </head>
+  <body data-screen="large-dom">
+    <main aria-label="Large deterministic document">
+      <button data-tv-id="stress-start" autofocus>Start</button>
+      <a href="#next" data-tv-id="stress-next">Next</a>
+    </main>
+    <script type="module">
+      const fragment = document.createDocumentFragment();
+      for (let section = 0; section < 120; section += 1) {
+        const list = document.createElement("section");
+        list.setAttribute("aria-label", `Section ${section + 1}`);
+        for (let item = 0; item < 25; item += 1) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          const label = document.createElement("span");
+          label.textContent = `Item ${section * 25 + item + 1}`;
+          const control = item % 5 === 0
+            ? Object.assign(document.createElement("button"), { textContent: `Open ${section}-${item}` })
+            : Object.assign(document.createElement("span"), { textContent: "Metadata" });
+          if (control.tagName === "BUTTON") {
+            control.dataset.tvId = `large-item-${String(section * 25 + item + 1).padStart(4, "0")}`;
+          }
+          cell.append(label, control);
+          fragment.append(cell);
+        }
+      }
+      document.querySelector("main").append(fragment);
+    </script>
+  </body>
+</html>

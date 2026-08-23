@@ -15,14 +15,31 @@ export interface CapturedPageObservation {
   readonly performance: WebPerformanceSnapshot;
   readonly uiTree: readonly WebDomNodeSnapshot[];
   readonly uiTreeMetadata: WebUiTreeMetadata;
+  readonly timings: PageObservationTimings;
   readonly viewport: WebViewportSnapshot;
+}
+
+export interface PageObservationTimings {
+  /** Time spent inside Chromium, including DOM enumeration and analysis. */
+  readonly browserEvaluationMs: number;
+  readonly domEnumerationMs: number;
+  /** Semantic roles, names, state, geometry, and UI-tree construction. */
+  readonly semanticAnalysisMs: number;
+  /** Focus, media, and navigation-performance observations before tree walk. */
+  readonly auxiliaryObservationMs: number;
+  /** Structured-clone transfer plus Node-side recursive text sanitisation. */
+  readonly transportAndSanitisationMs: number;
+  /** Approximate Playwright call setup and structured-clone transfer. */
+  readonly browserRoundTripAndQueueingMs: number;
 }
 
 export async function capturePageObservation(
   page: Page,
   maxNodeCount: number,
 ): Promise<CapturedPageObservation> {
+  const captureStartedAtMs = performance.now();
   const observation = await page.evaluate((nodeLimit) => {
+    const evaluationStartedAtMs = performance.now();
     interface Bounds {
       x: number;
       y: number;
@@ -49,8 +66,8 @@ export async function capturePageObservation(
     }
 
     const textLimit = 240;
-    const boundedValue = (value: string | null): string | null => {
-      if (value === null || value.length === 0) {
+    const boundedValue = (value: string | null | undefined): string | null => {
+      if (typeof value !== "string" || value.length === 0) {
         return null;
       }
       return value.slice(0, textLimit);
@@ -65,7 +82,7 @@ export async function capturePageObservation(
     };
 
     const boundsFor = (element: Element): Bounds | null => {
-      const rectangle = element.getBoundingClientRect();
+      const rectangle = measuredRectangle(element);
       if (rectangle.width === 0 && rectangle.height === 0) {
         return null;
       }
@@ -77,9 +94,19 @@ export async function capturePageObservation(
       };
     };
 
+    const measuredRectangles = new WeakMap<Element, DOMRect>();
+    const measureOnce = (element: Element): DOMRect => {
+      let rectangle = measuredRectangles.get(element);
+      if (rectangle === undefined) {
+        rectangle = element.getBoundingClientRect();
+        measuredRectangles.set(element, rectangle);
+      }
+      return rectangle;
+    };
+
     const isVisible = (element: Element): boolean => {
       const styles = getComputedStyle(element);
-      const rectangle = element.getBoundingClientRect();
+      const rectangle = measuredRectangle(element);
       return styles.display !== "none"
         && styles.visibility !== "hidden"
         && Number.parseFloat(styles.opacity) !== 0
@@ -116,6 +143,10 @@ export async function capturePageObservation(
     const roleFor = (element: Element): string | null => boundedValue(
       element.getAttribute("role"),
     ) ?? implicitRole(element);
+
+    function measuredRectangle(element: Element): DOMRect {
+      return measureOnce(element);
+    }
 
     const stableIdFor = (element: Element): string | null => boundedValue(
       element.getAttribute("data-tv-id") ?? element.id,
@@ -306,6 +337,17 @@ export async function capturePageObservation(
       }
     };
 
+    const frameBoundaryFor = (element: Element): "same-origin" | "cross-origin" | null => {
+      if (!(element instanceof HTMLIFrameElement)) return null;
+      try {
+        return element.contentDocument !== null && element.contentDocument.defaultView !== null
+          ? "same-origin"
+          : "cross-origin";
+      } catch {
+        return "cross-origin";
+      }
+    };
+
     const semanticTags = new Set([
       "a",
       "aside",
@@ -334,6 +376,8 @@ export async function capturePageObservation(
       "ul",
     ]);
 
+    let deepActiveElement: Element = document.activeElement ?? document.documentElement;
+
     let capturedNodeCount = 0;
     let truncated = false;
 
@@ -346,10 +390,16 @@ export async function capturePageObservation(
       const role = roleFor(element);
       const tagName = element.tagName.toLowerCase();
       const stableId = stableIdFor(element);
-      const focusable = element instanceof HTMLElement && element.tabIndex >= 0 && isEnabled(element);
+    const focusable = element.nodeType === Node.ELEMENT_NODE
+      && "tabIndex" in element
+      && typeof element.tabIndex === "number"
+      && element.tabIndex >= 0
+      && isEnabled(element);
+      const frameBoundary = frameBoundaryFor(element);
       const include = element === document.body
         || stableId !== null
         || role !== null
+        || frameBoundary !== null
         || semanticTags.has(tagName)
         || element.hasAttribute("data-screen");
 
@@ -367,7 +417,7 @@ export async function capturePageObservation(
         visible: isVisible(element),
         modal: isModal(element, role),
         focusable,
-        focused: element === document.activeElement,
+        focused: element === document.activeElement || element === deepActiveElement,
         selectionState: selectionStateFor(element),
         valueNow: valueNowFor(element),
         children: [],
@@ -375,14 +425,39 @@ export async function capturePageObservation(
         enabled: isEnabled(element),
         attributes: attributesFor(element),
       };
-      node.children = Array.from(element.children).flatMap((child) => visit(child));
+      if (frameBoundary !== null) {
+        node.attributes["data-tv-frame"] = frameBoundary;
+      }
+      node.children = frameBoundary === "same-origin" && element instanceof HTMLIFrameElement
+        ? Array.from(element.contentDocument?.body?.children ?? [])
+          .filter((child) => child.nodeType === Node.ELEMENT_NODE)
+          .flatMap((child) => visit(child))
+        : Array.from(element.children).flatMap((child) => visit(child));
       return [node];
     };
 
-    const activeElement = document.activeElement instanceof HTMLElement
-      && document.activeElement !== document.body
-      && document.activeElement !== document.documentElement
-      ? document.activeElement
+    const auxiliaryStartedAtMs = performance.now();
+    let activeCandidate: Element = document.activeElement ?? document.documentElement;
+    while (activeCandidate instanceof HTMLIFrameElement) {
+      let nestedActive: Element | null;
+      try {
+        nestedActive = activeCandidate.contentDocument?.activeElement ?? null;
+      } catch {
+        nestedActive = null;
+      }
+      if (nestedActive === null
+        || nestedActive.nodeType !== Node.ELEMENT_NODE
+        || nestedActive === nestedActive.ownerDocument.body
+        || nestedActive === nestedActive.ownerDocument.documentElement) {
+        break;
+      }
+      activeCandidate = nestedActive as Element;
+    }
+    deepActiveElement = activeCandidate;
+    const activeElement = activeCandidate.nodeType === Node.ELEMENT_NODE
+      && activeCandidate !== activeCandidate.ownerDocument.body
+      && activeCandidate !== activeCandidate.ownerDocument.documentElement
+      ? activeCandidate
       : null;
     let focus: FocusTarget | null = null;
     if (activeElement !== null) {
@@ -445,6 +520,14 @@ export async function capturePageObservation(
     const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     const optionalDuration = (value: number): number | null => Number.isFinite(value) && value >= 0 ? value : null;
 
+    const domEnumerationStartedAtMs = performance.now();
+    const domElementCount = document.querySelectorAll("*").length;
+    const domEnumerationMs = performance.now() - domEnumerationStartedAtMs;
+
+    const semanticAnalysisStartedAtMs = performance.now();
+    const uiTree = visit(document.body);
+    const semanticAnalysisMs = performance.now() - semanticAnalysisStartedAtMs;
+
     return {
       focus,
       mediaElements,
@@ -460,11 +543,18 @@ export async function capturePageObservation(
         },
         resourceCount: performance.getEntriesByType("resource").length,
       },
-      uiTree: visit(document.body),
+      uiTree,
       uiTreeMetadata: {
         capturedNodeCount,
         maxNodeCount: nodeLimit,
         truncated,
+        domElementCount,
+      },
+      timings: {
+        browserEvaluationMs: performance.now() - evaluationStartedAtMs,
+        domEnumerationMs,
+        semanticAnalysisMs,
+        auxiliaryObservationMs: Math.max(0, domEnumerationStartedAtMs - auxiliaryStartedAtMs),
       },
       viewport: {
         width: window.innerWidth,
@@ -474,7 +564,15 @@ export async function capturePageObservation(
         scrollY: window.scrollY,
       },
     };
-  }, maxNodeCount);
+  }, maxNodeCount) as Omit<CapturedPageObservation, "timings"> & {
+    readonly timings: {
+      readonly browserEvaluationMs: number;
+      readonly domEnumerationMs: number;
+      readonly semanticAnalysisMs: number;
+      readonly auxiliaryObservationMs: number;
+    };
+  };
+  const browserEvaluationEndedAtMs = performance.now();
 
   const sanitiseNullableText = (value: string | null): string | null => value === null
     ? null
@@ -491,7 +589,7 @@ export async function capturePageObservation(
     children: node.children.map((child) => sanitiseNode(child)),
   });
 
-  return {
+  const result = {
     ...observation,
     focus: observation.focus === null ? null : {
       ...observation.focus,
@@ -506,5 +604,17 @@ export async function capturePageObservation(
         : { role: sanitiseObservedText(observation.focus.role) }),
     },
     uiTree: observation.uiTree.map((node) => sanitiseNode(node)),
+  };
+  const transportAndSanitisationMs = Math.max(0, performance.now() - browserEvaluationEndedAtMs);
+  return {
+    ...result,
+    timings: {
+      ...observation.timings,
+      transportAndSanitisationMs,
+      browserRoundTripAndQueueingMs: Math.max(
+        0,
+        browserEvaluationEndedAtMs - captureStartedAtMs - observation.timings.browserEvaluationMs,
+      ),
+    },
   };
 }

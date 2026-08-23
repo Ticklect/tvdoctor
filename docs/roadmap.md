@@ -33,6 +33,10 @@ higher support level only after its complete gate is repeatable.
   native fixture, proves DPAD navigation and Select, triggers the seeded focus
   loss defect, captures screenshot/log evidence, and tears down cleanly;
 - experimental structured ADB/UIAutomator driver with fake-executor tests.
+- reopened production stress phase closed with component profiling, corrected
+  classifications, deterministic regression fixtures, production reruns, and a
+  passing aggregate gate; see
+  [`docs/m11-production-stress-status.md`](./docs/m11-production-stress-status.md).
 
 ### Release gates still required
 

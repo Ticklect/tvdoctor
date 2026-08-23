@@ -278,4 +278,37 @@ describe("M8 explorer hardening", () => {
       settling: { strategy: "stable-snapshot", maxSnapshots: 1, requiredStableSnapshots: 2 },
     })).rejects.toThrow("requiredStableSnapshots");
   });
+
+  it("honours explicit stable-snapshot bounds without driver-default rejection", async () => {
+    let phase = 0;
+    const stableDriver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input"]);
+      },
+      async press(key) {
+        phase = 0;
+        return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+      },
+      async snapshot() {
+        phase += 1;
+        return carouselSnapshot(Math.min(phase, 3), false, 4);
+      },
+      async reset(strategy) {
+        void strategy;
+        phase = -1;
+      },
+    };
+
+    await expect(explore(stableDriver, {
+      actions: ["RIGHT"],
+      budgets: { maxActions: 2, maxStates: 4, maxDepth: 1, maxDurationMs: 10_000 },
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 3,
+        pollIntervalMs: 20,
+        requiredStableSnapshots: 2,
+      },
+      monotonicNow: () => 0,
+    })).resolves.toMatchObject({ termination: { reason: "settling-exhausted" } });
+  });
 });

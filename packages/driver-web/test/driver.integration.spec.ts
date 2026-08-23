@@ -346,3 +346,84 @@ test("captures console errors, page errors, sanitised network outcomes, timing, 
     await driver.close();
   }
 });
+
+test("bounds ambient mutation churn without waiting for the full settle timeout", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "dynamic-rail", launchUri: `${requireBaseURL(baseURL)}/dynamic-rail.html` });
+
+  try {
+    const startedAtMs = Date.now();
+    const right = await driver.press("RIGHT");
+    const elapsedMs = Date.now() - startedAtMs;
+    expect(right.outcome).toBe("applied");
+    expect(right.message).toBeUndefined();
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(await focusedId(driver)).toBe("rail-1");
+
+    const resetStartedAtMs = Date.now();
+    await driver.reset("reload");
+    expect(Date.now() - resetStartedAtMs).toBeLessThan(2_000);
+    expect(await focusedId(driver)).toBe("rail-0");
+  } finally {
+    await driver.close();
+  }
+});
+
+test("captures a deterministic large DOM with bounded semantic node retention", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "large-dom", launchUri: `${requireBaseURL(baseURL)}/large-dom.html` });
+
+  try {
+    const snapshot = await driver.snapshot();
+    const metadata = availableValue(snapshot.uiTreeMetadata);
+    expect(metadata.domElementCount).toBe(9_011);
+    expect(metadata.capturedNodeCount).toBe(604);
+    expect(metadata.truncated).toBe(false);
+    expect(availableValue(snapshot.focusedElement)?.stableId).toBe("stress-start");
+  } finally {
+    await driver.close();
+  }
+});
+
+test("bounds clocks, rotating banners, autoplay UI, raw mutations, and lazy loading", async ({ baseURL }) => {
+  for (const launchUri of [
+    `${requireBaseURL(baseURL)}/ambient-churn.html`,
+    `${requireBaseURL(baseURL)}/ambient-churn.html?lazy=true`,
+  ]) {
+    const driver = new PlaywrightWebDriver();
+    await driver.launch({ id: "ambient-churn", launchUri });
+    try {
+      const startedAtMs = Date.now();
+      const right = await driver.press("RIGHT");
+      expect(Date.now() - startedAtMs).toBeLessThan(2_000);
+      expect(right.outcome).toBe("applied");
+      expect(await focusedId(driver)).toBe("churn-right");
+
+      const resetStartedAtMs = Date.now();
+      await driver.reset("reload");
+      expect(Date.now() - resetStartedAtMs).toBeLessThan(2_000);
+      expect(await focusedId(driver)).toBe("churn-left");
+    } finally {
+      await driver.close();
+    }
+  }
+});
+
+test("observes same-origin iframe boundaries and nested remote focus", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "iframe-parent", launchUri: `${requireBaseURL(baseURL)}/iframe-parent.html` });
+
+  try {
+    expect(await focusedId(driver)).toBe("parent-control");
+    await driver.press("RIGHT");
+    const snapshot = await driver.snapshot();
+    expect(availableValue(snapshot.focusedElement)?.stableId).toBe("child-first");
+
+    const tree = flattenUiTree(availableValue(snapshot.uiTree));
+    const frame = tree.find((node) => node.tagName === "iframe");
+    expect(frame?.attributes["data-tv-frame"]).toBe("same-origin");
+    expect(tree.some((node) => node.stableId === "child-second")).toBe(true);
+  } finally {
+    await driver.close();
+  }
+});

@@ -176,7 +176,7 @@ function asJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
-const EVIDENCE_EXCERPT_MAX_NODES = 200;
+export const EVIDENCE_EXCERPT_MAX_NODES = 150;
 
 /**
  * Bounded excerpt of a snapshot's UI tree for report embedding. Complex real
@@ -203,7 +203,7 @@ function boundedUiTree(tree: readonly UiNodeSnapshot[]): readonly UiNodeSnapshot
   return walk(tree);
 }
 
-function boundedSnapshot(snapshot: StateSnapshot): StateSnapshot {
+export function boundedSnapshot(snapshot: StateSnapshot): StateSnapshot {
   if (snapshot.uiTree.status !== "available") return snapshot;
   return {
     ...snapshot,
@@ -633,11 +633,11 @@ async function runAudit(
       navigation = await explore(createSafeExplorationDriver(driver), {
         profile: request.mode,
         resetStrategy: "reload",
-        settling: {
-          strategy: "stable-snapshot",
-          maxSnapshots: 3,
-          pollIntervalMs: 20,
-          requiredStableSnapshots: 2,
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 3,
+        pollIntervalMs: 20,
+        requiredStableSnapshots: 2,
         },
       });
       navigationFindings = diagnoseNavigation(navigation).findings

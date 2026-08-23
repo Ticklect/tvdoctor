@@ -99,8 +99,12 @@ export function normaliseActionSettlingOptions(
   if (strategy !== "driver" && strategy !== "stable-snapshot") {
     throw new TypeError("settling strategy must be driver or stable-snapshot.");
   }
-  const defaultMaxSnapshots = strategy === "driver" ? 1 : 6;
-  const defaultRequiredStableSnapshots = strategy === "driver" ? 1 : 2;
+  const defaultMaxSnapshots = strategy === "driver"
+    ? DEFAULT_ACTION_SETTLING_OPTIONS.maxSnapshots
+    : 6;
+  const defaultRequiredStableSnapshots = strategy === "driver"
+    ? DEFAULT_ACTION_SETTLING_OPTIONS.requiredStableSnapshots
+    : 2;
   const maxSnapshots = positiveInteger(
     options.maxSnapshots ?? defaultMaxSnapshots,
     "maxSnapshots",

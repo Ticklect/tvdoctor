@@ -21,6 +21,8 @@ export interface SettleResult {
   readonly focusSettledAtMs: number | null;
   readonly screenSettledAtMs: number;
   readonly timedOut: boolean;
+  /** True when an already-continuous animation/mutation source ended the wait early. */
+  readonly boundedByAmbientChurn: boolean;
 }
 
 export async function installSettleTracker(page: Page): Promise<void> {
@@ -178,6 +180,13 @@ export async function waitForPageSettle(
         : "";
       const focusChanged = focusKey !== actionBaseline.focusKey
         || (tracker?.focusVersion ?? 0) > actionBaseline.focusVersion;
+      const preActionMutations = (tracker?.events ?? []).filter((event) => (
+        event.kind === "mutation" && event.atEpochMs < actionBaseline.capturedAtEpochMs
+      ));
+      const lastPreActionMutationAtMs = preActionMutations.at(-1)?.atEpochMs
+        ?? Number.NEGATIVE_INFINITY;
+      const ambientChurn = preActionMutations.length >= 4
+        && actionBaseline.capturedAtEpochMs - lastPreActionMutationAtMs <= 250;
       const responseEvents = tracker?.events.filter(
         (event) => event.atEpochMs >= actionBaseline.capturedAtEpochMs,
       ) ?? [];
@@ -196,6 +205,7 @@ export async function waitForPageSettle(
           : null,
         screenSettledAtMs: Date.now(),
         timedOut: didTimeOut,
+        boundedByAmbientChurn: ambientChurn,
       };
     },
     {
@@ -210,6 +220,10 @@ export async function waitForPageSettle(
       ({ actionBaseline, settleConfiguration }) => {
         interface TrackerWindow extends Window {
           __tvdoctorSettleTracker?: {
+            events: {
+              readonly atEpochMs: number;
+              readonly kind: "focus" | "mutation";
+            }[];
             focusVersion: number;
             lastFocusAtEpochMs: number;
             lastMutationAtEpochMs: number;
@@ -231,6 +245,17 @@ export async function waitForPageSettle(
           || window.location.href !== actionBaseline.location
           || (tracker?.focusVersion ?? 0) > actionBaseline.focusVersion
           || (tracker?.mutationVersion ?? 0) > actionBaseline.mutationVersion;
+        const preActionMutations = (tracker?.events ?? []).filter((event) => (
+          event.kind === "mutation" && event.atEpochMs < actionBaseline.capturedAtEpochMs
+        ));
+        const lastPreActionMutationAtMs = preActionMutations.at(-1)?.atEpochMs
+          ?? Number.NEGATIVE_INFINITY;
+        // A source already mutating continuously before input is ambient churn.
+        // Canonical snapshots and replay remain the correctness gate.
+        const ambientChurn = preActionMutations.length >= 4
+          && actionBaseline.capturedAtEpochMs - lastPreActionMutationAtMs <= 250;
+        const ambientChurnBoundReached = now - actionBaseline.capturedAtEpochMs
+          >= settleConfiguration.noResponseGraceMs;
         const lastMeaningfulChange = Math.max(
           actionBaseline.capturedAtEpochMs,
           tracker?.lastFocusAtEpochMs ?? 0,
@@ -254,9 +279,8 @@ export async function waitForPageSettle(
 
         return document.readyState !== "loading"
           && !busy
-          && !finiteAnimationRunning
-          && quiet
-          && (responded || noResponseIsStable);
+          && ((quiet && !finiteAnimationRunning && (responded || noResponseIsStable))
+            || (ambientChurn && ambientChurnBoundReached));
       },
       {
         actionBaseline: baseline,
@@ -267,7 +291,10 @@ export async function waitForPageSettle(
         timeout: configuration.timeoutMs,
       },
     );
-    return readResult(false);
+    return {
+      ...await readResult(false),
+      boundedByAmbientChurn: true,
+    };
   } catch {
     return readResult(true);
   }
@@ -283,6 +310,9 @@ export async function waitForInitialPageSettle(
   await page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
+  // Sample long-lived churn before taking the initial baseline so launch/reset
+  // can distinguish an already-continuous source from one caused by input.
+  await page.waitForTimeout(250);
   const baseline = await readSettleBaseline(page);
   return waitForPageSettle(page, baseline, {
     ...configuration,

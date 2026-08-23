@@ -648,6 +648,56 @@ describe("navigation diagnostics", () => {
     expect(rules(modeless)).not.toContain(NAVIGATION_DIAGNOSTIC_RULES.overlayFocusLeak);
   });
 
+  it("reports only an explicitly identified root consent modal", () => {
+    const consentTree = [
+      node("catalogue", "main", null, {
+        children: [control("behind", 0, 0)],
+      }),
+      node("consent-dialog", "dialog", { x: 100, y: 100, width: 500, height: 400 }, {
+        children: [control("accept-consent", 200, 220, { focused: true })],
+        modal: true,
+        name: "Privacy choice",
+      }),
+    ];
+    const consent = makeResult(
+      [{
+        id: "focus-consent",
+        screenId: "screen-consent",
+        discoveredBy: [],
+        snapshot: snapshot("consent", target("accept-consent", 200, 220), consentTree),
+      }],
+      ["RIGHT"],
+      [],
+    );
+    expect(rules(consent)).toContain(NAVIGATION_DIAGNOSTIC_RULES.consentWall);
+    const finding = diagnoseNavigation(consent).findings.find((candidate) => (
+      candidate.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.consentWall
+    ));
+    expect(finding?.issue.transition).toBeNull();
+    expect(finding?.issue.reproduction).toMatchObject({
+      status: "unavailable",
+    });
+
+    const genericTree = [
+      node("settings-dialog", "dialog", { x: 100, y: 100, width: 500, height: 400 }, {
+        children: [control("accept-settings", 200, 220, { focused: true })],
+        modal: true,
+        name: "Display settings",
+      }),
+    ];
+    const generic = makeResult(
+      [{
+        id: "focus-settings",
+        screenId: "screen-settings",
+        discoveredBy: [],
+        snapshot: snapshot("settings", target("accept-settings", 200, 220), genericTree),
+      }],
+      ["RIGHT"],
+      [],
+    );
+    expect(rules(generic)).not.toContain(NAVIGATION_DIAGNOSTIC_RULES.consentWall);
+  });
+
   it("reports immediate SELECT then BACK to a third screen only for the discovery entry", () => {
     const home = snapshot("home", target("card", 0, 0), [control("card", 0, 0, { focused: true })]);
     const details = snapshot("details", target("play", 0, 0), [control("play", 0, 0, { focused: true })]);

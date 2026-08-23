@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>TVDoctor cross-origin iframe parent</title></head>
+  <body data-screen="iframe-cross-origin-parent">
+    <button data-tv-id="parent-control" autofocus>Parent</button>
+    <!-- data: URLs have an opaque origin, so this is a deterministic local
+         cross-origin boundary without depending on an external website. -->
+    <iframe title="Cross-origin catalogue" src="data:text/html,%3Cbutton%3EInaccessible%20control%3C/button%3E"></iframe>
+  </body>
+</html>

@@ -23,6 +23,7 @@ export const NAVIGATION_DIAGNOSTIC_RULES = {
   unreachable: "remote.reachability",
   selfLoop: "remote.self-loop",
   focusTrap: "remote.focus-trap",
+  consentWall: "remote.consent-wall",
   overlayFocusLeak: "remote.overlay-focus-leak",
   backBehaviour: "remote.back-behaviour",
   unexpectedJump: "remote.unexpected-jump",
@@ -155,9 +156,10 @@ const RULE_ORDER: Readonly<Record<NavigationDiagnosticRule, number>> = {
   [NAVIGATION_DIAGNOSTIC_RULES.selfLoop]: 1,
   [NAVIGATION_DIAGNOSTIC_RULES.unreachable]: 2,
   [NAVIGATION_DIAGNOSTIC_RULES.focusTrap]: 3,
-  [NAVIGATION_DIAGNOSTIC_RULES.overlayFocusLeak]: 4,
-  [NAVIGATION_DIAGNOSTIC_RULES.backBehaviour]: 5,
-  [NAVIGATION_DIAGNOSTIC_RULES.unexpectedJump]: 6,
+  [NAVIGATION_DIAGNOSTIC_RULES.consentWall]: 4,
+  [NAVIGATION_DIAGNOSTIC_RULES.overlayFocusLeak]: 5,
+  [NAVIGATION_DIAGNOSTIC_RULES.backBehaviour]: 6,
+  [NAVIGATION_DIAGNOSTIC_RULES.unexpectedJump]: 7,
 };
 
 function compareText(left: string, right: string): number {
@@ -343,6 +345,18 @@ function activeNodes(snapshot: StateSnapshot): readonly IndexedNode[] {
   const nodes = flattenSnapshot(snapshot);
   const dialog = visibleDialog(nodes);
   return dialog === null ? nodes : nodes.filter((candidate) => inSubtree(candidate, dialog));
+}
+
+function subtreeText(root: IndexedNode): string {
+  const parts: string[] = [];
+  const visit = (node: UiNodeSnapshot): void => {
+    for (const value of [node.name, node.text]) {
+      if (value !== null && value.trim().length > 0) parts.push(value);
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(root.node);
+  return normalise(parts.join(" "));
 }
 
 function parentNode(indexed: IndexedNode): UiNodeSnapshot | null {
@@ -1115,6 +1129,70 @@ function addOverlayFocusLeakFindings(
   }
 }
 
+function addConsentWallFindings(
+  result: ExplorationResult,
+  resetStrategy: ResetStrategy,
+  add: (candidate: FindingCandidate) => void,
+): void {
+  const initialState = result.graph.focus.states.find((state) => state.discoveredBy.length === 0);
+  if (initialState === undefined) return;
+  const snapshot = initialState.representativeSnapshot;
+  const nodes = flattenSnapshot(snapshot);
+  const dialog = visibleDialog(nodes);
+  if (dialog === null) return;
+  const focused = focusNode(snapshot, nodes);
+  if (focused === null || !inSubtree(focused, dialog)) return;
+  if (!/\b(?:consent|cookies?)\b|\bprivacy (?:choice|notice|settings|wall)\b/u.test(subtreeText(dialog))) {
+    return;
+  }
+
+  const dialogElement = metadataForNode(dialog.node);
+  const focusedElement = metadataForNode(focused.node);
+  const classification = "deterministic" as const;
+  const consentIssue = issue(
+    NAVIGATION_DIAGNOSTIC_RULES.consentWall,
+    classification,
+    "medium",
+    "Application starts behind a consent wall",
+    "The initial focused state contains an explicitly identified visible modal consent surface; exploration cannot proceed into catalogue content without changing persistent consent state.",
+    initialState.screenStateId,
+    "The audit records the consent wall and explores only after the user-selected consent action is replayable from a fresh reset.",
+    "The initial remote focus is inside a visible consent modal.",
+    null,
+    [],
+    "The root snapshot contained one visible modal dialog, its semantic text explicitly identified consent or cookies, and exact focus matched a descendant control.",
+    "screen-analysis",
+    resetStrategy,
+  );
+  add({
+    classification,
+    issue: {
+      ...consentIssue,
+      reproduction: {
+        status: "unavailable",
+        reason: "A root consent wall is screen-state evidence; no single remote transition proves entry or exit.",
+      },
+    },
+    source: {
+      kind: "screen-analysis",
+      screenStateId: initialState.screenStateId,
+      focusStateId: initialState.id,
+      element: dialogElement,
+      actionAttemptId: null,
+      relatedActionAttemptId: null,
+      actionSequence: [],
+      locallyComplete: null,
+    },
+    target: diagnosticTarget(
+      initialState.screenStateId,
+      initialState.id,
+      dialogElement,
+      null,
+      focusedElement,
+    ),
+  });
+}
+
 function addBackBehaviourFindings(
   result: ExplorationResult,
   resetStrategy: ResetStrategy,
@@ -1310,6 +1388,7 @@ export function diagnoseNavigation(
   addSelfLoopFindings(result, resetStrategy, add);
   addUnreachableFindings(result, resetStrategy, add);
   addFocusTrapFindings(result, resetStrategy, add);
+  addConsentWallFindings(result, resetStrategy, add);
   addOverlayFocusLeakFindings(result, resetStrategy, add);
   addBackBehaviourFindings(result, resetStrategy, add);
   addUnexpectedJumpFindings(result, resetStrategy, add);
