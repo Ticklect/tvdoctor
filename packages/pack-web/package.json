@@ -1,0 +1,35 @@
+{
+  "name": "@tvdoctor/pack-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Platform-neutral web-app diagnostic stages for TVDoctor.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false"
+  },
+  "dependencies": {
+    "@tvdoctor/core": "0.0.0",
+    "@tvdoctor/protocol": "0.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

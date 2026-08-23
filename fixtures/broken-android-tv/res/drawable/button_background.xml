@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="14dp" />
+            <solid android:color="@color/fixture_surface_focused" />
+            <stroke android:width="5dp" android:color="@color/fixture_text" />
+            <padding android:left="28dp" android:top="18dp" android:right="28dp" android:bottom="18dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="14dp" />
+            <solid android:color="@color/fixture_surface" />
+            <stroke android:width="2dp" android:color="@color/fixture_accent" />
+            <padding android:left="28dp" android:top="18dp" android:right="28dp" android:bottom="18dp" />
+        </shape>
+    </item>
+</selector>

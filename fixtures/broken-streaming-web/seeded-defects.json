@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "fixture": "broken-streaming-web",
+  "productName": "Northstar",
+  "defects": [
+    {
+      "id": "fixture-home-more-info-unreachable",
+      "expectedRule": "remote.reachability",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "home",
+      "target": "hero-more-info",
+      "summary": "The visible More info button works with a pointer but is absent from every D-pad edge."
+    },
+    {
+      "id": "fixture-profile-focus-trap",
+      "expectedRule": "remote.focus-trap",
+      "severity": "high",
+      "confidence": "deterministic",
+      "screen": "home > profile-picker",
+      "target": "profile-primary",
+      "summary": "All remote directions remain inside the profile picker and Back is ignored; only its pointer close control exits."
+    },
+    {
+      "id": "fixture-carousel-right-jump",
+      "expectedRule": "remote.unexpected-jump",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "home",
+      "target": "home-card-3",
+      "summary": "RIGHT from the third continue-watching card jumps to the distant footer Privacy control instead of the adjacent fourth card."
+    },
+    {
+      "id": "fixture-details-back-wrong-screen",
+      "expectedRule": "remote.back-behaviour",
+      "severity": "high",
+      "confidence": "deterministic",
+      "screen": "details",
+      "target": "details-play",
+      "summary": "Back from content details opens Search even when details was entered from Home."
+    },
+    {
+      "id": "fixture-card-focus-indicator-weak",
+      "expectedRule": "focus.visibility",
+      "severity": "medium",
+      "confidence": "heuristic",
+      "screen": "home",
+      "target": "home-card-2",
+      "summary": "The second card changes by only a faint one-pixel shadow when focused."
+    },
+    {
+      "id": "fixture-player-settings-clipped",
+      "expectedRule": "layout.viewport-clipping",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "player > settings",
+      "target": "settings-panel",
+      "summary": "The player settings panel is deliberately positioned partly beyond the right viewport edge."
+    },
+    {
+      "id": "fixture-player-rewind-inverted",
+      "expectedRule": "streaming.player-control",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "player",
+      "target": "player-rewind",
+      "summary": "Selecting Rewind advances playback by ten seconds instead of moving backwards."
+    },
+    {
+      "id": "fixture-caption-track-toggle-ignored",
+      "expectedRule": "streaming.captions",
+      "severity": "high",
+      "confidence": "deterministic",
+      "screen": "player > settings > captions",
+      "target": "captions-english",
+      "summary": "Selecting English captions leaves captions Off even though the button reports activation."
+    },
+    {
+      "id": "fixture-caption-text-colour-remote-unreachable",
+      "expectedRule": "remote.reachability",
+      "severity": "high",
+      "confidence": "deterministic",
+      "screen": "player > settings > captions > appearance",
+      "target": "caption-text-colour",
+      "summary": "Text Colour is visible and pointer-clickable but Font Size DOWN skips to Background, leaving no D-pad path to it."
+    },
+    {
+      "id": "fixture-player-volume-pointer-only",
+      "expectedRule": "accessibility.pointer-only-control",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "player",
+      "target": "player-volume-boost",
+      "summary": "Volume boost responds to pointer clicks but is excluded from the remote navigation graph."
+    },
+    {
+      "id": "fixture-search-submit-pointer-only",
+      "expectedRule": "search.remote-flow",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "search",
+      "target": "search-submit",
+      "summary": "The visible Search submit button is pointer-only; remote users can see live results but cannot submit the query."
+    },
+    {
+      "id": "fixture-player-settings-slow-open",
+      "expectedRule": "performance.menu-response",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "player",
+      "target": "player-settings",
+      "thresholdMs": 1000,
+      "seededDelayMs": 1350,
+      "summary": "Player settings intentionally waits 1.35 seconds after Select before opening."
+    },
+    {
+      "id": "fixture-startup-console-error",
+      "expectedRule": "crash.console-error",
+      "severity": "medium",
+      "confidence": "deterministic",
+      "screen": "home",
+      "target": "window.console",
+      "summary": "Startup deliberately emits one namespaced console error for log-capture testing."
+    }
+  ]
+}

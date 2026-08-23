@@ -1,0 +1,66 @@
+name: Driver proposal
+description: Propose or coordinate a platform adapter and its real-platform evidence gate.
+title: "[Driver]: "
+labels:
+  - driver
+  - enhancement
+body:
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and versions
+      placeholder: Roku OS 14 on a disposable development device
+    validations:
+      required: true
+
+  - type: textarea
+    id: access
+    attributes:
+      label: Public automation surface
+      description: Identify official SDK, protocol, emulator/simulator, hierarchy, input, screenshot, and log mechanisms.
+    validations:
+      required: true
+
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Defensible capabilities
+      description: Which TVDoctor capabilities can the platform prove, and which must remain unavailable?
+    validations:
+      required: true
+
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Redistributable fixture
+      description: Describe the smallest original app that can seed one deterministic issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: gate
+    attributes:
+      label: Real-platform gate
+      description: Cover install/deploy, launch, remote input, hierarchy/focus, screenshot, logs, graph, finding, report, replay where supported, and teardown.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and CI isolation
+      description: Explain credentials, signing, shell/subprocess handling, device selection, destructive operations, bounds, and untrusted pull requests.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I read the driver authoring guide and accept that a new adapter starts Experimental.
+          required: true
+        - label: I am not claiming support from a mock, compile, or emulator boot alone.
+          required: true
+        - label: This proposal contains no proprietary SDK material, credentials, or private application artifacts.
+          required: true

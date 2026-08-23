@@ -1,0 +1,23 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/cli"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/driver-web"
+    },
+    {
+      "path": "./packages/protocol"
+    },
+    {
+      "path": "./packages/pack-streaming"
+    },
+    {
+      "path": "./packages/reporters"
+    }
+  ]
+}

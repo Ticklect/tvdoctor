@@ -1,0 +1,11 @@
+[
+  {
+    "id": "fixture-android-select-loses-focus",
+    "expectedRule": "remote.lost-focus",
+    "severity": "high",
+    "screen": "Android TV fixture home",
+    "target": "focus-probe",
+    "action": "SELECT",
+    "summary": "Selecting the dedicated Focus Probe blocks descendant focus and clears the active control while the visible Safe Control remains focusable."
+  }
+]

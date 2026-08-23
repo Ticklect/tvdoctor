@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
+    "noEmit": true,
+    "rootDir": "../..",
+    "types": [
+      "node",
+      "@playwright/test"
+    ]
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "playwright.config.ts"
+  ],
+  "references": [
+    {
+      "path": "../protocol"
+    }
+  ]
+}

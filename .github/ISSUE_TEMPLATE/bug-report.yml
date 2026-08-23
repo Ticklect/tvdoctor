@@ -1,0 +1,95 @@
+name: Bug report
+description: Report reproducible incorrect TVDoctor behaviour without sensitive data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Remove credentials, private URLs, customer data, absolute usernames, and proprietary report content before submitting. Security vulnerabilities belong in the private process described in SECURITY.md.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - CLI
+        - Protocol or validation
+        - Core exploration or diagnostics
+        - Web driver
+        - Android driver
+        - Streaming pack
+        - Web diagnostic pack
+        - Reporter or evidence bundle
+        - Baseline comparison
+        - Northstar fixture
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: revision
+    attributes:
+      label: Version or revision
+      description: Published version when available, otherwise the commit SHA or branch.
+      placeholder: commit abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Node/npm versions, browser or Android API/device type where relevant.
+      placeholder: Windows 11 x64; Node 24.18.0; npm 11.16.0; Playwright Chromium
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use an authorised local or redistributable target. Include exact bounded steps and commands.
+      placeholder: |
+        1. npm ci
+        2. ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: State whether the run was completed, partial, inconclusive, or errored.
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Sanitised output
+      description: Paste only the smallest relevant output. Do not attach an unreviewed report bundle.
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am authorised to test the target used in this report.
+          required: true
+        - label: I removed secrets, personal data, private URLs, and proprietary artifacts.
+          required: true
+        - label: I checked the current limitations and searched existing issues.
+          required: true
+        - label: This is not a vulnerability report containing exploit details.
+          required: true

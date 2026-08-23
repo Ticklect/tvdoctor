@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/cli.tsbuildinfo",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../baseline"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../driver-web"
+    },
+    {
+      "path": "../pack-streaming"
+    },
+    {
+      "path": "../pack-web"
+    },
+    {
+      "path": "../protocol"
+    },
+    {
+      "path": "../reporters"
+    }
+  ]
+}

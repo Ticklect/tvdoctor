@@ -1,0 +1,56 @@
+name: TVDoctor CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    name: Aggregate quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Fixture browser tests
+        run: npm run test:fixture
+
+      - name: Web driver integration tests
+        run: npm run test:driver
+
+      - name: Core explorer + M8 + M10 integration tests
+        run: npm run test:core-integration
+
+      - name: Report/replay integration tests (M5)
+        run: npm run test:report-integration
+
+      - name: Streaming journey integration tests (M6)
+        run: npm run test:streaming-integration
+
+      - name: Baseline CI example
+        run: node examples/baseline-ci-example.mjs

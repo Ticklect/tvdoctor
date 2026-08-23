@@ -1,0 +1,45 @@
+{
+  "name": "tvdoctor-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Automated QA for TV apps and 10-foot user interfaces.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "npm@11.16.0",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": ">=11.0.0 <12"
+  },
+  "workspaces": [
+    "packages/*",
+    "fixtures/*"
+  ],
+  "scripts": {
+    "build": "npm run build:packages && npm run build:fixture",
+    "build:fixture": "npm run build --workspace @tvdoctor/broken-streaming-web",
+    "build:packages": "tsc -b --pretty false",
+    "clean": "tsc -b --clean",
+    "fixture:dev": "npm run dev --workspace @tvdoctor/broken-streaming-web",
+    "lint": "eslint . --max-warnings=0",
+    "test": "npm run test:unit && npm run test:fixture && npm run test:driver && npm run test:core-integration && npm run test:report-integration && npm run test:streaming-integration",
+    "test:core-integration": "npm run test:integration --workspace @tvdoctor/core",
+    "test:driver": "npm test --workspace @tvdoctor/driver-web",
+    "test:fixture": "npm test --workspace @tvdoctor/broken-streaming-web",
+    "test:report-integration": "npm run test:integration --workspace @tvdoctor/reporters",
+    "test:streaming-integration": "npm run test:integration --workspace @tvdoctor/pack-streaming",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "tvdoctor": "node packages/cli/dist/bin.js",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && npm run typecheck --workspace @tvdoctor/broken-streaming-web && npm run typecheck --workspace @tvdoctor/driver-web && npm run typecheck --workspace @tvdoctor/core && npm run typecheck --workspace @tvdoctor/pack-streaming && npm run typecheck --workspace @tvdoctor/reporters",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.1",
+    "globals": "^17.11.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

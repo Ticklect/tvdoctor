@@ -1,0 +1,19 @@
+{
+  "name": "@tvdoctor/broken-streaming-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Intentionally broken TV streaming fixture for TVDoctor integration tests.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "typescript": "6.0.3",
+    "vite": "8.2.1"
+  }
+}

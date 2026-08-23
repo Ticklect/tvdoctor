@@ -1,0 +1,45 @@
+{
+  "name": "tvdoctor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Command-line entry point for TVDoctor.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "tvdoctor": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --pretty false",
+    "test:integration": "playwright test --config playwright.config.ts",
+    "test": "vitest run --config vitest.config.ts --root ../.. packages/cli/test",
+    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit && tsc -p tsconfig.integration.json --pretty false"
+  },
+  "dependencies": {
+    "@tvdoctor/baseline": "0.0.0",
+    "@tvdoctor/core": "0.0.0",
+    "@tvdoctor/driver-web": "0.0.0",
+    "@tvdoctor/pack-streaming": "0.0.0",
+    "@tvdoctor/pack-web": "0.0.0",
+    "@tvdoctor/protocol": "0.0.0",
+    "@tvdoctor/reporters": "0.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3"
+  }
+}

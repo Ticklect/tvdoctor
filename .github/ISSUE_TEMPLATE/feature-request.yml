@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose a bounded diagnostic, workflow, report, or usability improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem and evidence boundary before proposing an API. Platform drivers have a separate form.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is blocked, on which TV workflow, and what evidence is currently missing?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Likely scope
+      options:
+        - CLI or developer experience
+        - Core exploration
+        - Diagnostic pack or rule
+        - Report or evidence
+        - Replay
+        - Baseline or CI
+        - Fixture or benchmark
+        - Documentation
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired observable outcome
+      description: Describe what TVDoctor should observe or produce, not only the implementation shape.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Bounds and safety
+      description: Address action/state/time limits, missing observability, destructive flows, credentials, and CI trust where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Fixture or real-platform evidence
+      description: What redistributable fixture and real-platform gate could prove this works without false positives?
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am not presenting a Planned or Experimental idea as currently supported.
+          required: true
+        - label: This request does not contain secrets or private target data.
+          required: true

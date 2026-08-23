@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fixture_background">#07111F</color>
+    <color name="fixture_surface">#17304D</color>
+    <color name="fixture_surface_focused">#F6C945</color>
+    <color name="fixture_text">#F7FAFF</color>
+    <color name="fixture_text_muted">#B8C8DA</color>
+    <color name="fixture_text_focused">#07111F</color>
+    <color name="fixture_accent">#62D6C7</color>
+</resources>
