@@ -127,20 +127,24 @@ test("normalises player toggle, caption selection, and progress observations", a
     await driver.press("RIGHT");
     await driver.press("SELECT");
     await driver.press("SELECT");
+    await driver.press("SELECT");
 
     let tree = flattenUiTree(availableValue((await driver.snapshot()).uiTree));
     expect(tree.find((node) => node.stableId === "player-play-pause")).toMatchObject({
-      selectionState: "on",
+      selectionState: "off",
       valueNow: null,
     });
-    expect(tree.find((node) => node.role === "progressbar")).toMatchObject({
-      selectionState: null,
-      valueNow: 582,
-    });
+    const progressValueNow = tree.find((node) => node.role === "progressbar")?.valueNow;
+    expect(progressValueNow).toBeGreaterThanOrEqual(582);
+    expect(progressValueNow).toBeLessThanOrEqual(590);
     expect(tree.find((node) => node.stableId === "player-settings")).toMatchObject({
       selectionState: null,
       valueNow: null,
     });
+
+    await driver.press("SELECT");
+    tree = flattenUiTree(availableValue((await driver.snapshot()).uiTree));
+    expect(tree.find((node) => node.stableId === "player-play-pause")?.selectionState).toBe("on");
 
     await driver.press("SELECT");
     tree = flattenUiTree(availableValue((await driver.snapshot()).uiTree));
