@@ -1,7 +1,7 @@
 {
   "name": "@tvdoctor/pack-web",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  
   "description": "Platform-neutral web-app diagnostic stages for TVDoctor.",
   "license": "MIT",
   "type": "module",
@@ -24,8 +24,8 @@
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false"
   },
   "dependencies": {
-    "@tvdoctor/core": "0.0.0",
-    "@tvdoctor/protocol": "0.0.0"
+    "@tvdoctor/core": "0.1.0",
+    "@tvdoctor/protocol": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

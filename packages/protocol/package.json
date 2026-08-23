@@ -1,7 +1,7 @@
 {
   "name": "@tvdoctor/protocol",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  
   "description": "Platform-neutral contracts for TVDoctor drivers and the deterministic core.",
   "license": "MIT",
   "type": "module",

@@ -1,7 +1,7 @@
 {
   "name": "@tvdoctor/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  
   "description": "Deterministic, platform-neutral exploration core for TVDoctor.",
   "license": "MIT",
   "type": "module",
@@ -25,11 +25,11 @@
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.integration.json --pretty false"
   },
   "dependencies": {
-    "@tvdoctor/protocol": "0.0.0"
+    "@tvdoctor/protocol": "0.1.0"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "@tvdoctor/driver-web": "0.0.0",
+    "@tvdoctor/driver-web": "0.1.0",
     "@types/node": "24.13.3",
     "typescript": "6.0.3",
     "vitest": "4.1.11"

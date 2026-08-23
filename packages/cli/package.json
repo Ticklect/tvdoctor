@@ -1,7 +1,7 @@
 {
   "name": "tvdoctor",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  
   "description": "Command-line entry point for TVDoctor.",
   "license": "MIT",
   "type": "module",
@@ -26,13 +26,13 @@
     "typecheck": "tsc -p tsconfig.json --pretty false --noEmit && tsc -p tsconfig.integration.json --pretty false"
   },
   "dependencies": {
-    "@tvdoctor/baseline": "0.0.0",
-    "@tvdoctor/core": "0.0.0",
-    "@tvdoctor/driver-web": "0.0.0",
-    "@tvdoctor/pack-streaming": "0.0.0",
-    "@tvdoctor/pack-web": "0.0.0",
-    "@tvdoctor/protocol": "0.0.0",
-    "@tvdoctor/reporters": "0.0.0"
+    "@tvdoctor/baseline": "0.1.0",
+    "@tvdoctor/core": "0.1.0",
+    "@tvdoctor/driver-web": "0.1.0",
+    "@tvdoctor/pack-streaming": "0.1.0",
+    "@tvdoctor/pack-web": "0.1.0",
+    "@tvdoctor/protocol": "0.1.0",
+    "@tvdoctor/reporters": "0.1.0"
   },
   "engines": {
     "node": ">=24.0.0 <25"

@@ -1,7 +1,7 @@
 {
   "name": "@tvdoctor/driver-android",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  
   "description": "Experimental ADB and UIAutomator Android TV driver for TVDoctor.",
   "license": "MIT",
   "type": "module",
@@ -24,7 +24,7 @@
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false"
   },
   "dependencies": {
-    "@tvdoctor/protocol": "0.0.0"
+    "@tvdoctor/protocol": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
