@@ -196,6 +196,11 @@ could skip a meaningful finite transition and cause M8 noncompletion/divergence.
 The escape is therefore now an explicit driver opt-in. Production audits enable
 it; conservative M8 exploration does not. Local M8 passed after the fix.
 
+The first attempt of the next hosted run (`32654344513`) was externally
+cancelled while M6 was still running with no test failure. Its retry reached
+M6 and was cancelled again at exactly the workflow's configured 30-minute job
+ceiling. The aggregate gate now allows 60 minutes.
+
 ## Aggregate M11 release gate
 
 The first full-gate attempt failed only the long M6 streaming showcase twice
