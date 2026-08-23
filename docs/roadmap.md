@@ -36,8 +36,6 @@ higher support level only after its complete gate is repeatable.
 
 ### Release gates still required
 
-- version public packages, inspect tarballs, install them in a clean consumer,
-  verify exported ESM/types/bin, and run README commands;
 - capture and review the 15–30 second public demo;
 - run the clean aggregate quality gate from a fresh install (hosted CI now
   covers a clean Linux runner).
@@ -65,3 +63,4 @@ higher support level only after its complete gate is repeatable.
 | Beta → Stable | Published compatibility policy, multiple real applications/platform environments, upgrade tests, maintained security support |
 
 No surface is Stable in the v0.1 preview.
+

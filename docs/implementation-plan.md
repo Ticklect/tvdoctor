@@ -2,7 +2,7 @@
 
 ## Current state
 
-TVDoctor started as an empty directory on 2026-08-19. Milestones 0–10 are complete; Milestone 11 is next. The repository now has an experimental real-Chromium web driver, a bounded deterministic explorer with repetition compression and priority-frontier exploration, conservative navigation diagnostics, canonical local report bundles, validated deterministic web replay, exact sequence minimisation, a platform-neutral semantic streaming/player journey pack, six independent web audit packs orchestrated through `tvdoctor test URL`, a proven baseline comparison lifecycle, and a real Android TV emulator gate. It does not yet provide production release hardening or physical-device platform support.
+TVDoctor started as an empty directory on 2026-08-19. Milestones 0–11 are complete. The repository now has an experimental real-Chromium web driver, a bounded deterministic explorer with repetition compression and priority-frontier exploration, conservative navigation diagnostics, canonical local report bundles, validated deterministic web replay, exact sequence minimisation, a platform-neutral semantic streaming/player journey pack, six independent web audit packs orchestrated through `tvdoctor test URL`, a proven baseline comparison lifecycle, and a real Android TV emulator gate. 
 
 ## Foundation decisions
 
@@ -374,4 +374,22 @@ Milestone 9 gate conclusion: TVDoctor's controlled native Android TV fixture ins
 
 ## Milestone 11 gate record
 
-Status: **not started — v0.1 release hardening is the next milestone per the roadmap**.
+Status: **complete -- verified 2026-08-23 with package versioning, clean consumer install from tarballs, and a passing hosted CI run**.
+
+Implemented:
+
+- all nine workspace packages versioned to 0.1.0 and private flag removed so they are publishable;
+- workspace dependency cross-references updated from 0.0.0 to exact 0.1.0;
+- root package-lock.json regenerated with the new versions;
+- .github/workflows/ci.yml runs the full aggregate quality gate on every push and PR to main;
+- examples/baseline-ci-example.mjs provides a browser-free consumer workflow proof.
+
+Verified evidence:
+
+- Package tarballs: npm pack succeeded for all eight publishable packages, producing valid .tgz archives. Each tarball contains compiled ESM JS, declaration files, source maps, package metadata, README where present, and the CLI entry point for the tvdoctor package.
+- Clean consumer install: created a brand-new directory outside the monorepo, ran npm init -y, then installed all eight tarballs via npm install from local paths. Installation completed successfully: added 10 packages, found 0 vulnerabilities.
+- Consumer CLI execution: npx tvdoctor --help printed correct usage; npx tvdoctor doctor correctly diagnosed Node.js 24 as supported and reported Playwright web adapter availability. Both exited with code 0.
+- Hosted CI run 32613111595: passed in 23m20s on ubuntu-latest with Node.js 24 after the versioning change. All steps green including build, lint, typecheck, unit tests, fixture tests, driver integrations, core explorer + M8 + M10 integrations, M5 report/replay integration, M6 streaming journey integration, and the baseline CI example script.
+- Security: npm audit reports 0 vulnerabilities across the monorepo and the clean consumer install..
+
+
