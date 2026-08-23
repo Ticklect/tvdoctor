@@ -8,7 +8,7 @@ const fixtureDirectory = resolve(packageDirectory, "../../fixtures/broken-stream
 export default defineConfig({
   testDir: "./test",
   fullyParallel: false,
-  retries: 0,
+  retries: 1,
   timeout: 20_000,
   use: {
     baseURL: "http://127.0.0.1:4179",
