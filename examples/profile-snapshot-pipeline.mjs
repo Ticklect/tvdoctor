@@ -33,7 +33,9 @@ const average = (values) => values.length === 0
   ? null
   : Number((values.reduce((total, value) => total + value, 0) / values.length).toFixed(3));
 
-const driver = new PlaywrightWebDriver();
+const driver = new PlaywrightWebDriver({
+  settle: { ambientChurnEscape: true },
+});
 let observation;
 let snapshot;
 try {

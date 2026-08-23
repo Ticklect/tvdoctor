@@ -13,6 +13,7 @@ export interface SettleConfiguration {
   readonly noResponseGraceMs: number;
   readonly quietWindowMs: number;
   readonly timeoutMs: number;
+  readonly ambientChurnEscape: boolean;
 }
 
 export interface SettleResult {
@@ -280,7 +281,7 @@ export async function waitForPageSettle(
         return document.readyState !== "loading"
           && !busy
           && ((quiet && !finiteAnimationRunning && (responded || noResponseIsStable))
-            || (ambientChurn && ambientChurnBoundReached));
+            || (ambientChurn && settleConfiguration.ambientChurnEscape && ambientChurnBoundReached));
       },
       {
         actionBaseline: baseline,

@@ -14,6 +14,11 @@ export interface WebSettleOptions {
   readonly quietWindowMs?: number;
   /** Grace period for inputs that legitimately make no observable change. */
   readonly noResponseGraceMs?: number;
+  /**
+   * Opt in to ending the wait early on pre-existing high-frequency DOM churn.
+   * Canonical fingerprints and replay remain the caller's correctness gates.
+   */
+  readonly ambientChurnEscape?: boolean;
 }
 
 export interface PlaywrightWebDriverOptions {

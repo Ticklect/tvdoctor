@@ -17,6 +17,7 @@ const driver = new PlaywrightWebDriver({
     noResponseGraceMs: 500,
     quietWindowMs: 120,
     timeoutMs: 2_000,
+    ambientChurnEscape: true,
   },
 });
 

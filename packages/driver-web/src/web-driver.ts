@@ -48,6 +48,7 @@ const DEFAULT_SETTLE_CONFIGURATION: SettleConfiguration = {
   noResponseGraceMs: 250,
   quietWindowMs: 120,
   timeoutMs: 4_000,
+  ambientChurnEscape: false,
 };
 
 export const WEB_REMOTE_KEYBOARD_MAP: Readonly<Record<RemoteKey, string>> = {
@@ -127,6 +128,8 @@ function normaliseOptions(options: PlaywrightWebDriverOptions): NormalisedOption
         DEFAULT_SETTLE_CONFIGURATION.quietWindowMs,
       ),
       timeoutMs: positiveDuration(options.settle?.timeoutMs, DEFAULT_SETTLE_CONFIGURATION.timeoutMs),
+      ambientChurnEscape: options.settle?.ambientChurnEscape
+        ?? DEFAULT_SETTLE_CONFIGURATION.ambientChurnEscape,
     },
   };
 }

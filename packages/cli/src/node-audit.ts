@@ -791,6 +791,8 @@ async function runAudit(
 export function createNodeAuditOperation(
   dependencies: NodeAuditDependencies = {},
 ): (request: TestCommandRequest) => Promise<TestCommandResult> {
-  const createDriver = dependencies.createDriver ?? (() => new PlaywrightWebDriver());
+  const createDriver = dependencies.createDriver ?? (() => new PlaywrightWebDriver({
+    settle: { ambientChurnEscape: true },
+  }));
   return async (request) => runAudit(request, createDriver);
 }

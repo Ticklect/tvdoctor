@@ -352,7 +352,9 @@ test("captures console errors, page errors, sanitised network outcomes, timing, 
 });
 
 test("bounds ambient mutation churn without waiting for the full settle timeout", async ({ baseURL }) => {
-  const driver = new PlaywrightWebDriver();
+  const driver = new PlaywrightWebDriver({
+    settle: { ambientChurnEscape: true },
+  });
   await driver.launch({ id: "dynamic-rail", launchUri: `${requireBaseURL(baseURL)}/dynamic-rail.html` });
 
   try {
@@ -394,7 +396,9 @@ test("bounds clocks, rotating banners, autoplay UI, raw mutations, and lazy load
     `${requireBaseURL(baseURL)}/ambient-churn.html`,
     `${requireBaseURL(baseURL)}/ambient-churn.html?lazy=true`,
   ]) {
-    const driver = new PlaywrightWebDriver();
+    const driver = new PlaywrightWebDriver({
+      settle: { ambientChurnEscape: true },
+    });
     await driver.launch({ id: "ambient-churn", launchUri });
     try {
       const startedAtMs = Date.now();

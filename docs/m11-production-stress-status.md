@@ -83,9 +83,11 @@ navigation.
 | Driver snapshot average | 4.094 ms | 3.282 ms |
 | Semantic-analysis average | 0.240 ms | 0.180 ms |
 
-The escape fires only when at least four mutations already occurred within
-250 ms before input. Canonical fingerprint stability and reset/replay still gate
-exploration correctness.
+The escape is an explicit driver opt-in (`ambientChurnEscape: true`) and fires
+only when at least four mutations already occurred within 250 ms before input.
+Production audits enable it; conservative M8 benchmark exploration does not.
+Canonical fingerprint stability and reset/replay still gate exploration
+correctness.
 
 ## Direct zero-action probes
 
@@ -179,6 +181,20 @@ TVDoctor evidence-capture fault itself is fixed and verified.
 - existing full suite and aggregate release gate must pass before closure.
 
 ## Still required before closure
+
+## Hosted closure proof attempts
+
+The first hosted candidate (`c56fddc737e3fb0c1648edd9df9414f92219a31e`, run
+`32651986082`) failed the web-driver gate because a live player timer advanced
+the fixture progress from 582 to 583 before an exact assertion. Both configured
+attempts failed identically. The assertion was made deterministic by pausing
+playback first and bounding the accepted timer value.
+
+The second hosted candidate (`0f861ab7f7f4f1fa2f05d24fc6d1e31734c0d38d`, run
+`32652469483`) exposed a real ambient-churn defect: its default early return
+could skip a meaningful finite transition and cause M8 noncompletion/divergence.
+The escape is therefore now an explicit driver opt-in. Production audits enable
+it; conservative M8 exploration does not. Local M8 passed after the fix.
 
 ## Aggregate M11 release gate
 

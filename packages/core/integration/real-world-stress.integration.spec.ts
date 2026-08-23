@@ -270,7 +270,9 @@ test("degrades gracefully at a deterministic local cross-origin iframe boundary"
 });
 
 test("stays bounded and observes navigation through a continuously replaced rail", async ({ baseURL }) => {
-  const driver = new PlaywrightWebDriver();
+  const driver = new PlaywrightWebDriver({
+    settle: { ambientChurnEscape: true },
+  });
   await driver.launch({ id: "dynamic-rail", launchUri: `${requireBaseURL(baseURL)}/dynamic-rail.html` });
   try {
     const result = await explore(driver, {
@@ -302,7 +304,9 @@ test("stays bounded and observes navigation through a continuously replaced rail
 });
 
 test("settles meaningful navigation on raw ambient DOM mutation without full timeouts", async ({ baseURL }) => {
-  const driver = new PlaywrightWebDriver();
+  const driver = new PlaywrightWebDriver({
+    settle: { ambientChurnEscape: true },
+  });
   await driver.launch({
     id: "ambient-noise",
     launchUri: `${requireBaseURL(baseURL)}/ambient-churn.html`,
@@ -335,7 +339,9 @@ test("settles meaningful navigation on raw ambient DOM mutation without full tim
 });
 
 test("fails closed when lazy-loaded structural churn prevents a stable baseline", async ({ baseURL }) => {
-  const driver = new PlaywrightWebDriver();
+  const driver = new PlaywrightWebDriver({
+    settle: { ambientChurnEscape: true },
+  });
   await driver.launch({
     id: "ambient-lazy",
     launchUri: `${requireBaseURL(baseURL)}/ambient-churn.html?lazy=true`,
