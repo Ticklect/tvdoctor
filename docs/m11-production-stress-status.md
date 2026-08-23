@@ -201,6 +201,13 @@ cancelled while M6 was still running with no test failure. Its retry reached
 M6 and was cancelled again at exactly the workflow's configured 30-minute job
 ceiling. The aggregate gate now allows 60 minutes.
 
+The next candidate (`31f96fbdfa89657050c79e00b6ebd08a979600b6`, run
+`32657831262`) reached M6 on its first attempt, used the configured Playwright
+retry, and both attempts exhausted the streaming pack's inherited 180-second
+duration budget on the slower hosted runner. The M6 integration now retains the
+same discovery envelope but explicitly allows 300 seconds for two real-browser
+journeys; local M6 passes in about seven minutes.
+
 ## Aggregate M11 release gate
 
 The first full-gate attempt failed only the long M6 streaming showcase twice

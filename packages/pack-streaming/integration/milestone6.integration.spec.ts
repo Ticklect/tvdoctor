@@ -282,6 +282,12 @@ async function runRealPack(
   await driver.launch({ id: `m6-pack-${String(observations.length)}`, launchUri: fixtureUrl });
   try {
     const result = await runStreamingPack(driver, {
+      budgets: {
+        // Hosted Linux runners are materially slower than local development
+        // machines; retain the same discovery envelope while allowing enough
+        // wall-clock time for two complete real-browser journeys.
+        maxDurationMs: 300_000,
+      },
       pointerProbe: createFreshPointerProbe(fixtureUrl, observations),
     });
     if (result.status !== "complete" || !result.termination.complete) {
