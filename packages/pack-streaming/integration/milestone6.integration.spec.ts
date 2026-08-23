@@ -126,8 +126,8 @@ function createDriver(artifactsDirectory?: string): PlaywrightWebDriver {
     ...(artifactsDirectory === undefined ? {} : { artifactsDirectory }),
     settle: {
       noResponseGraceMs: 15,
-      quietWindowMs: 20,
-      timeoutMs: 2_500,
+      quietWindowMs: 100,
+      timeoutMs: 5_000,
     },
   });
 }
