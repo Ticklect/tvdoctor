@@ -333,8 +333,12 @@ test("supports a remote search flow while leaving submit pointer-only", async ({
 
 test("reaches caption appearance and proves Text Colour has no D-pad path", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
+  await expectFocus(page, "hero-watch");
   await page.keyboard.press("Enter");
+  await expect(page.locator('main[data-screen="details"]')).toBeVisible();
+  await expectFocus(page, "details-play");
   await page.keyboard.press("Enter");
+  await expect(page.locator('main[data-screen="player"]')).toBeVisible();
   await expectFocus(page, "player-play-pause");
 
   await page.keyboard.press("ArrowRight");
