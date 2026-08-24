@@ -236,8 +236,12 @@ test("uses different D-pad edges for the test-only semantic alternate route", as
 
 test("keeps playback paused while proving the seeded inverted Rewind delta", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
+  await expectFocus(page, "hero-watch");
   await page.keyboard.press("Enter");
+  await expect(page.locator('main[data-screen="details"]')).toBeVisible();
+  await expectFocus(page, "details-play");
   await page.keyboard.press("Enter");
+  await expect(page.locator('main[data-screen="player"]')).toBeVisible();
   await expectFocus(page, "player-play-pause");
 
   await page.keyboard.press("Enter");
