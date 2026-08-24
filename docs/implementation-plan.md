@@ -374,7 +374,12 @@ Milestone 9 gate conclusion: TVDoctor's controlled native Android TV fixture ins
 
 ## Milestone 11 gate record
 
-Status: **complete -- verified 2026-08-23 with package versioning, clean consumer install from tarballs, and a passing hosted CI run**.
+Status: **exact-candidate evidence controlled by the annotated
+`m11-m6-reliability-proof` tag**. The 2026-08-23 package/consumer evidence below
+remains valid, but its hosted run and the older `m11-production-stress-proof`
+tag do not prove M6 first-attempt reliability. The controlling M6 root-cause,
+regression, and retry-disabled campaign record is
+[`docs/m11-production-stress-status.md`](./m11-production-stress-status.md).
 
 Implemented:
 

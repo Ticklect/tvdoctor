@@ -1,9 +1,11 @@
 # M11 production stress status
 
-Status: **CLOSED WITH EVIDENCE**. This is the controlling record for the
-reopened real-world stress phase. Closure means each meaningful finding has a
-root cause, fix or explicit limitation, regression coverage, a production
-retest, and a passing aggregate gate.
+Status: **M6 RELIABILITY REVALIDATED LOCALLY; EXACT-CANDIDATE HOSTED PROOF
+CONTROLS FINAL CLOSURE**. This is the controlling record for the reopened
+real-world stress phase and the M6 first-attempt reliability closure. The
+annotated `m11-m6-reliability-proof` tag must point at the exact release
+candidate and record its successful hosted run. The older
+`m11-production-stress-proof` tag is historical and is not final M6 proof.
 
 ## Required lifecycle
 
@@ -180,7 +182,123 @@ TVDoctor evidence-capture fault itself is fixed and verified.
 - cross-origin boundary degradation without an exception;
 - existing full suite and aggregate release gate must pass before closure.
 
-## Still required before closure
+## M6 first-attempt reliability closure
+
+### Root cause
+
+The remaining M6 retry was a **test/evidence-association invariant defect**, not
+a streaming-pack product race and not unexplained environment variance.
+
+Three completed retry-disabled reproductions all failed at the same assertion.
+Discovery generated progress evidence `582 -> 592`, while a separate fresh
+Chromium evidence capture generated `583 -> 593`. Both observations proved the
+same seeded defect: selecting `player-rewind` with `SELECT` advanced playback by
+exactly ten seconds. The independently launched player can advance one second
+before the test establishes its paused precondition, so its absolute clock base
+is intentionally volatile. The fixture contract and pack classification require
+the action, target, expected direction, observed direction, and delta; neither
+requires independent launches to share an absolute player-clock base.
+
+The player-control issue remains unavailable to portable Replay V1 because that
+format cannot assert numeric media state. The second observation here is the
+fresh evidence-capture launch used to build the report bundle, not a claim that
+Replay V1 gained a new capability.
+
+### Fix and evidence ownership
+
+The M6 acceptance layer now normalises both observations as structured progress
+evidence containing:
+
+- operation (`seek-backward`);
+- dispatched action (`SELECT`);
+- semantic target (`player-rewind`);
+- expected direction (`decrease`);
+- observed direction (`increase`);
+- before, after, and exact delta (`+10`).
+
+Semantic comparison excludes only the independent absolute clock bases. It
+still requires identical operation, action, target, expected direction,
+observed direction, and magnitude. It rejects non-finite values, unknown seek
+operations, missing or duplicate progress nodes/evidence, a changed progress
+node identity, malformed transition evidence, and any non-applied action.
+
+Discovery-time progress prose now links to `navigation-path.json`, whose pack
+proof contains the discovery stage and values. Fresh-capture progress links to
+`ui-excerpt.json`, which contains the raw snapshots plus the normalised semantic
+payload. Report evidence therefore no longer attributes discovery clock values
+to an independent capture with a different base. The configured Playwright
+retry remains unchanged as infrastructure protection.
+
+### Deterministic regression coverage
+
+`progress-evidence.spec.ts` proves that discovery `583 -> 593` and fresh capture
+`582 -> 592` are equivalent inverted-rewind evidence. Negative cases reject:
+
+- `+10` versus `-10` (different observed direction);
+- `+10` versus `+3` (different contractual magnitude);
+- `SELECT` versus another action;
+- `player-rewind` versus another target;
+- non-finite values, blank action/target, inconsistent expected direction, and
+  an unknown seek operation.
+
+The full M6 integration additionally validates the exact transition artifact,
+correlated progress-node identity, structured payload, human-readable summary,
+artifact ownership, hashes, report schema, and report/replay cross-links.
+
+### Retry-disabled reliability campaign
+
+Command shape for every run:
+
+```sh
+npm run test:integration --workspace @tvdoctor/pack-streaming -- --retries=0 --output=artifacts/m6-semantic-final/run-NN/test-results
+```
+
+Twenty consecutive normal runs passed. Each run rebuilt the packages/fixture,
+started fresh browser processes through the full M6 test, used no retry, and had
+its log plus complete report/evidence tree preserved under the ignored local
+`artifacts/m6-semantic-final` campaign directory.
+
+| Run | Log span (s) | Result |
+| ---: | ---: | --- |
+| 01 | 397.198 | pass |
+| 02 | 398.457 | pass |
+| 03 | 399.286 | pass |
+| 04 | 398.954 | pass |
+| 05 | 399.207 | pass |
+| 06 | 400.308 | pass |
+| 07 | 398.949 | pass |
+| 08 | 398.892 | pass |
+| 09 | 398.107 | pass |
+| 10 | 399.086 | pass |
+| 11 | 398.780 | pass |
+| 12 | 397.662 | pass |
+| 13 | 397.568 | pass |
+| 14 | 398.454 | pass |
+| 15 | 397.758 | pass |
+| 16 | 397.554 | pass |
+| 17 | 397.474 | pass |
+| 18 | 397.889 | pass |
+| 19 | 397.981 | pass |
+| 20 | 398.067 | pass |
+
+Normal-run summary:
+
+- runs: 20;
+- first-attempt passes: 20;
+- failures: 0;
+- pass rate: 100%;
+- retries: 0;
+- flaky markers: 0;
+- duration range: 397.198-400.308 seconds;
+- mean duration: 398.382 seconds;
+- anomalies: none.
+
+One additional full run under controlled two-worker CPU contention passed in a
+401.712-second log span, again with retries disabled and no anomaly. Combined
+local M6 evidence is therefore 21/21 first-attempt passes. The normal campaign
+happened to observe `582 -> 592` in both launches; real shifted-base behaviour
+is independently established by the three preserved pre-fix traces and the
+deterministic `583 -> 593` versus `582 -> 592` regression.
 
 ## Hosted closure proof attempts
 
@@ -208,7 +326,7 @@ duration budget on the slower hosted runner. The M6 integration now retains the
 same discovery envelope but explicitly allows 300 seconds for two real-browser
 journeys; local M6 passes in about seven minutes.
 
-## Aggregate M11 release gate
+## Historical aggregate M11 release gate
 
 The first full-gate attempt failed only the long M6 streaming showcase twice
 during sustained local load (`A semantic SELECT checkpoint drifted`). The same
@@ -225,5 +343,8 @@ of the complete aggregate gate then passed end to end:
 - streaming integration: one semantic journey/report/replay showcase;
 - package and fixture builds: passed.
 
-This closes the reopened production stress phase. It does not promote any
-surface beyond its current support level.
+This closed the earlier production-stress phase at that commit, but it does not
+serve as final proof for the later M6 first-attempt reliability closure. The
+final clean aggregate gate and hosted run must use the exact candidate recorded
+by `m11-m6-reliability-proof`. No result promotes any surface beyond its current
+support level.

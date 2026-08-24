@@ -39,6 +39,7 @@ import {
 } from "@tvdoctor/reporters";
 import {
   STREAMING_STAGE_NAMES,
+  playbackProgressObservation,
   runStreamingPack,
   type StreamingElementDescriptor,
   type StreamingPackResult,
@@ -48,6 +49,12 @@ import {
   type StreamingPointerProbeResult,
   type StreamingStageName,
 } from "../src/index.js";
+import {
+  equivalentProgressSemantics,
+  normaliseProgressEvidence,
+  type NormalisedProgressEvidence,
+  type ProgressEvidenceInput,
+} from "./progress-evidence.js";
 
 interface SeededDefect {
   readonly id: string;
@@ -854,6 +861,53 @@ function actionJson(result: ActionResult): JsonObject {
   };
 }
 
+function progressEvidenceJson(evidence: NormalisedProgressEvidence): JsonObject {
+  return {
+    operation: evidence.operation,
+    action: evidence.action,
+    target: evidence.target,
+    expectedDirection: evidence.expectedDirection,
+    before: evidence.before,
+    after: evidence.after,
+    delta: evidence.delta,
+    observedDirection: evidence.observedDirection,
+  };
+}
+
+function signedNumber(value: number): string {
+  return value > 0 ? `+${String(value)}` : String(value);
+}
+
+function capturedProgressEvidence(
+  issue: TVDoctorIssue,
+  beforeSnapshot: StateSnapshot,
+  afterSnapshot: StateSnapshot,
+  action: RemoteKey,
+): NormalisedProgressEvidence | null {
+  if (issue.rule !== "streaming.player-control") return null;
+  const target = issue.transition?.expectedElement ?? null;
+  if (target === null) throw new Error(`Issue ${issue.id} lacked a progress target.`);
+  const before = playbackProgressObservation(beforeSnapshot);
+  const after = before === null
+    ? null
+    : playbackProgressObservation(afterSnapshot, before.provenance);
+  if (before === null || after === null) {
+    throw new Error(`Issue ${issue.id} lacked one correlated progress observation during fresh evidence capture.`);
+  }
+  return normaliseProgressEvidence({
+    operation: "seek-backward",
+    action,
+    target,
+    expectedDirection: "decrease",
+    before: before.value,
+    after: after.value,
+  });
+}
+
+function capturedProgressSummary(evidence: NormalisedProgressEvidence): string {
+  return `Fresh evidence capture observed progress valueNow change from ${String(evidence.before)} to ${String(evidence.after)} (delta ${signedNumber(evidence.delta)}) after ${evidence.action} on ${evidence.target}.`;
+}
+
 function descriptorJson(descriptor: StreamingElementDescriptor): JsonObject {
   return {
     stableId: descriptor.stableId,
@@ -983,6 +1037,7 @@ function compileAvailableIssue(issue: TVDoctorIssue): CompiledReplayPlan | null 
 function evidenceSlotForSummary(summary: string): IssueEvidenceSlot {
   if (/screenshot records the state before/iu.test(summary)) return "before-screenshot";
   if (/screenshot records the state after/iu.test(summary)) return "after-screenshot";
+  if (/^Progress valueNow was .+ (?:before|after) SELECT\.$/u.test(summary)) return "navigation-path";
   if (/exact reset-relative|\bexpanded\b|\bexpansion\b/iu.test(summary)) return "navigation-path";
   if (/pointer|--(?:UP|RIGHT|DOWN|LEFT|SELECT|BACK)-->/iu.test(summary)) return "transition";
   return "ui-excerpt";
@@ -1011,6 +1066,7 @@ async function captureIssue(
     const action = await driver.press(assertionKey);
     expect(action).toMatchObject({ key: assertionKey, outcome: "applied" });
     const afterSnapshot = await driver.snapshot();
+    const progressEvidence = capturedProgressEvidence(issue, beforeSnapshot, afterSnapshot, assertionKey);
     const afterScreenshot = await driver.getPage().screenshot({ animations: "disabled", type: "png" });
     const logs = await driver.getLogs();
     const written = await writeIssueEvidence(store, {
@@ -1029,7 +1085,11 @@ async function captureIssue(
           capture: {
             status: "available",
             format: "json",
-            value: { before: snapshotJson(beforeSnapshot), after: snapshotJson(afterSnapshot) },
+            value: {
+              before: snapshotJson(beforeSnapshot),
+              after: snapshotJson(afterSnapshot),
+              semanticProgress: progressEvidence === null ? null : progressEvidenceJson(progressEvidence),
+            },
           },
         },
         {
@@ -1152,6 +1212,12 @@ async function captureIssue(
           source: "PlaywrightWebDriver.snapshot",
           artifact: uiPath,
         },
+        ...(progressEvidence === null ? [] : [{
+          kind: "deterministic-failure" as const,
+          summary: capturedProgressSummary(progressEvidence),
+          source: "M6 acceptance gate",
+          artifact: uiPath,
+        }]),
       ],
       reproduction: issue.reproduction.status === "available"
         ? { ...issue.reproduction, artifact: written.pathsBySlot["replay"] ?? null }
@@ -1322,6 +1388,65 @@ async function assertStructuredStageEvidence(
   }
 }
 
+const PROGRESS_NUMBER_PATTERN = String.raw`[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?`;
+
+function discoveryProgressEntry(
+  issue: TVDoctorIssue,
+  phase: "before" | "after",
+): { readonly entry: TVDoctorIssue["evidence"][number]; readonly value: number } {
+  const expectedKind = phase === "before" ? "verified-fact" : "deterministic-failure";
+  const pattern = new RegExp(`^Progress valueNow was (${PROGRESS_NUMBER_PATTERN}) ${phase} SELECT\\.$`, "u");
+  const matches = issue.evidence.flatMap((entry) => {
+    const match = pattern.exec(entry.summary);
+    if (match === null || entry.kind !== expectedKind || entry.source !== "streaming-pack") return [];
+    const value = Number(match[1]);
+    if (!Number.isFinite(value)) throw new Error(`Issue ${issue.id} had non-finite ${phase} discovery progress.`);
+    return [{ entry, value }];
+  });
+  expect(matches, `${issue.id} ${phase} discovery progress evidence`).toHaveLength(1);
+  const match = matches[0];
+  if (match === undefined) throw new Error(`Issue ${issue.id} lacked ${phase} discovery progress evidence.`);
+  return match;
+}
+
+function structuredProgressNode(
+  snapshot: Readonly<Record<string, unknown>>,
+  issueId: string,
+  phase: "before" | "after",
+): Readonly<Record<string, unknown>> {
+  const interactive = snapshot["interactive"];
+  if (!Array.isArray(interactive)) throw new Error(`Issue ${issueId} lacked ${phase} interactive nodes.`);
+  const progressNodes = interactive.filter((entry) => (
+    isUnknownRecord(entry) && entry["role"] === "progressbar"
+  ));
+  expect(progressNodes, `${issueId} ${phase} progress nodes`).toHaveLength(1);
+  const progress = progressNodes[0];
+  if (!isUnknownRecord(progress)) throw new Error(`Issue ${issueId} lacked a ${phase} progress node.`);
+  if (typeof progress["valueNow"] !== "number" || !Number.isFinite(progress["valueNow"])) {
+    throw new Error(`Issue ${issueId} lacked a finite ${phase} progress value.`);
+  }
+  expect(progress, `${issueId} ${phase} progress semantics`).toMatchObject({
+    role: "progressbar",
+    visible: true,
+    enabled: true,
+    focusable: false,
+  });
+  return progress;
+}
+
+function progressNodeIdentity(node: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  return {
+    stableId: node["stableId"],
+    role: node["role"],
+    name: node["name"],
+    bounds: node["bounds"],
+    visible: node["visible"],
+    enabled: node["enabled"],
+    focusable: node["focusable"],
+    selectionState: node["selectionState"],
+  };
+}
+
 async function assertStructuredProgressEvidence(
   root: string,
   issues: readonly TVDoctorIssue[],
@@ -1330,36 +1455,135 @@ async function assertStructuredProgressEvidence(
   const issue = issues.find((candidate) => candidate.rule === "streaming.player-control");
   if (issue === undefined) throw new Error("The player-control issue was not reported.");
   const uiExcerpt = artifacts.find((artifact) => artifact.id === `${issue.id}:ui-excerpt`);
+  const navigation = artifacts.find((artifact) => artifact.id === `${issue.id}:navigation-path`);
+  const transition = artifacts.find((artifact) => artifact.id === `${issue.id}:transition`);
   if (uiExcerpt?.status !== "available") {
     throw new Error(`Issue ${issue.id} lacked available UI-tree evidence.`);
   }
-  const parsed: unknown = JSON.parse(await readFile(
+  if (navigation?.status !== "available") {
+    throw new Error(`Issue ${issue.id} lacked available discovery-path evidence.`);
+  }
+  if (transition?.status !== "available") {
+    throw new Error(`Issue ${issue.id} lacked available transition evidence.`);
+  }
+
+  const progressEntries = issue.evidence.filter((entry) => entry.summary.startsWith("Progress valueNow was "));
+  expect(progressEntries, `${issue.id} discovery progress entry count`).toHaveLength(2);
+  const discoveryBefore = discoveryProgressEntry(issue, "before");
+  const discoveryAfter = discoveryProgressEntry(issue, "after");
+  expect(discoveryBefore.entry.artifact, issue.id).toBe(navigation.path);
+  expect(discoveryAfter.entry.artifact, issue.id).toBe(navigation.path);
+
+  if (issue.transition === null) throw new Error(`Issue ${issue.id} lacked a transition assertion.`);
+  const target = issueTargetFromTransition(issue);
+  if (target === null) throw new Error(`Issue ${issue.id} lacked a semantic target.`);
+  expect(issue.transition, issue.id).toEqual({
+    fromElement: "player-rewind",
+    action: "SELECT",
+    expectedElement: "player-rewind",
+    observedElement: "player-rewind",
+  });
+  expect(target, issue.id).toBe("player-rewind");
+  expect(issue.expected, issue.id).toBe(`Playback position lower than ${String(discoveryBefore.value)}.`);
+  expect(issue.observed, issue.id).toBe(
+    `Playback position changed from ${String(discoveryBefore.value)} to ${String(discoveryAfter.value)}.`,
+  );
+
+  const navigationJson: unknown = JSON.parse(await readFile(
+    resolve(root, ...navigation.path.split("/")),
+    "utf8",
+  ));
+  if (
+    !isUnknownRecord(navigationJson)
+    || !isUnknownRecord(navigationJson["packProof"])
+    || !isUnknownRecord(navigationJson["packProof"]["stage"])
+  ) {
+    throw new Error(`Issue ${issue.id} lacked structured discovery progress proof.`);
+  }
+  const discoveryStage = navigationJson["packProof"]["stage"];
+  expect(discoveryStage, issue.id).toMatchObject({
+    name: "seek-backward",
+    status: "failed",
+    detail: `Rewind changed the same playback-position valueNow from ${String(discoveryBefore.value)} to ${String(discoveryAfter.value)}.`,
+  });
+
+  const transitionJson: unknown = JSON.parse(await readFile(
+    resolve(root, ...transition.path.split("/")),
+    "utf8",
+  ));
+  if (
+    !isUnknownRecord(transitionJson)
+    || !isUnknownRecord(transitionJson["assertion"])
+    || !isUnknownRecord(transitionJson["dispatched"])
+  ) {
+    throw new Error(`Issue ${issue.id} lacked structured transition proof.`);
+  }
+  expect(transitionJson["assertion"], issue.id).toEqual(issue.transition);
+  expect(transitionJson["dispatched"], issue.id).toMatchObject({ key: "SELECT", outcome: "applied" });
+  expect(transitionJson["beforeFocus"], issue.id).toBe(target);
+  expect(transitionJson["afterFocus"], issue.id).toBe(target);
+  const captureAction = transitionJson["dispatched"]["key"];
+  const captureTarget = transitionJson["assertion"]["expectedElement"];
+  if (typeof captureAction !== "string" || typeof captureTarget !== "string") {
+    throw new Error(`Issue ${issue.id} had malformed action or target transition evidence.`);
+  }
+
+  const uiJson: unknown = JSON.parse(await readFile(
     resolve(root, ...uiExcerpt.path.split("/")),
     "utf8",
   ));
-  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed["before"]) || !isUnknownRecord(parsed["after"])) {
+  if (!isUnknownRecord(uiJson) || !isUnknownRecord(uiJson["before"]) || !isUnknownRecord(uiJson["after"])) {
     throw new Error(`Issue ${issue.id} lacked structured before/after UI evidence.`);
   }
-  const valueFor = (snapshot: Readonly<Record<string, unknown>>, phase: "before" | "after"): number => {
-    const interactive = snapshot["interactive"];
-    if (!Array.isArray(interactive)) throw new Error(`Issue ${issue.id} lacked ${phase} interactive nodes.`);
-    const values = interactive.flatMap((entry) => (
-      isUnknownRecord(entry) && entry["role"] === "progressbar" && typeof entry["valueNow"] === "number"
-        ? [entry["valueNow"]]
-        : []
-    ));
-    expect(values, `${issue.id} ${phase} progress values`).toHaveLength(1);
-    const value = values[0];
-    if (value === undefined) throw new Error(`Issue ${issue.id} lacked a ${phase} progress value.`);
-    return value;
+  const beforeNode = structuredProgressNode(uiJson["before"], issue.id, "before");
+  const afterNode = structuredProgressNode(uiJson["after"], issue.id, "after");
+  expect(progressNodeIdentity(afterNode), `${issue.id} correlated progress node`).toEqual(
+    progressNodeIdentity(beforeNode),
+  );
+  const captureBefore = beforeNode["valueNow"];
+  const captureAfter = afterNode["valueNow"];
+  if (typeof captureBefore !== "number" || typeof captureAfter !== "number") {
+    throw new Error(`Issue ${issue.id} lacked numeric fresh-capture progress evidence.`);
+  }
+
+  const discovery: ProgressEvidenceInput = {
+    operation: "seek-backward",
+    action: issue.transition.action,
+    target,
+    expectedDirection: "decrease",
+    before: discoveryBefore.value,
+    after: discoveryAfter.value,
   };
-  const before = valueFor(parsed["before"], "before");
-  const after = valueFor(parsed["after"], "after");
-  expect(after, issue.id).toBeGreaterThan(before);
-  expect(issue.evidence.some((entry) => entry.summary.includes(`valueNow was ${String(before)} before SELECT`)), issue.id)
-    .toBe(true);
-  expect(issue.evidence.some((entry) => entry.summary.includes(`valueNow was ${String(after)} after SELECT`)), issue.id)
-    .toBe(true);
+  const freshCapture: ProgressEvidenceInput = {
+    operation: "seek-backward",
+    action: captureAction,
+    target: captureTarget,
+    expectedDirection: "decrease",
+    before: captureBefore,
+    after: captureAfter,
+  };
+  const normalisedDiscovery = normaliseProgressEvidence(discovery);
+  const normalisedCapture = normaliseProgressEvidence(freshCapture);
+  const strictFixtureInvariant = {
+    operation: "seek-backward",
+    action: "SELECT",
+    target: "player-rewind",
+    expectedDirection: "decrease",
+    observedDirection: "increase",
+    delta: 10,
+  } as const;
+  expect(normalisedDiscovery, `${issue.id} discovery semantic progress`).toMatchObject(strictFixtureInvariant);
+  expect(normalisedCapture, `${issue.id} fresh-capture semantic progress`).toMatchObject(strictFixtureInvariant);
+  expect(equivalentProgressSemantics(discovery, freshCapture), issue.id).toBe(true);
+  expect(uiJson["semanticProgress"], `${issue.id} serialised semantic progress`).toEqual(
+    progressEvidenceJson(normalisedCapture),
+  );
+  expect(issue.evidence, `${issue.id} fresh-capture summary`).toContainEqual({
+    kind: "deterministic-failure",
+    summary: capturedProgressSummary(normalisedCapture),
+    source: "M6 acceptance gate",
+    artifact: uiExcerpt.path,
+  });
 }
 
 function issueTargetFromTransition(issue: TVDoctorIssue): string | null {
