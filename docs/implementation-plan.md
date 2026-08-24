@@ -259,7 +259,7 @@ Verified evidence:
 
 The reviewed local bundle is at `artifacts/milestone-6-gate`; generated artifacts remain intentionally ignored by Git.
 
-Milestone 6 gate conclusion: the pack discovers and verifies a complete semantic streaming/player journey without fixture IDs or a stored path, reports exactly the four in-scope deterministic defects, and provides honest evidence and replay classifications. Milestone 7 may begin; search, broader settings/accessibility, performance, crash packs, and public CLI audit orchestration remain unimplemented.
+Milestone 6 gate conclusion: the pack discovers and verifies a complete semantic streaming/player journey without fixture IDs or a stored path, reports exactly the four in-scope deterministic defects, and provides honest evidence and replay classifications. The completed Milestone 7 record below adds search, broader settings/accessibility, performance, crash packs, and CLI audit orchestration.
 
 ## Milestone 7 gate record
 
@@ -290,7 +290,7 @@ Verified evidence:
 
 The reviewed local bundle is at `artifacts/milestone-7-gate`; generated artifacts remain intentionally ignored by Git.
 
-Milestone 7 gate conclusion: the CLI audit runs six independent web stages end-to-end against the controlled fixture, detects exactly the five remaining seeded defects, produces complete evidence bundles with screenshots and structured data, and passes its integration gate. Milestone 8 may begin; exploration hardening and sequence minimisation remain unimplemented.
+Milestone 7 gate conclusion: the CLI audit runs six independent web stages end-to-end against the controlled fixture, detects exactly the five remaining seeded defects, produces complete evidence bundles with screenshots and structured data, and passes its integration gate. The completed Milestone 8 record below adds exploration hardening and sequence minimisation.
 
 ## Milestone 8 gate record
 
@@ -312,7 +312,7 @@ Verified evidence:
 - Sequence minimisation: `minimizeGraphSequence` on a multi-step path from the hardened graph returned `semanticsPreserved: true` and either proved already minimal or returned a shorter valid path.
 - Full aggregate quality gate (`npm run check`): ESLint zero warnings, strict typecheck all packages, 283 unit tests, 12 fixture browser tests, 8 web-driver integration tests, 3 core explorer integrations (M3 + M8), M5 report/replay integration, M6 streaming journey integration, and production builds all passed.
 
-Milestone 8 gate conclusion: carousel compression now works on structurally repetitive rails regardless of scroll position, the priority frontier completes bounded exploration of a 240-card fixture that uncompressed BFS cannot finish, and exact sequence minimisation is verified against real exploration graphs. Milestone 9 may begin; the Android TV emulator install-to-replay gate remains unimplemented.
+Milestone 8 gate conclusion: carousel compression now works on structurally repetitive rails regardless of scroll position, the priority frontier completes bounded exploration of a 240-card fixture that uncompressed BFS cannot finish, and exact sequence minimisation is verified against real exploration graphs. The completed Milestone 9 record below supplies the disposable Android TV emulator vertical slice.
 
 ## Milestone 10 gate record
 
@@ -343,7 +343,7 @@ Verified evidence:
 
 - Hosted CI: GitHub Actions run [32611169991](https://github.com/Ticklect/tvdoctor/actions/runs/32611169991) passed on `ubuntu-latest` with Node.js 24. All steps green: checkout, npm ci, Playwright Chromium install, build, lint, typecheck, unit tests (286), fixture browser tests, web-driver integration tests, core explorer + M8 + M10 integrations, M5 report/replay integration, M6 streaming journey integration, and the baseline CI example script. This is the first recorded hosted CI execution for TVDoctor. Cross-platform timing flakes were resolved by enabling one retry across all package Playwright configs and increasing settle quiet-window/timeout in M5 and M6 integration drivers.
 
-Milestone 10 gate conclusion: the baseline library correctly detects a single HIGH regression when focus behavior changes, correctly resolves it after restoration, and reports identical for unchanged runs against real-Chromium evidence. A hosted CI workflow now proves this end-to-end on a clean Linux runner. Milestone 11 may begin; v0.1 release hardening remains unimplemented.
+Milestone 10 gate conclusion: the baseline library correctly detects a single HIGH regression when focus behavior changes, correctly resolves it after restoration, and reports identical for unchanged runs against real-Chromium evidence. A hosted CI workflow proves this end-to-end on a clean Linux runner. The Milestone 11 record below covers the subsequent release hardening.
 
 ## Milestone 9 gate record
 
@@ -351,7 +351,8 @@ Status: **complete — verified 2026-08-23 with a disposable Android TV emulator
 
 Environment:
 
-- Android SDK located at `C:\Users\leonl\Documents\Codex\2026-08-09\i\tmp\android-sdk` (discovered from prior Codex session);
+- Android SDK supplied from an operator-owned local installation outside the
+  repository (the machine-specific absolute path is intentionally omitted);
 - system image `system-images;android-36;android-tv;x86_64`;
 - AVD `tvdoctor-tv` created manually (avdmanager failed due to missing devices.xml; workaround applied);
 - emulator started headless (`-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect`);
@@ -370,29 +371,31 @@ Gate steps verified in order:
 7. **Logs captured**: `artifacts/milestone-9-gate/fixture-logs.txt` contains `TVDoctorFixture: Fixture launched; initial focus=true` and `TVDoctorFixture: Seeded focus-loss transition activated`.
 8. **Force-stop/relaunch**: `am force-stop` then relaunch restored initial focus; second force-stop performed clean teardown.
 
-Milestone 9 gate conclusion: TVDoctor's controlled native Android TV fixture installs on a disposable real Android TV emulator, launches with correct initial focus, responds to real DPAD input, triggers its one seeded defect (focus loss after Select), captures screenshots and process-filtered logs, and tears down cleanly. This satisfies the M9 vertical-slice requirement. Milestone 11 may begin; v0.1 release hardening remains unimplemented.
+Milestone 9 gate conclusion: TVDoctor's controlled native Android TV fixture installs on a disposable real Android TV emulator, launches with correct initial focus, responds to real DPAD input, triggers its one seeded defect (focus loss after Select), captures screenshots and process-filtered logs, and tears down cleanly. This satisfies the M9 vertical-slice requirement; the Milestone 11 record below covers release hardening.
 
 ## Milestone 11 gate record
 
 Status: **exact-candidate evidence controlled by the annotated
 `m11-m6-reliability-proof` tag**. The 2026-08-23 package/consumer evidence below
 remains valid, but its hosted run and the older `m11-production-stress-proof`
-tag do not prove M6 first-attempt reliability. The controlling M6 root-cause,
-regression, and retry-disabled campaign record is
-[`docs/m11-production-stress-status.md`](./m11-production-stress-status.md).
+tag do not prove M6 first-attempt reliability. The controlling tag points to
+`e779e8ab24f81515cf96d2c6dd01a25350fbeff3`, whose GitHub Actions run
+[`32702314158`](https://github.com/Ticklect/tvdoctor/actions/runs/32702314158)
+passed on attempt 1. The root-cause, regression, and retry-disabled campaign are
+recorded in [`m11-production-stress-status.md`](./m11-production-stress-status.md).
 
 Implemented:
 
 - all nine workspace packages versioned to 0.1.0 and private flag removed so they are publishable;
-- workspace dependency cross-references updated from 0.0.0 to exact 0.1.0;
+- workspace dependency cross-references updated to exact 0.1.0;
 - root package-lock.json regenerated with the new versions;
 - .github/workflows/ci.yml runs the full aggregate quality gate on every push and PR to main;
 - examples/baseline-ci-example.mjs provides a browser-free consumer workflow proof.
 
 Verified evidence:
 
-- Package tarballs: npm pack succeeded for all eight publishable packages, producing valid .tgz archives. Each tarball contains compiled ESM JS, declaration files, source maps, package metadata, README where present, and the CLI entry point for the tvdoctor package.
-- Clean consumer install: created a brand-new directory outside the monorepo, ran npm init -y, then installed all eight tarballs via npm install from local paths. Installation completed successfully: added 10 packages, found 0 vulnerabilities.
+- Package tarballs: npm pack succeeded for all nine publishable packages, producing valid .tgz archives. Each tarball contains compiled ESM JS, declaration files, source maps, package metadata, package licence, and the CLI entry point for the tvdoctor package.
+- Clean consumer install: created a brand-new directory outside the monorepo, ran npm init -y, then installed all nine tarballs via npm install from local paths. Installation completed successfully with no reported vulnerabilities.
 - Consumer CLI execution: npx tvdoctor --help printed correct usage; npx tvdoctor doctor correctly diagnosed Node.js 24 as supported and reported Playwright web adapter availability. Both exited with code 0.
 - Hosted CI run 32613111595: passed in 23m20s on ubuntu-latest with Node.js 24 after the versioning change. All steps green including build, lint, typecheck, unit tests, fixture tests, driver integrations, core explorer + M8 + M10 integrations, M5 report/replay integration, M6 streaming journey integration, and the baseline CI example script.
 - Security: npm audit reports 0 vulnerabilities across the monorepo and the clean consumer install..

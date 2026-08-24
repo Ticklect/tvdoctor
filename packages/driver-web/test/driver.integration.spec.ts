@@ -435,3 +435,154 @@ test("observes same-origin iframe boundaries and nested remote focus", async ({ 
     await driver.close();
   }
 });
+
+test("treats only the active tabindex=-1 roving TV control as programmatically focusable", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({
+    id: "roving-focus",
+    launchUri: `${requireBaseURL(baseURL)}/roving-focus.html`,
+  });
+
+  try {
+    let snapshot = await driver.snapshot();
+    let tree = flattenUiTree(availableValue(snapshot.uiTree));
+    expect(availableValue(snapshot.focusedElement)?.stableId).toBe("roving-left");
+    expect(tree.find((node) => node.stableId === "roving-left")).toMatchObject({
+      focused: true,
+      focusable: true,
+    });
+    expect(tree.find((node) => node.stableId === "roving-right")).toMatchObject({
+      focused: false,
+      focusable: false,
+    });
+
+    await driver.press("RIGHT");
+    snapshot = await driver.snapshot();
+    tree = flattenUiTree(availableValue(snapshot.uiTree));
+    expect(availableValue(snapshot.focusedElement)?.stableId).toBe("roving-right");
+    expect(tree.find((node) => node.stableId === "roving-left")?.focusable).toBe(false);
+    expect(tree.find((node) => node.stableId === "roving-right")).toMatchObject({
+      focused: true,
+      focusable: true,
+    });
+  } finally {
+    await driver.close();
+  }
+});
+
+test("bounds hostile wide, deep, and text-heavy DOM work without losing open-shadow focus", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver({
+    maxUiDepth: 64,
+    maxUiNodes: 100,
+    maxUiScanNodes: 500,
+    maxUiTextChars: 128,
+  });
+  await driver.launch({ id: "hostile-dom", launchUri: requireBaseURL(baseURL) });
+
+  try {
+    await driver.getPage().evaluate(() => {
+      document.body.replaceChildren();
+      const host = document.createElement("div");
+      const shadow = host.attachShadow({ mode: "open" });
+      const focused = document.createElement("button");
+      focused.dataset["tvId"] = "shadow-control";
+      focused.textContent = "Shadow control";
+      shadow.append(focused);
+      document.body.append(host);
+      focused.focus();
+    });
+    let snapshot = await driver.snapshot();
+    expect(availableValue(snapshot.focusedElement)?.stableId).toBe("shadow-control");
+    expect(flattenUiTree(availableValue(snapshot.uiTree))).toContainEqual(expect.objectContaining({
+      stableId: "shadow-control",
+      focused: true,
+    }));
+
+    await driver.getPage().evaluate(() => {
+      document.body.replaceChildren();
+      const huge = document.createElement("button");
+      huge.dataset["tvId"] = "huge-text";
+      huge.textContent = "x".repeat(1_000_000);
+      document.body.append(huge);
+      const fragment = document.createDocumentFragment();
+      for (let index = 0; index < 12_000; index += 1) {
+        fragment.append(document.createElement("div"));
+      }
+      document.body.append(fragment);
+    });
+    snapshot = await driver.snapshot();
+    let metadata = availableValue(snapshot.uiTreeMetadata);
+    expect(metadata.scannedNodeCount).toBe(500);
+    expect(metadata.truncated).toBe(true);
+    expect(metadata.truncationReasons).toEqual(expect.arrayContaining(["scanned-nodes", "text"]));
+    expect(metadata.textCharsRead).toBeLessThanOrEqual(metadata.maxTextChars);
+    expect(metadata.textNodesScanned).toBeLessThanOrEqual(metadata.maxScannedNodeCount);
+
+    await driver.getPage().evaluate(() => {
+      document.body.replaceChildren();
+      let parent: Element = document.body;
+      for (let index = 0; index < 2_000; index += 1) {
+        const wrapper = document.createElement("div");
+        if (index === 0) wrapper.style.display = "none";
+        parent.append(wrapper);
+        parent = wrapper;
+      }
+      const unreachable = document.createElement("button");
+      unreachable.dataset["tvId"] = "too-deep";
+      parent.append(unreachable);
+    });
+    snapshot = await driver.snapshot();
+    if (snapshot.uiTreeMetadata.status === "unavailable") {
+      throw new Error(snapshot.uiTreeMetadata.reason);
+    }
+    metadata = availableValue(snapshot.uiTreeMetadata);
+    expect(metadata.scannedNodeCount).toBeLessThan(100);
+    expect(metadata.truncationReasons).toContain("depth");
+    expect(flattenUiTree(availableValue(snapshot.uiTree)).some(
+      (node) => node.stableId === "too-deep",
+    )).toBe(false);
+  } finally {
+    await driver.close();
+  }
+});
+
+test("bounds strong retention for never-finishing network requests while preserving aggregates", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver({
+    maxPendingNetworkRequests: 4,
+    recentNetworkEntries: 8,
+  });
+  await driver.launch({ id: "pending-network", launchUri: requireBaseURL(baseURL) });
+
+  try {
+    const page = driver.getPage();
+    const stalledRequests: Parameters<Parameters<typeof page.route>[1]>[0][] = [];
+    await page.route("**/never-*", (route) => {
+      stalledRequests.push(route);
+    });
+    const before = driver.getNetworkSnapshot();
+    await page.evaluate(() => {
+      for (let index = 0; index < 20; index += 1) {
+        void fetch(`/never-${String(index)}`).catch(() => undefined);
+      }
+    });
+    await expect.poll(() => driver.getNetworkSnapshot().requestsInFlight).toBe(20);
+
+    const pending = driver.getNetworkSnapshot();
+    expect(pending.requestsStarted - before.requestsStarted).toBe(20);
+    expect(pending.requestsInFlight).toBe(20);
+    expect(pending.pendingRequestsTracked).toBe(4);
+    expect(pending.pendingRequestsDropped).toBe(16);
+    expect(pending.recentEntries).toHaveLength(8);
+
+    await Promise.all(stalledRequests.map(async (route) => route.abort("aborted")));
+    await expect.poll(() => driver.getNetworkSnapshot().requestsInFlight).toBe(0);
+    const completed = driver.getNetworkSnapshot();
+    expect(completed.requestsFailed - before.requestsFailed).toBe(20);
+    expect(completed.pendingRequestsTracked).toBe(0);
+    expect(completed.pendingRequestsDropped).toBe(16);
+    expect(completed.recentEntries).toHaveLength(8);
+    expect(completed.recentEntries.every((entry) => entry.outcome === "failed")).toBe(true);
+  } finally {
+    await driver.close();
+  }
+});

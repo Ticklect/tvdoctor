@@ -1,4 +1,5 @@
 export * from "./action-settling.js";
+export { NAVIGATION_UI_TREE_LIMITS } from "./bounded-ui-tree.js";
 export * from "./explorer.js";
 export {
   fingerprintSnapshot,

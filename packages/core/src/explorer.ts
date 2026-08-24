@@ -43,6 +43,14 @@ export const DEFAULT_EXPLORATION_BUDGETS: ExplorationBudgets = {
   maxDurationMs: 120_000,
 };
 
+/** Hard resource ceilings for values accepted from public runtime options. */
+export const MAX_EXPLORATION_BUDGETS: ExplorationBudgets = {
+  maxActions: 1_000_000,
+  maxStates: 100_000,
+  maxDepth: 4_096,
+  maxDurationMs: 2_147_483_647,
+};
+
 export type ExplorationProfile = "quick" | "standard" | "deep";
 
 /** Versioned, explicit resource envelopes for local, CI, and exhaustive runs. */
@@ -221,23 +229,23 @@ function incomplete(reason: Exclude<ExplorationTerminationReason, "queue-exhaust
   return { reason, complete: false };
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${name} must be a positive integer.`);
+function positiveInteger(value: number, name: string, maximum: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new TypeError(`${name} must be a positive safe integer no greater than ${String(maximum)}.`);
   }
   return value;
 }
 
-function nonNegativeInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new TypeError(`${name} must be a non-negative integer.`);
+function nonNegativeInteger(value: number, name: string, maximum: number): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new TypeError(`${name} must be a non-negative safe integer no greater than ${String(maximum)}.`);
   }
   return value;
 }
 
 function positiveDuration(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647) {
-    throw new TypeError(`${name} must be a positive finite duration.`);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_EXPLORATION_BUDGETS.maxDurationMs) {
+    throw new TypeError(`${name} must be a positive safe integer duration no greater than ${String(MAX_EXPLORATION_BUDGETS.maxDurationMs)}.`);
   }
   return value;
 }
@@ -246,14 +254,18 @@ function normaliseBudgets(
   profile: ExplorationProfile | undefined,
   overrides: Partial<ExplorationBudgets> | undefined,
 ): ExplorationBudgets {
+  if (overrides !== undefined
+    && (typeof overrides !== "object" || overrides === null || Array.isArray(overrides))) {
+    throw new TypeError("budgets must be an object.");
+  }
   const defaults = profile === undefined
     ? DEFAULT_EXPLORATION_BUDGETS
     : EXPLORATION_BUDGET_PROFILES[profile];
   const values = { ...defaults, ...overrides };
   return {
-    maxActions: positiveInteger(values.maxActions, "maxActions"),
-    maxStates: positiveInteger(values.maxStates, "maxStates"),
-    maxDepth: nonNegativeInteger(values.maxDepth, "maxDepth"),
+    maxActions: positiveInteger(values.maxActions, "maxActions", MAX_EXPLORATION_BUDGETS.maxActions),
+    maxStates: positiveInteger(values.maxStates, "maxStates", MAX_EXPLORATION_BUDGETS.maxStates),
+    maxDepth: nonNegativeInteger(values.maxDepth, "maxDepth", MAX_EXPLORATION_BUDGETS.maxDepth),
     maxDurationMs: positiveDuration(values.maxDurationMs, "maxDurationMs"),
   };
 }
@@ -294,14 +306,23 @@ function normaliseRepetitionCompression(
   profile: ExplorationProfile | undefined,
   options: RepetitionCompressionOptions | undefined,
 ): NormalisedRepetitionCompressionOptions {
+  if (options !== undefined
+    && (typeof options !== "object" || options === null || Array.isArray(options))) {
+    throw new TypeError("repetitionCompression must be an object.");
+  }
   const defaults = profileCompressionDefaults(profile);
+  if (options?.enabled !== undefined && typeof options.enabled !== "boolean") {
+    throw new TypeError("repetitionCompression.enabled must be a boolean.");
+  }
   const maxRepresentativesPerGroup = positiveInteger(
     options?.maxRepresentativesPerGroup ?? defaults.maxRepresentativesPerGroup,
     "maxRepresentativesPerGroup",
+    MAX_EXPLORATION_BUDGETS.maxStates,
   );
   const maxExpandedRepresentativesPerGroup = positiveInteger(
     options?.maxExpandedRepresentativesPerGroup ?? defaults.maxExpandedRepresentativesPerGroup,
     "maxExpandedRepresentativesPerGroup",
+    MAX_EXPLORATION_BUDGETS.maxStates,
   );
   if (maxExpandedRepresentativesPerGroup > maxRepresentativesPerGroup) {
     throw new TypeError(
@@ -315,12 +336,20 @@ function normaliseRepetitionCompression(
     minimumEquivalentSiblings: positiveInteger(
       options?.minimumEquivalentSiblings ?? defaults.minimumEquivalentSiblings,
       "minimumEquivalentSiblings",
+      MAX_EXPLORATION_BUDGETS.maxStates,
     ),
   };
 }
 
 function normaliseActions(actions: readonly RemoteKey[] | undefined): readonly RemoteKey[] {
+  if (actions !== undefined && !Array.isArray(actions)) {
+    throw new TypeError("Explorer actions must be an array.");
+  }
   const result = [...(actions ?? REMOTE_KEYS)];
+  const allowed = new Set<string>(REMOTE_KEYS);
+  if (result.some((key) => typeof key !== "string" || !allowed.has(key))) {
+    throw new TypeError("Explorer actions must contain only known remote keys.");
+  }
   if (new Set(result).size !== result.length) {
     throw new TypeError("Explorer actions must not contain duplicates.");
   }
@@ -451,6 +480,9 @@ export async function explore(
   driver: TVDoctorDriver,
   options: ExplorerOptions = {},
 ): Promise<ExplorationResult> {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new TypeError("Explorer options must be an object.");
+  }
   if (options.profile !== undefined
     && options.profile !== "quick"
     && options.profile !== "standard"
@@ -471,7 +503,24 @@ export async function explore(
   const settling: NormalisedActionSettlingOptions = normaliseActionSettlingOptions(
     options.settling,
   );
-  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  if (options.restoreInitialState !== undefined && typeof options.restoreInitialState !== "function") {
+    throw new TypeError("restoreInitialState must be a function.");
+  }
+  if (options.monotonicNow !== undefined && typeof options.monotonicNow !== "function") {
+    throw new TypeError("monotonicNow must be a function.");
+  }
+  if (options.resetStrategy !== undefined
+    && options.resetStrategy !== "reload"
+    && options.resetStrategy !== "relaunch"
+    && options.resetStrategy !== "clear-data") {
+    throw new TypeError("resetStrategy must be reload, relaunch, or clear-data.");
+  }
+  const monotonicSource = options.monotonicNow ?? (() => performance.now());
+  const monotonicNow = (): number => {
+    const value = monotonicSource();
+    if (!Number.isFinite(value)) throw new TypeError("monotonicNow must return a finite number.");
+    return value;
+  };
   const startedAtMs = monotonicNow();
   let physicalActions = 0;
   let explorationActions = 0;

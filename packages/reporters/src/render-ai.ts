@@ -1,6 +1,6 @@
 import type { TVDoctorIssue, TVDoctorReportV1 } from "@tvdoctor/protocol";
 import { markdownDataBlock } from "./security.js";
-import { artifactsForIssue, formatRemoteSequence, validReport } from "./render-helpers.js";
+import { artifactsForIssue, formatRemoteSequence, replayCommand, replayTargetOverrideRequired, validReport } from "./render-helpers.js";
 
 interface AiTaskContext {
   readonly artifacts: string;
@@ -43,6 +43,10 @@ function aiFixTask(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
     throw new TypeError("A deterministic fix task requires an available reproduction.");
   }
   const context = taskContext(report, issue);
+  const command = replayCommand(report, issue.id);
+  const targetOverrideWarning = replayTargetOverrideRequired(report)
+    ? "Query or fragment data was redacted from the report target. Replace `<ORIGINAL_URL>` below with the original authorised URL; the CLI intentionally refuses a default-target replay.\n\n"
+    : "";
   const sequence = formatRemoteSequence(issue.reproduction.originalSequence);
   const minimizedCandidate = issue.reproduction.minimizedSequence === null
     ? "No minimized candidate was recorded."
@@ -81,7 +85,7 @@ ${minimizedCandidate}
 
 Run:
 
-    tvdoctor replay ${issue.id}
+${targetOverrideWarning}    ${command}
 
 ## Runtime Evidence
 
@@ -126,7 +130,7 @@ ${context.relevantIds}
 
 ## Validation Command
 
-    tvdoctor replay ${issue.id}
+    ${command}
 
 Then run the full TVDoctor audit and the repository test suite.
 

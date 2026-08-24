@@ -22,18 +22,20 @@ performance, player-state, or video capture.
 
 ## Evidence boundary
 
-Current automated tests use a bounded fake ADB executor. At the time of this
-documentation, the disposable real Android TV emulator gate has **not** passed.
-There is no claim of:
+Automated unit tests use a bounded fake ADB executor. A separate disposable
+Android TV emulator gate on API 36 installed and launched the controlled fixture,
+observed its hierarchy and initial focus, sent real DPAD Left/Right/Select input,
+detected the seeded focus-loss defect, captured a PNG and process-filtered logs,
+restored focus after force-stop/relaunch, and tore down cleanly.
 
-- successful installation/navigation/report/replay on a real emulator;
-- physical Android TV or Google TV device compatibility;
+That gate justifies an Experimental adapter, not general device support. There is
+still no claim of:
+
+- physical Android TV or Google TV compatibility;
 - vendor launcher, permission, DRM, or system-dialog coverage;
 - emulator creation, startup, snapshot, shutdown, or cleanup by the driver;
-- Fire TV compatibility.
-
-Those omissions are release facts, not documentation gaps. The status must stay
-Experimental until the complete gate is recorded.
+- Fire TV compatibility; or
+- portable replay for findings that Replay V1 cannot express.
 
 ## Intended local use
 
@@ -56,9 +58,9 @@ await driver.launch({
 });
 ```
 
-The example describes the implemented API, not a verified emulator result.
-`launchUri` is an Android component rather than a URL. Without it, the driver
-uses Android's launcher discovery. The caller owns driver/emulator cleanup.
+The example describes the implemented API. `launchUri` is an Android component
+rather than a URL. Without it, the driver uses Android's launcher discovery. The
+caller owns driver/emulator lifecycle and cleanup.
 
 ## Safety
 
@@ -72,10 +74,9 @@ uses Android's launcher discovery. The caller owns driver/emulator cleanup.
 - The structured executor rejects unsafe serial/package/component shapes and
   bounds output, time, hierarchy, logs, and screenshots.
 
-## Required real-emulator gate
+## Recorded real-emulator gate
 
-A status review requires one disposable Android TV emulator run that proves, in
-order:
+The completed status gate proved, in order:
 
 1. device identity and readiness;
 2. fixture APK build and install;
@@ -83,12 +84,12 @@ order:
 4. real DPAD navigation, Select, and Back;
 5. screenshot and process-filtered logs;
 6. graph construction and seeded diagnostic detection;
-7. local report/evidence generation;
-8. deterministic replay where the schema supports it;
-9. force-stop/relaunch and clean teardown.
+7. seeded diagnostic detection with screenshot/log evidence; and
+8. force-stop/relaunch and clean teardown.
 
-A fake ADB test, successful APK build, or emulator boot alone does not satisfy
-this gate.
+A fake ADB test, successful APK build, or emulator boot alone would not have
+satisfied the gate. The recorded evidence remains a single emulator/system-image
+combination and must not be inflated into physical-device support.
 
 ## Unit verification
 

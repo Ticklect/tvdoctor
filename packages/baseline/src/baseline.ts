@@ -32,6 +32,7 @@ const MAX_ITEMS = 20_000;
 const REMOTE_KEYS: ReadonlySet<string> = new Set(["UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK"]);
 const SEVERITIES: ReadonlySet<string> = new Set(["critical", "high", "medium", "low", "info"]);
 const CONFIDENCES: ReadonlySet<string> = new Set(["deterministic", "heuristic", "inference", "unobservable"]);
+const BIDI_FORMAT_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -71,6 +72,55 @@ function text(value: unknown, path: string, maximum = TEXT_LIMIT): string {
 
 function nullableText(value: unknown, path: string): string | null {
   return value === null ? null : text(value, path);
+}
+
+function sanitiseUntrustedText(value: string, maximum = TEXT_LIMIT): string {
+  const withoutTerminalSequences = value
+    // These patterns intentionally name terminal control bytes so hostile
+    // labels cannot alter CI output or a rendered baseline diff.
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
+  const printable = Array.from(withoutTerminalSequences)
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159));
+    })
+    .join("")
+    .replace(BIDI_FORMAT_CONTROLS, "")
+    .replace(/https?:\/\/[^\s<>"']+/giu, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        url.username = "";
+        url.password = "";
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+      } catch {
+        return candidate;
+      }
+    })
+    .replace(
+      /\b(authorization|proxy-authorization|cookie|set-cookie)(\s*:\s*)[^\n]*/giu,
+      (_match, header: string, separator: string) => `${header}${separator}[REDACTED]`,
+    )
+    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
+    .replace(/\bBasic\s+[A-Za-z0-9+/_=.:-]+/giu, "Basic [REDACTED]")
+    .replace(
+      /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|authorization|cookie|password|passwd|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
+      (_match, quote: string, key: string, separator: string) => `${quote}${key}${quote}${separator}${quote}[REDACTED]${quote}`,
+    );
+  return Array.from(printable).slice(0, maximum).join("").trim();
+}
+
+function untrustedText(value: unknown, path: string, maximum = TEXT_LIMIT): string {
+  if (typeof value !== "string") throw new TypeError(`${path} must be bounded non-empty text.`);
+  return text(sanitiseUntrustedText(value, maximum), path, maximum);
+}
+
+function nullableUntrustedText(value: unknown, path: string): string | null {
+  return value === null ? null : untrustedText(value, path);
 }
 
 function finiteNonNegative(value: unknown, path: string): number {
@@ -115,7 +165,7 @@ function parseScreen(value: unknown, path: string): BaselineScreenObservation {
   const item = exact(value, path, ["key", "label"]);
   return {
     key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
-    label: nullableText(item["label"], `${path}.label`),
+    label: nullableUntrustedText(item["label"], `${path}.label`),
   };
 }
 
@@ -124,8 +174,8 @@ function parseFocus(value: unknown, path: string): BaselineFocusObservation {
   return {
     key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
     screenKey: text(item["screenKey"], `${path}.screenKey`, IDENTIFIER_LIMIT),
-    role: nullableText(item["role"], `${path}.role`),
-    name: nullableText(item["name"], `${path}.name`),
+    role: nullableUntrustedText(item["role"], `${path}.role`),
+    name: nullableUntrustedText(item["name"], `${path}.name`),
   };
 }
 
@@ -154,7 +204,7 @@ function parseLatency(value: unknown, path: string): BaselineLatencyObservation 
   const item = exact(value, path, ["key", "operation", "measuredMs"]);
   return {
     key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
-    operation: text(item["operation"], `${path}.operation`),
+    operation: untrustedText(item["operation"], `${path}.operation`),
     measuredMs: finiteNonNegative(item["measuredMs"], `${path}.measuredMs`),
   };
 }
@@ -302,7 +352,7 @@ export function defaultTargetId(platform: string, location: string): string {
       // Fall through to the bounded platform/location identity.
     }
   }
-  return text(`${safePlatform}:${location}`, "targetId", IDENTIFIER_LIMIT);
+  return untrustedText(`${safePlatform}:${location}`, "targetId", IDENTIFIER_LIMIT);
 }
 
 function validateCompleteSource(report: TVDoctorReportV1, inventory: BaselineObservationInventory): void {
@@ -327,7 +377,7 @@ export function createBaseline(
   const createdAt = options.createdAt === undefined ? new Date().toISOString() : parseDate(options.createdAt, "createdAt");
   const targetId = options.targetId === undefined
     ? defaultTargetId(report.target.platform, report.target.location)
-    : text(options.targetId, "targetId", IDENTIFIER_LIMIT);
+    : untrustedText(options.targetId, "targetId", IDENTIFIER_LIMIT);
   const baseline: TVDoctorBaselineV1 = {
     schemaVersion: BASELINE_SCHEMA_VERSION_V1,
     createdAt,

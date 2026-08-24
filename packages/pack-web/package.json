@@ -3,7 +3,30 @@
   "version": "0.1.0",
   
   "description": "Platform-neutral web-app diagnostic stages for TVDoctor.",
+  "keywords": [
+    "tvdoctor",
+    "tv",
+    "testing",
+    "web",
+    "accessibility",
+    "performance"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/pack-web"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,13 +38,15 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false"
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
+    "prepack": "npm run build -- --force"
   },
   "dependencies": {
     "@tvdoctor/core": "0.1.0",

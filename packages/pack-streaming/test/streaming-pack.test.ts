@@ -22,6 +22,8 @@ import {
   runStreamingPack,
   selectedCaptionTrack,
   semanticStateIdentity,
+  type StreamingPackBudgets,
+  type StreamingPackOptions,
   type StreamingPointerProbe,
 } from "../src/index.js";
 
@@ -957,6 +959,55 @@ describe("streaming semantic hardening", () => {
 });
 
 describe("streaming budget boundaries", () => {
+  it.each([
+    ["maxActions", 0],
+    ["maxActions", -1],
+    ["maxActions", 1.5],
+    ["maxActions", Number.NaN],
+    ["maxActions", Number.POSITIVE_INFINITY],
+    ["maxActions", 1_000_001],
+    ["maxStates", 0],
+    ["maxStates", -1],
+    ["maxStates", 1.5],
+    ["maxStates", Number.NaN],
+    ["maxStates", Number.POSITIVE_INFINITY],
+    ["maxStates", 100_001],
+    ["maxLocalDepth", -1],
+    ["maxLocalDepth", 1.5],
+    ["maxLocalDepth", Number.NaN],
+    ["maxLocalDepth", Number.POSITIVE_INFINITY],
+    ["maxLocalDepth", 4_097],
+    ["maxLocalStates", 0],
+    ["maxLocalStates", -1],
+    ["maxLocalStates", 1.5],
+    ["maxLocalStates", Number.NaN],
+    ["maxLocalStates", Number.POSITIVE_INFINITY],
+    ["maxLocalStates", 100_001],
+    ["maxDurationMs", 0],
+    ["maxDurationMs", -1],
+    ["maxDurationMs", 1.5],
+    ["maxDurationMs", Number.NaN],
+    ["maxDurationMs", Number.POSITIVE_INFINITY],
+    ["maxDurationMs", 2_147_483_648],
+  ] as const)("rejects the invalid %s streaming budget %s", async (name, value) => {
+    const budgets = { [name]: value } as Partial<StreamingPackBudgets>;
+    await expect(runStreamingPack(new StreamingFakeDriver("conventional"), { budgets }))
+      .rejects.toThrow(name);
+  });
+
+  it.each([
+    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, /resetStrategy/u],
+    ["non-function restore hook", { restoreInitialState: 1 as never }, /restoreInitialState/u],
+    ["non-function clock hook", { monotonicNow: 1 as never }, /monotonicNow/u],
+    ["non-function pointer hook", { pointerProbe: { probe: 1 } as never }, /pointerProbe/u],
+    ["non-finite clock result", { monotonicNow: () => Number.NaN }, /finite/u],
+  ] as const)("rejects %s", async (_label, options, message) => {
+    await expect(runStreamingPack(
+      new StreamingFakeDriver("conventional"),
+      options as StreamingPackOptions,
+    )).rejects.toThrow(message);
+  });
+
   it("uses the explicit three-minute standard duration budget", () => {
     expect(DEFAULT_STREAMING_PACK_BUDGETS.maxDurationMs).toBe(180_000);
   });

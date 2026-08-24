@@ -1,9 +1,19 @@
+import { dirname, join } from "node:path";
+
 import {
   diagnoseEnvironment,
   doctorSucceeded,
   renderDoctorReport,
+  type DiagnosticCheck,
   type RuntimeEnvironment,
 } from "./diagnostics.js";
+
+import {
+  isSafeTerminalArgument,
+  safeDisplayUrl,
+  sanitizeTerminalText,
+} from "./terminal.js";
+import { CLI_VERSION } from "./version.js";
 
 export const EXIT_CODES = {
   success: 0,
@@ -79,6 +89,11 @@ export interface CliContext {
   readonly environment: RuntimeEnvironment;
   readonly io: CliIO;
   readonly operations?: CliOperations;
+  readonly runtimeProbe?: () => Promise<RuntimeProbeResult>;
+}
+
+export interface RuntimeProbeResult {
+  readonly capabilities: readonly string[];
 }
 
 export const HELP_TEXT = `TVDoctor — automated QA for TV apps
@@ -87,19 +102,24 @@ Usage:
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
+  tvdoctor version
+  tvdoctor --version
   tvdoctor help
   tvdoctor --help
 
 Commands:
   test      Run a bounded local audit and write a report bundle.
-  doctor    Diagnose the local foundation environment.
+  doctor    Diagnose the installed runtime and browser environment.
   replay    Re-run one deterministic issue from a V1 report.
+  version   Print the installed TVDoctor version.
   help      Show this help.
 
-Status:
-  The experimental web driver, bounded explorer, navigation diagnostics,
-  semantic packs, report bundle, deterministic web replay, and local web
-  audit orchestration are available.`;
+Exit codes:
+  0  Command completed successfully; no audit issues were found.
+  1  Audit issues were found, or doctor found an unavailable requirement.
+  2  Command usage is invalid.
+  3  The result is partial or inconclusive.
+  4  Execution failed before a trustworthy result was produced.`;
 
 export const TEST_HELP_TEXT = `Usage: tvdoctor test URL [options]
 
@@ -116,7 +136,7 @@ Options:
 export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
 Report the local Node.js and host environment together with the capabilities
-that are actually available in this foundation build.`;
+that are actually available in this installed CLI.`;
 
 export const REPLAY_HELP_TEXT = `Usage: tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
 
@@ -127,26 +147,76 @@ const PORTABLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const TEST_PACK_SET: ReadonlySet<string> = new Set(TEST_PACK_NAMES);
 const TEST_RUN_MODES: ReadonlySet<string> = new Set(["quick", "standard", "deep"]);
 
-function terminalText(value: string, maximumLength = 500): string {
-  let printable = "";
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (codePoint === 27) continue;
-    printable += codePoint < 32 || (codePoint >= 127 && codePoint <= 159)
-      ? " "
-      : character;
-  }
-  return printable.replace(/\s+/gu, " ").trim().slice(0, maximumLength);
+function writeLine(
+  write: (text: string) => void,
+  text: string,
+  maximumLength = 2_048,
+): void {
+  write(`${sanitizeTerminalText(text, { maximumLength })}\n`);
 }
 
-function writeLine(write: (text: string) => void, text: string): void {
-  write(`${text}\n`);
+function writeBlock(write: (text: string) => void, text: string): void {
+  write(`${sanitizeTerminalText(text, {
+    maximumLength: 12_000,
+    preserveNewlines: true,
+  })}\n`);
+}
+
+function writeDetails(
+  write: (text: string) => void,
+  details: readonly string[],
+): void {
+  const displayedDetails = details.slice(0, 50);
+  for (const detail of displayedDetails) writeLine(write, detail, 1_024);
+  if (details.length > displayedDetails.length) {
+    writeLine(
+      write,
+      `${String(details.length - displayedDetails.length)} additional details omitted; see the report bundle.`,
+    );
+  }
 }
 
 function usageError(context: CliContext, message: string): number {
   writeLine(context.io.writeStderr, `Error: ${message}`);
   writeLine(context.io.writeStderr, "Run \"tvdoctor --help\" for usage.");
   return EXIT_CODES.usageError;
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function classifyCliError(error: unknown, activity: "audit" | "replay" | "doctor"): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = errorCode(error);
+  if (code === "ENOENT") {
+    return activity === "replay"
+      ? "The report file was not found. Check --report and try again."
+      : "A required file was not found. Check the path and try again.";
+  }
+  if (code === "EEXIST") {
+    return activity === "audit"
+      ? "The report output already exists. Choose a new --output directory and try again."
+      : "A destination already exists. Choose a new path and try again.";
+  }
+  if (code === "EACCES" || code === "EPERM") {
+    return "Access was denied. Check file and directory permissions, then try again.";
+  }
+  if (code === "ENOSPC") {
+    return "The report could not be written because the disk is full. Free space and try again.";
+  }
+  if (/executable.*doesn.t exist|browser.*(?:not found|missing)|playwright.*install/iu.test(raw)) {
+    return "Chromium is unavailable. Run \"npx playwright install chromium\" and try again.";
+  }
+  if (/timeout|timed out|ERR_(?:CONNECTION|NAME|TIMED)|ECONNREFUSED|ENOTFOUND/iu.test(raw)) {
+    return "The target did not become reachable in time. Check the URL and network, then try again.";
+  }
+  if (activity === "replay" && /json|schema|report|parse|unexpected token/iu.test(raw)) {
+    return "The replay report is unreadable or incompatible. Check --report points to a valid TVDoctor V1 JSON report.";
+  }
+  const firstLine = raw.split(/\r?\n/u, 1)[0] ?? "Unknown error";
+  return `${sanitizeTerminalText(firstLine, { maximumLength: 240 })} Check the command inputs and try again.`;
 }
 
 function parseReplayArguments(
@@ -166,7 +236,11 @@ function parseReplayArguments(
         return `${argument} requires a value`;
       }
       if (argument === "--report") reportPath = value;
-      else targetOverride = value;
+      else {
+        const override = safeTarget(value);
+        if (override === null) return "--target must be an absolute HTTP(S) URL without credentials";
+        targetOverride = override;
+      }
       index += 1;
       continue;
     }
@@ -200,6 +274,9 @@ function safeTarget(value: string): string | null {
     || parsed.password.length > 0) {
     return null;
   }
+  // Return the URL parser's canonical form so ignored whitespace, backslash
+  // path separators, Unicode host spelling, and equivalent default ports do
+  // not create different audit/replay identities for the same destination.
   return parsed.href;
 }
 
@@ -228,7 +305,7 @@ function parseTestArguments(
         if (value.trim().length === 0 || value.length > 1_024) return "--output requires a bounded non-empty path";
         outputPath = value;
       } else {
-        const safe = terminalText(value, 64);
+        const safe = sanitizeTerminalText(value, { maximumLength: 64 });
         if (safe.length === 0 || safe !== value.trim()) {
           return "--query must be printable, non-empty, and at most 64 characters";
         }
@@ -256,7 +333,7 @@ async function runTest(
 ): Promise<number> {
   if (argumentsAfterCommand.length === 1
     && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")) {
-    writeLine(context.io.writeStdout, TEST_HELP_TEXT);
+    writeBlock(context.io.writeStdout, TEST_HELP_TEXT);
     return EXIT_CODES.success;
   }
   const request = parseTestArguments(argumentsAfterCommand);
@@ -265,23 +342,58 @@ async function runTest(
     writeLine(context.io.writeStderr, "Web audit is unavailable in this CLI host.");
     return EXIT_CODES.executionError;
   }
-  writeLine(context.io.writeStdout, `Auditing ${terminalText(request.target)}...`);
+  writeLine(context.io.writeStdout, `Auditing ${safeDisplayUrl(request.target)}...`);
+  writeLine(
+    context.io.writeStdout,
+    `Plan: ${request.mode} mode; packs ${request.packs.join(", ")}; bounded resets and replays can take several minutes.`,
+  );
   let result: TestCommandResult;
+  const progressStartedAt = Date.now();
+  const progressTimer = setInterval(() => {
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1_000));
+    writeLine(
+      context.io.writeStdout,
+      `Progress: audit still running (${String(elapsedSeconds)}s elapsed); action, state, and duration budgets remain enforced.`,
+    );
+  }, 30_000);
+  progressTimer.unref();
   try {
     result = await context.operations.testTarget(request);
   } catch (error) {
-    writeLine(context.io.writeStderr, `Audit failed: ${terminalText(error instanceof Error ? error.message : String(error))}`);
+    writeLine(context.io.writeStderr, `Audit failed: ${classifyCliError(error, "audit")}`);
     return EXIT_CODES.executionError;
+  } finally {
+    clearInterval(progressTimer);
   }
-  for (const detail of result.details) writeLine(context.io.writeStdout, terminalText(detail));
-  if (result.reportPath !== null) writeLine(context.io.writeStdout, `Report: ${terminalText(result.reportPath, 1_024)}`);
+  const statusLabel = result.status === "completed"
+    ? "COMPLETED"
+    : result.status === "partial"
+      ? "PARTIAL-INCONCLUSIVE"
+      : "FAILED";
+  writeLine(context.io.writeStdout, `Result: ${statusLabel}`);
+  writeDetails(context.io.writeStdout, result.details);
+  const issueNoun = result.issueCount === 1 ? "issue" : "issues";
+  writeLine(
+    context.io.writeStdout,
+    `Issues: ${String(result.issueCount)} ${issueNoun}; highest severity: ${result.highestSeverity ?? "none"}`,
+  );
+  if (result.reportPath !== null) {
+    const bundleDirectory = dirname(result.reportPath);
+    writeLine(context.io.writeStdout, `Bundle directory: ${bundleDirectory}`, 1_024);
+    writeLine(context.io.writeStdout, `Human report: ${join(bundleDirectory, "report.html")}`, 1_024);
+    writeLine(context.io.writeStdout, `Canonical JSON: ${result.reportPath}`, 1_024);
+  }
   if (result.status === "failed") return EXIT_CODES.executionError;
-  if (result.status === "partial") return EXIT_CODES.inconclusive;
+  if (result.status === "partial") {
+    writeLine(
+      context.io.writeStdout,
+      "Next action: Review the partial report, resolve the recorded interruption, and rerun the audit.",
+    );
+    return EXIT_CODES.inconclusive;
+  }
   if (result.issueCount > 0) {
-    writeLine(context.io.writeStdout, `${String(result.issueCount)} issue(s) detected.`);
     return EXIT_CODES.environmentFailure;
   }
-  writeLine(context.io.writeStdout, "No issues detected.");
   return EXIT_CODES.success;
 }
 
@@ -293,7 +405,7 @@ async function runReplay(
     argumentsAfterCommand.length === 1 &&
     (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")
   ) {
-    writeLine(context.io.writeStdout, REPLAY_HELP_TEXT);
+    writeBlock(context.io.writeStdout, REPLAY_HELP_TEXT);
     return EXIT_CODES.success;
   }
 
@@ -309,14 +421,11 @@ async function runReplay(
   try {
     result = await context.operations.replayIssue(request);
   } catch (error) {
-    const message = terminalText(error instanceof Error ? error.message : String(error));
-    writeLine(context.io.writeStderr, `Replay failed: ${message}`);
+    writeLine(context.io.writeStderr, `Replay failed: ${classifyCliError(error, "replay")}`);
     return EXIT_CODES.replayError;
   }
 
-  for (const detail of result.details) {
-    writeLine(context.io.writeStdout, terminalText(detail));
-  }
+  writeDetails(context.io.writeStdout, result.details);
   switch (result.status) {
     case "fixed":
       writeLine(context.io.writeStdout, `${request.issueId} FIXED`);
@@ -333,16 +442,16 @@ async function runReplay(
   }
 }
 
-function runDoctor(
+async function runDoctor(
   argumentsAfterCommand: readonly string[],
   context: CliContext,
-): number {
+): Promise<number> {
   if (
     argumentsAfterCommand.length === 1 &&
     (argumentsAfterCommand[0] === "--help" ||
       argumentsAfterCommand[0] === "-h")
   ) {
-    writeLine(context.io.writeStdout, DOCTOR_HELP_TEXT);
+    writeBlock(context.io.writeStdout, DOCTOR_HELP_TEXT);
     return EXIT_CODES.success;
   }
 
@@ -353,8 +462,29 @@ function runDoctor(
     );
   }
 
-  const report = diagnoseEnvironment(context.environment);
-  writeLine(context.io.writeStdout, renderDoctorReport(report));
+  let browser: DiagnosticCheck = {
+    status: "unavailable",
+    detail: "Browser runtime probe is unavailable in this host",
+  };
+  if (context.runtimeProbe !== undefined) {
+    try {
+      const probe = await context.runtimeProbe();
+      browser = {
+        status: "ok",
+        detail: `Chromium launched (${probe.capabilities.length === 0 ? "no capabilities reported" : probe.capabilities.join(", ")})`,
+      };
+    } catch (error) {
+      browser = {
+        status: "unavailable",
+        detail: classifyCliError(error, "doctor"),
+      };
+    }
+  }
+  const report = diagnoseEnvironment(context.environment, {
+    auditOrchestrationAvailable: context.operations?.testTarget !== undefined,
+    browser,
+  });
+  writeBlock(context.io.writeStdout, renderDoctorReport(report));
 
   return doctorSucceeded(report)
     ? EXIT_CODES.success
@@ -367,18 +497,26 @@ export async function runCli(
 ): Promise<number> {
   const [command, ...argumentsAfterCommand] = arguments_;
 
+  if (arguments_.length > 128
+    || arguments_.some((argument) => !isSafeTerminalArgument(argument))) {
+    return usageError(
+      context,
+      "arguments must be bounded and must not contain terminal control or bidirectional formatting characters",
+    );
+  }
+
   if (
     command === undefined ||
     command === "--help" ||
     command === "-h"
   ) {
-    writeLine(context.io.writeStdout, HELP_TEXT);
+    writeBlock(context.io.writeStdout, HELP_TEXT);
     return EXIT_CODES.success;
   }
 
   if (command === "help") {
     if (argumentsAfterCommand.length === 0) {
-      writeLine(context.io.writeStdout, HELP_TEXT);
+      writeBlock(context.io.writeStdout, HELP_TEXT);
       return EXIT_CODES.success;
     }
 
@@ -388,7 +526,7 @@ export async function runCli(
         argumentsAfterCommand[0] === "doctor" ||
         argumentsAfterCommand[0] === "replay")
     ) {
-      writeLine(
+      writeBlock(
         context.io.writeStdout,
         argumentsAfterCommand[0] === "test"
           ? TEST_HELP_TEXT
@@ -406,7 +544,7 @@ export async function runCli(
   }
 
   if (command === "doctor") {
-    return runDoctor(argumentsAfterCommand, context);
+    return await runDoctor(argumentsAfterCommand, context);
   }
 
   if (command === "test") {
@@ -414,7 +552,13 @@ export async function runCli(
   }
 
   if (command === "replay") {
-    return runReplay(argumentsAfterCommand, context);
+    return await runReplay(argumentsAfterCommand, context);
+  }
+
+  if ((command === "version" || command === "--version" || command === "-V")
+    && argumentsAfterCommand.length === 0) {
+    writeLine(context.io.writeStdout, `tvdoctor ${CLI_VERSION}`);
+    return EXIT_CODES.success;
   }
 
   return usageError(context, `unknown command: ${command}`);

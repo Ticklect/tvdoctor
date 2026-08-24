@@ -112,6 +112,33 @@ describe("semantic baselines", () => {
       .toBe("web:https://example.test/app");
   });
 
+  it("redacts target-controlled inventory text before baseline persistence", () => {
+    const baseline = createBaseline(report("sanitised"), inventory({
+      screens: [
+        { key: "home", label: "https://example.test/app?query=QUERY_CANARY#FRAGMENT_CANARY" },
+        { key: "details", label: "Authorization: Bearer BEARER_CANARY" },
+      ],
+      focusTargets: [
+        { key: "hero", screenKey: "home", role: "button", name: "cookie: COOKIE_CANARY" },
+        { key: "back", screenKey: "details", role: "button", name: "sessionToken=SESSION_CANARY" },
+      ],
+      latencies: [{ key: "launch", operation: "Basic BASIC_CANARY", measuredMs: 500 }],
+    }), { createdAt: "2026-08-22T11:00:00.000Z" });
+    const rendered = renderBaselineJson(baseline);
+
+    for (const sentinel of [
+      "QUERY_CANARY",
+      "FRAGMENT_CANARY",
+      "BEARER_CANARY",
+      "BASIC_CANARY",
+      "COOKIE_CANARY",
+      "SESSION_CANARY",
+    ]) {
+      expect(rendered).not.toContain(sentinel);
+    }
+    expect(rendered).toContain("[REDACTED]");
+  });
+
   it("proves the clean -> one new HIGH -> restored lifecycle", () => {
     const baseline = createBaseline(report("clean"), inventory(), {
       createdAt: "2026-08-22T11:00:00.000Z",

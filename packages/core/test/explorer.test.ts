@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import {
   explore,
   pressAndObserve,
+  type ExplorationBudgets,
+  type ExplorerOptions,
   type ExplorationResult,
 } from "../src/index.js";
 
@@ -447,12 +449,82 @@ describe("bounded deterministic explorer", () => {
     expect(result.graph.actions).toHaveLength(0);
   });
 
-  it("rejects invalid or ambiguous budget/action configuration", async () => {
+  it.each([
+    ["maxActions", 0],
+    ["maxActions", -1],
+    ["maxActions", 1.5],
+    ["maxActions", Number.NaN],
+    ["maxActions", Number.POSITIVE_INFINITY],
+    ["maxActions", 1_000_001],
+    ["maxStates", 0],
+    ["maxStates", -1],
+    ["maxStates", 1.5],
+    ["maxStates", Number.NaN],
+    ["maxStates", Number.POSITIVE_INFINITY],
+    ["maxStates", 100_001],
+    ["maxDepth", -1],
+    ["maxDepth", 1.5],
+    ["maxDepth", Number.NaN],
+    ["maxDepth", Number.POSITIVE_INFINITY],
+    ["maxDepth", 4_097],
+    ["maxDurationMs", 0],
+    ["maxDurationMs", -1],
+    ["maxDurationMs", 1.5],
+    ["maxDurationMs", Number.NaN],
+    ["maxDurationMs", Number.POSITIVE_INFINITY],
+    ["maxDurationMs", 2_147_483_648],
+  ] as const)("rejects the invalid %s exploration budget %s", async (name, value) => {
     const driver = new CounterDriver();
+    const budgets = { [name]: value } as Partial<ExplorationBudgets>;
 
-    await expect(explore(driver, { budgets: { maxActions: 0 } })).rejects.toThrow("maxActions");
-    await expect(explore(driver, { budgets: { maxDepth: -1 } })).rejects.toThrow("maxDepth");
-    await expect(explore(driver, { budgets: { maxDurationMs: Number.POSITIVE_INFINITY } })).rejects.toThrow("maxDurationMs");
-    await expect(explore(driver, { actions: ["RIGHT", "RIGHT"] })).rejects.toThrow("duplicates");
+    await expect(explore(driver, { budgets })).rejects.toThrow(name);
+  });
+
+  it.each([
+    ["unknown action", { actions: ["POWER"] as unknown as readonly RemoteKey[] }, /known remote keys/u],
+    ["duplicate actions", { actions: ["RIGHT", "RIGHT"] }, /duplicates/u],
+    ["unknown profile", { profile: "turbo" as never }, /profile/u],
+    ["unknown frontier strategy", { frontierStrategy: "random" as never }, /frontierStrategy/u],
+    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, /resetStrategy/u],
+    ["non-function restore hook", { restoreInitialState: 1 as never }, /restoreInitialState/u],
+    ["non-function clock hook", { monotonicNow: 1 as never }, /monotonicNow/u],
+    ["non-function settling wait hook", { settling: { wait: 1 as never } }, /wait/u],
+    ["non-function settling comparison hook", { settling: { equivalent: 1 as never } }, /equivalent/u],
+    ["non-boolean compression flag", { repetitionCompression: { enabled: "yes" as never } }, /enabled/u],
+    ["non-finite clock result", { monotonicNow: () => Number.NaN }, /finite/u],
+  ] as const)("rejects %s", async (_label, options, message) => {
+    await expect(explore(new CounterDriver(), options as ExplorerOptions)).rejects.toThrow(message);
+  });
+
+  it.each([
+    ["maxSnapshots", 0],
+    ["maxSnapshots", -1],
+    ["maxSnapshots", 1.5],
+    ["maxSnapshots", Number.NaN],
+    ["maxSnapshots", Number.POSITIVE_INFINITY],
+    ["maxSnapshots", 1_001],
+    ["requiredStableSnapshots", 0],
+    ["requiredStableSnapshots", 1.5],
+    ["pollIntervalMs", -1],
+    ["pollIntervalMs", 0.5],
+    ["pollIntervalMs", Number.NaN],
+    ["pollIntervalMs", Number.POSITIVE_INFINITY],
+    ["pollIntervalMs", 2_147_483_648],
+  ] as const)("rejects the invalid %s settling value %s", async (name, value) => {
+    await expect(explore(new CounterDriver(), {
+      settling: {
+        strategy: "stable-snapshot",
+        [name]: value,
+      },
+    })).rejects.toThrow(name);
+  });
+
+  it("keeps zero maximum depth as an explicit valid no-expansion budget", async () => {
+    const result = await explore(new CounterDriver(), {
+      budgets: { maxDepth: 0 },
+      monotonicNow: () => 0,
+    });
+    expect(result.termination).toEqual({ reason: "max-depth", complete: false });
+    expect(result.statistics.physicalActions).toBe(0);
   });
 });

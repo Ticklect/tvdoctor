@@ -49,6 +49,13 @@ export async function writeReportBundle(
   report: TVDoctorReportV1,
 ): Promise<ReportBundle> {
   const safe = sanitiseReportForOutput(report);
+  // Do not publish a report which advertises missing, redirected, or mutated
+  // evidence. This check intentionally happens before the first derivative is
+  // written so report.json can never bless an unverifiable artifact inventory.
+  for (const artifact of safe.artifacts) {
+    if (artifact.status === "available") await store.verifyAvailableArtifact(artifact);
+  }
+  await store.prepareReportBundleWrite();
   const html = await writeOutput(store, {
     relativePath: "report.html",
     mediaType: "text/html",

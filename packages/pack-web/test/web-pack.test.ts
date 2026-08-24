@@ -13,6 +13,7 @@ import {
 } from "@tvdoctor/protocol";
 import { describe, expect, test } from "vitest";
 import {
+  DEFAULT_WEB_PACK_BUDGETS,
   flattenWebUiTree,
   isSafeSettingsSubmenu,
   isSafeWebControl,
@@ -25,6 +26,7 @@ import {
   webSemanticStateIdentity,
   type WebFocusVisualSample,
 } from "../src/index.js";
+import { WebPackSession } from "../src/internal.js";
 
 type FakeScreen = "app-settings" | "details" | "home" | "player-settings" | "search";
 
@@ -408,6 +410,89 @@ function fullOptions() {
 }
 
 describe("M7 web pack", () => {
+  test("enforces the pack-wide deadline while every driver boundary is pending", async () => {
+    const pending = <T>(): Promise<T> => new Promise(() => undefined);
+    const cases: readonly (readonly [string, () => Promise<unknown>])[] = [
+      ["capabilities", () => {
+        const driver = new FakeWebDriver();
+        driver.capabilities = () => pending<ReadonlySet<Capability>>();
+        return new WebPackSession(driver, {}, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        }).capabilities();
+      }],
+      ["snapshot", () => {
+        const driver = new FakeWebDriver();
+        driver.snapshot = () => pending<StateSnapshot>();
+        return new WebPackSession(driver, {}, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        }).snapshot();
+      }],
+      ["press", () => {
+        const driver = new FakeWebDriver();
+        driver.press = () => pending<ActionResult>();
+        return new WebPackSession(driver, {}, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        }).press("RIGHT", "probe");
+      }],
+      ["reset", () => {
+        const driver = new FakeWebDriver();
+        driver.reset = () => pending<undefined>();
+        return new WebPackSession(driver, {}, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        }).restore();
+      }],
+      ["restore hook", () => {
+        const driver = new FakeWebDriver();
+        const session = new WebPackSession(driver, {
+          restoreInitialState: () => pending<undefined>(),
+        }, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        });
+        return session.restore();
+      }],
+      ["stage hook", () => {
+        const driver = new FakeWebDriver();
+        const session = new WebPackSession(driver, {}, {
+          ...DEFAULT_WEB_PACK_BUDGETS,
+          maxDurationMs: 30,
+        });
+        return session.withinDuration(() => pending<undefined>());
+      }],
+    ];
+
+    for (const [name, run] of cases) {
+      const startedAtMs = performance.now();
+      await expect(run(), name).rejects.toMatchObject({ reason: "max-duration" });
+      expect(performance.now() - startedAtMs, name).toBeLessThan(750);
+    }
+  });
+
+  test("returns a truthful partial max-duration result for a never-settling hook", async () => {
+    const result = await runWebPack(new FakeWebDriver(), {
+      stages: ["layout"],
+      playerSettingsSequence: ["UP", "SELECT"],
+      budgets: { maxDurationMs: 30 },
+      hooks: {
+        viewport: {
+          observe: () => new Promise(() => undefined),
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      termination: { reason: "max-duration", complete: false },
+    });
+    expect(result.stages).toEqual([
+      expect.objectContaining({ stage: "layout", status: "partial" }),
+    ]);
+  });
+
   test("keeps six stages independent and reports exactly the five intended defect domains", async () => {
     const result = await runWebPack(new FakeWebDriver(), fullOptions());
 

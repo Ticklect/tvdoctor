@@ -3,7 +3,30 @@
   "version": "0.1.0",
   
   "description": "Platform-neutral contracts for TVDoctor drivers and the deterministic core.",
+  "keywords": [
+    "tvdoctor",
+    "tv",
+    "testing",
+    "typescript",
+    "protocol",
+    "remote-control"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/protocol"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,6 +37,12 @@
     }
   },
   "files": [
-    "dist"
-  ]
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "prepack": "npm run build -- --force"
+  }
 }

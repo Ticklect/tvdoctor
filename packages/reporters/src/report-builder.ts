@@ -21,6 +21,12 @@ import {
   sanitiseTargetLocation,
   sanitiseUntrustedText,
 } from "./security.js";
+import {
+  ISSUE_EVIDENCE_SLOTS,
+  issueEvidenceSlotDetails,
+  relativeIssueArtifactPath,
+  type IssueEvidenceSlot,
+} from "./artifact-store.js";
 import { stableJson, type JsonValue } from "./stable-json.js";
 
 export interface TVDoctorReportV1Input {
@@ -189,25 +195,93 @@ function stepsMatch(
   });
 }
 
+export function issueOwnsArtifactId(issueId: string, artifactId: string): boolean {
+  return ISSUE_EVIDENCE_SLOTS.some((slot) => artifactId === `${issueId}:${slot}`);
+}
+
+interface OwnedArtifact {
+  readonly issueId: string;
+  readonly slot: IssueEvidenceSlot;
+}
+
+function ownedArtifactsById(report: TVDoctorReportV1): ReadonlyMap<string, OwnedArtifact> {
+  const ownership = new Map<string, OwnedArtifact>();
+  for (const issue of report.issues) {
+    for (const slot of ISSUE_EVIDENCE_SLOTS) {
+      ownership.set(`${issue.id}:${slot}`, { issueId: issue.id, slot });
+    }
+  }
+  return ownership;
+}
+
+function assertArtifactContract(
+  artifact: ArtifactDescriptor,
+  owner: OwnedArtifact,
+): void {
+  let details;
+  try {
+    details = issueEvidenceSlotDetails(
+      owner.slot,
+      artifact.status === "available" && artifact.kind === "screenshot"
+        ? artifact.mediaType
+        : undefined,
+    );
+  } catch (error) {
+    throw new TypeError(
+      `Artifact ${artifact.id} has an invalid media type for slot ${owner.slot}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  if (artifact.kind !== details.kind) {
+    throw new TypeError(`Artifact ${artifact.id} kind ${artifact.kind} does not match slot ${owner.slot} (${details.kind}).`);
+  }
+  if (artifact.status !== "available") return;
+  if (artifact.mediaType !== details.mediaType) {
+    throw new TypeError(`Artifact ${artifact.id} media type ${artifact.mediaType} does not match slot ${owner.slot} (${details.mediaType}).`);
+  }
+  const expectedPath = relativeIssueArtifactPath(owner.issueId, owner.slot, details.extension);
+  if (artifact.path !== expectedPath) {
+    throw new TypeError(`Artifact ${artifact.id} path ${artifact.path} does not match its owned slot (${expectedPath}).`);
+  }
+}
+
 function assertReportCrossLinks(report: TVDoctorReportV1): void {
   const availableByPath = new Map<string, ArtifactDescriptor>();
+  const artifactOwnership = ownedArtifactsById(report);
+  const ownerByPath = new Map<string, OwnedArtifact>();
   for (const artifact of report.artifacts) {
+    const owner = artifactOwnership.get(artifact.id);
+    if (owner === undefined) {
+      if (artifact.kind !== "report" || !/^run:[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(artifact.id)) {
+        throw new TypeError(`Artifact ${artifact.id} is orphaned; it is neither owned by a report issue nor a run-level report artifact.`);
+      }
+    } else {
+      assertArtifactContract(artifact, owner);
+    }
     if (artifact.status !== "available") continue;
     if (availableByPath.has(artifact.path)) {
       throw new TypeError(`Multiple available artifacts use path ${artifact.path}.`);
     }
     availableByPath.set(artifact.path, artifact);
+    if (owner !== undefined) ownerByPath.set(artifact.path, owner);
   }
 
   for (const issue of report.issues) {
     for (const evidence of issue.evidence) {
-      if (evidence.artifact !== null && !availableByPath.has(evidence.artifact)) {
+      if (evidence.artifact === null) continue;
+      const artifact = availableByPath.get(evidence.artifact);
+      const owner = ownerByPath.get(evidence.artifact);
+      if (artifact === undefined || owner === undefined) {
         throw new TypeError(`Issue ${issue.id} references missing evidence artifact ${evidence.artifact}.`);
+      }
+      if (owner.issueId !== issue.id || owner.slot === "replay") {
+        throw new TypeError(`Issue ${issue.id} references evidence artifact ${evidence.artifact} owned by ${owner.issueId}:${owner.slot}.`);
       }
     }
     if (issue.reproduction.status === "available" && issue.reproduction.artifact !== null) {
       const artifact = availableByPath.get(issue.reproduction.artifact);
-      if (artifact === undefined || artifact.kind !== "replay") {
+      const owner = ownerByPath.get(issue.reproduction.artifact);
+      if (artifact === undefined || artifact.kind !== "replay" || owner?.issueId !== issue.id || owner.slot !== "replay") {
         throw new TypeError(`Issue ${issue.id} references a missing or non-replay reproduction artifact.`);
       }
     }

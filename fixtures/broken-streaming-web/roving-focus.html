@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TVDoctor roving-focus fixture</title>
+  </head>
+  <body data-screen="roving-focus">
+    <nav aria-label="Roving TV rail">
+      <button type="button" data-tv-id="roving-left" tabindex="-1">Left</button>
+      <button type="button" data-tv-id="roving-right" tabindex="-1">Right</button>
+    </nav>
+    <script>
+      const controls = [...document.querySelectorAll("button")];
+      let activeIndex = 0;
+
+      function focusActive() {
+        controls[activeIndex]?.focus({ preventScroll: true });
+      }
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        activeIndex = event.key === "ArrowRight" ? 1 : 0;
+        focusActive();
+      });
+
+      focusActive();
+    </script>
+  </body>
+</html>

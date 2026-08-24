@@ -6,6 +6,8 @@ import {
   formatDuration,
   formatRemoteSequence,
   issueCounts,
+  replayCommand,
+  replayTargetOverrideRequired,
   validReport,
 } from "./render-helpers.js";
 
@@ -18,11 +20,14 @@ function artifactMarkdown(artifact: ArtifactDescriptor): string {
 
 function issueMarkdown(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
   const artifacts = artifactsForIssue(report, issue);
+  const replayOverrideWarning = replayTargetOverrideRequired(report)
+    ? "\n\n**Original target required:** Query or fragment data was redacted from this report. Supply the original authorised URL explicitly; replay refuses to run without it."
+    : "";
   const transition = issue.transition === null
     ? "No single transition assertion was available."
     : `From:\n\n${markdownDataBlock(issue.transition.fromElement ?? "unobserved")}\n\nAction: \`${issue.transition.action}\`\n\nExpected target:\n\n${markdownDataBlock(issue.transition.expectedElement ?? "unobserved")}\n\nObserved target:\n\n${markdownDataBlock(issue.transition.observedElement ?? "unobserved")}`;
   const reproduction = issue.reproduction.status === "available"
-    ? `Original sequence executed by replay:\n\n${formatRemoteSequence(issue.reproduction.originalSequence)}${issue.reproduction.minimizedSequence === null ? "" : `\n\nRecorded minimized candidate (not executed by the M5 replay command):\n\n${formatRemoteSequence(issue.reproduction.minimizedSequence)}`}\n\nReplay command (${issue.reproduction.confidence}):\n\n    tvdoctor replay ${issue.id}`
+    ? `Original sequence executed by replay:\n\n${formatRemoteSequence(issue.reproduction.originalSequence)}${issue.reproduction.minimizedSequence === null ? "" : `\n\nRecorded minimized candidate (not executed by the M5 replay command):\n\n${formatRemoteSequence(issue.reproduction.minimizedSequence)}`}${replayOverrideWarning}\n\nReplay command (${issue.reproduction.confidence}):\n\n    ${replayCommand(report, issue.id)}`
     : `Unavailable:\n\n${markdownDataBlock(issue.reproduction.reason)}`;
   const reproductionHeading = issue.reproduction.status !== "available"
     ? "Reproduction"
@@ -76,6 +81,15 @@ ${artifacts.map((artifact) => artifactMarkdown(artifact)).join("\n") || "No arti
 export function renderReportMarkdown(report: TVDoctorReportV1): string {
   const valid = validReport(report);
   const counts = issueCounts(valid);
+  const incompleteCoverage = [
+    ...valid.coverage.packs
+      .filter((pack) => pack.status !== "completed")
+      .map((pack) => `${pack.pack}: ${pack.status}`),
+    ...valid.coverage.budget.exhausted.map((budget) => `${budget} budget exhausted`),
+  ];
+  const partialWarning = valid.run.status === "partial"
+    ? `> **INCONCLUSIVE — PARTIAL RUN**\n>\n> This report describes only completed coverage. Do not interpret absent findings as a pass.\n>\n> Recorded reasons: ${incompleteCoverage.join("; ") || "The run ended before all requested coverage completed; no more-specific reason was recorded."}\n\n`
+    : "";
   const severitySummary = ISSUE_SEVERITIES.map((severity) => `| ${severity.toUpperCase()} | ${String(counts[severity] ?? 0)} |`).join("\n");
   const groups = ISSUE_SEVERITIES.map((severity) => {
     const issues = valid.issues.filter((issue) => issue.severity === severity);
@@ -97,7 +111,7 @@ ${markdownDataBlock(valid.target.location)}
 - Mode: \`${valid.run.mode}\`
 - Duration: ${formatDuration(valid.run.durationMs)}
 
-## Summary
+${partialWarning}## Summary
 
 | Severity | Count |
 | --- | ---: |

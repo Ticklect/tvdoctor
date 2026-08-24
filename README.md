@@ -2,107 +2,102 @@
 
 Automated QA for TV apps and ten-foot interfaces.
 
-Test the journeys users actually perform—with Up, Down, Left, Right, Select,
-and Back—and keep the evidence needed to reproduce a failure.
+TVDoctor explores the journeys people perform with Up, Down, Left, Right,
+Select, and Back, then writes the evidence needed to understand and reproduce a
+failure. It runs locally: no AI service, cloud account, API key, or telemetry
+service is required.
 
-> **Public-preview status:** TVDoctor is preparing its v0.1 release. Its web
-> path has been verified against the controlled Northstar fixture in real
-> Chromium. A bounded local `tvdoctor test URL` host is now wired and remains
-> Experimental while its complete real-browser release gate runs. The packages
-> are still private `0.0.0` workspaces, and Android has unit coverage but has not
-> passed the required real-emulator gate. Do not read “implemented” as
-> “production supported.”
+> **Release status:** the source candidate and publishable packages are versioned
+> `0.1.0`, but `tvdoctor@0.1.0` has not been published to npm. The web path has
+> controlled real-Chromium evidence, the disposable Android TV emulator gate has
+> passed, and hosted GitHub Actions runs have passed for earlier exact candidates.
+> A selected release candidate is accepted only after its own clean gate and
+> exact-SHA hosted run; the release audit records that proof. All surfaces remain
+> Beta, Experimental, or Planned—nothing is Stable before the preview is released
+> and observed in wider use. Public repository visibility is also an explicit
+> owner decision; this README does not claim anonymous source access.
 
-## The short demo
+## What it finds
 
-The verified streaming gate discovers a complete remote-only journey instead
-of consuming a fixture route:
+- unreachable or lost remote focus, focus traps, broken Back behaviour, and
+  pointer-only controls;
+- semantic streaming, search, settings, accessibility, layout, performance,
+  console-error, and crash problems where the driver can observe them;
+- regressions in issues, screens, focus targets, transitions, and latency through
+  a versioned, fail-closed baseline library;
+- deterministic focus-transition reproductions where Replay V1 can express the
+  finding.
+
+Results are bounded and evidence-based. Missing observability or an exhausted
+budget becomes partial/inconclusive, never a clean pass.
+
+## Verified demo
+
+The Northstar fixture contains deliberate defects. The controlled streaming gate
+discovers this journey semantically:
 
 ```text
-Home → Details → Play → Controls → Settings → Captions → Appearance
-                                                           │
-                                                           ▼
-                                                   Text Colour visible
-                                                   but no D-pad path
+Home -> Details -> Play -> Controls -> Settings -> Captions -> Appearance
+                                                                |
+                                                                v
+                                                        Text Colour visible
+                                                        but no D-pad path
 
 TVDoctor  HIGH  remote.reachability
-           ├─ before/after screenshots
-           ├─ UI and navigation evidence
-           ├─ report.html / report.json / ai-report.md
-           └─ portable focus-transition replay
+           |- before/after screenshots
+           |- UI and navigation evidence
+           |- report.html / report.json / report.md
+           `- portable focus-transition replay
 ```
 
-On 22 August 2026 that controlled Chromium gate completed all 17 streaming
-stages and reported four deliberately seeded deterministic defects: two high
-and two medium. This is fixture evidence, not a general accuracy claim. See the
+The fixture gate completes 17 stages and reports four in-scope seeded defects.
+That is deterministic fixture evidence, not a general accuracy claim. See the
 [demo and reproduction guide](docs/demo.md).
 
-## What it provides
+## Install from a clean source checkout
 
-- deterministic, bounded remote exploration with separate screen and focus
-  graphs;
-- semantic streaming, search, settings, accessibility, layout, performance,
-  and crash stages that fail closed when evidence is unavailable;
-- local HTML, Markdown, JSON, AI-coder, screenshot, UI, transition, and replay
-  evidence bundles;
-- exact focus-transition replay with provenance and precondition checks;
-- versioned semantic baseline comparison for issues, screens, focus targets,
-  transitions, and latency;
-- platform-neutral driver contracts, an experimental Playwright adapter, and
-  an experimental ADB/UIAutomator adapter;
-- no required AI service, API key, cloud account, or telemetry service.
-
-## Try the verified source-checkout path
-
-The verified development environment is Node.js 24 and npm 11. From a clean
-checkout:
+With repository access, the declared development environment is Node.js 24 and
+npm 11. The lockfile is the dependency authority.
 
 ```sh
+git clone https://github.com/Ticklect/tvdoctor.git
+cd tvdoctor
 npm ci
 npx playwright install chromium
 npm run build
-npm run test:streaming-integration
+npm run tvdoctor -- doctor
 ```
 
-The integration gate starts the deliberately broken fixture, performs the real
-Chromium journey, verifies the report and evidence, and writes local output to
-`artifacts/milestone-6-gate/`. Generated artifacts are ignored by Git.
+On Linux CI, Playwright may need system dependencies:
 
-Run the fixture interactively:
+```sh
+npx playwright install chromium --with-deps
+```
+
+Start the deliberately broken local target in one terminal:
 
 ```sh
 npm run fixture:dev
 ```
 
-Open `http://127.0.0.1:5173` and use Arrow keys, Enter, and Escape. Northstar is
-intentionally broken; it is a fixture and benchmark, not a reference TV UI.
-
-With the fixture running, a second terminal can invoke the new bounded local
-audit host:
+Open `http://127.0.0.1:5173` manually, or audit it from a second terminal:
 
 ```sh
-npm run tvdoctor -- test http://127.0.0.1:5173 --pack navigation --pack streaming --mode standard --output tvdoctor-report --query N
+npm run tvdoctor -- test http://127.0.0.1:5173 \
+  --pack navigation \
+  --pack streaming \
+  --mode standard \
+  --output tvdoctor-report \
+  --query N
 ```
 
-Supported pack names are `navigation`, `streaming`, `search`, `settings`,
-`accessibility`, `layout`, `performance`, and `crashes`; omit `--pack` to select
-`all`. This local command is Experimental until the complete controlled audit
-gate passes. A partial run exits inconclusively and must not be treated as clean.
+Use Arrow keys, Enter, and Escape in the fixture. Northstar is a benchmark, not
+a reference TV interface.
 
-Check the CLI foundation and replay a generated deterministic issue:
+### Registry installation
 
-```sh
-npm run tvdoctor -- doctor
-npm run tvdoctor -- replay ISSUE_ID --report artifacts/milestone-6-gate/report.json --target http://127.0.0.1:5173
-```
-
-Start `npm run fixture:dev` before the replay command. Replay V1 proves focus
-transitions only; numeric playback, visual, latency, and log findings remain
-review-only when that schema cannot express their corrected state.
-
-### Registry installation after the v0.1 publish gate
-
-These are the intended public commands, **not current installation claims**:
+These commands are the intended npm experience after publication; they are not
+an assertion that `tvdoctor@0.1.0` is currently available from the registry:
 
 ```sh
 npm install --save-dev tvdoctor
@@ -110,92 +105,217 @@ npx playwright install chromium
 npx tvdoctor test http://127.0.0.1:3000
 ```
 
-They become supported only after the packages are versioned, made publishable,
-installed in a clean consumer project, and the end-to-end CLI audit gate passes.
-Until then, use the source-checkout commands above.
+Until publication is verified, use the source-checkout commands above.
 
-## Output
+## CLI reference
 
-A complete report bundle can contain:
+```text
+tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
+tvdoctor doctor
+tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
+tvdoctor version
+tvdoctor --help
+```
+
+`test` accepts one absolute HTTP(S) URL without embedded credentials:
+
+| Option | Values and behaviour |
+| --- | --- |
+| `--pack NAME` | `navigation`, `streaming`, `search`, `settings`, `accessibility`, `layout`, `performance`, or `crashes`. Repeat to select several. Omit it (or use `all` alone) to run every pack. |
+| `--mode MODE` | `quick`, `standard` (default), or `deep`. Modes select predefined bounded action/state/depth/time profiles; the report records the effective combined budgets. |
+| `--output PATH` | New report-bundle directory. Defaults to `tvdoctor-report`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
+| `--query TEXT` | Printable, non-sensitive search text, at most 64 characters. Defaults to `N`. It may be entered into the target and retained as evidence. |
+
+`doctor` checks the declared Node runtime, host, installed Playwright Chromium,
+and whether the audit host is available. Run it before a long audit.
+
+`version`, `--version`, and `-V` print the installed CLI package version.
+
+### Exit codes
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | Command completed successfully: an audit found no issues, replay classified the issue fixed, or doctor/help/version succeeded. |
+| `1` | The audit completed and found one or more issues; replay reproduced an issue; or doctor found an unavailable requirement. |
+| `2` | Invalid command, option, URL, identifier, or other usage. |
+| `3` | Partial audit or inconclusive replay. The result is not clean. |
+| `4` | Execution failed before a trustworthy result was produced. |
+
+CI must fail on every non-zero code unless a workflow is deliberately collecting
+a known seeded-fixture result. In particular, never translate code 3 into pass.
+
+## Complete, partial, and failed runs
+
+A complete audit exhausted no required coverage boundary. It can still exit 1
+because confirmed findings are the product output.
+
+A partial audit records which pack or stage could not complete and exits 3. Common
+causes include duration/action/state limits, target disappearance, missing
+capabilities, unstable reset/replay, or interrupted evidence capture. Open the
+bundle, read **Run status**, **Pack coverage**, and unavailable-evidence reasons,
+fix the stated cause, and rerun into a new output directory. A partial run with
+zero findings does not show that the target is clean.
+
+Exit 4 means no trustworthy command result was produced. A partial bundle may
+still exist after a late failure; treat it as diagnostic material only.
+
+## Report bundle
 
 ```text
 tvdoctor-report/
-├── report.html       interactive human report
-├── report.md         portable human summary
-├── report.json       canonical tvdoctor.report/v1 data
-├── ai-report.md      evidence-linked coding tasks and review items
-├── evidence/         screenshots, UI excerpts, transitions, and logs
-└── replays/          available portable replay documents
+|- report.html       interactive human report
+|- report.md         portable human summary
+|- report.json       canonical tvdoctor.report/v1 document
+|- ai-report.md      deterministic evidence-linked work items
+|- stage-ledger.json internal stage/recovery record
+|- inventory.json    semantic baseline inventory
+|- evidence/         screenshots, UI excerpts, transitions, and logs
+`- replays/          available tvdoctor.replay/v1 documents
 ```
 
-Unavailable evidence is recorded as unavailable; it is not silently omitted or
-turned into a pass. Report generation redacts common credential shapes and
-escapes target-controlled text, but reports must still be reviewed before they
-are shared publicly.
+Start with `report.html`. It shows run and pack status, target environment,
+coverage/budgets, issue severity and confidence, expected versus observed
+behaviour, exact steps, runtime evidence, artifact links, and replay availability.
+`report.json` is the canonical machine-readable result; Markdown is a portable
+view, not a second source of truth.
 
-## Compatibility and support levels
+Open the static HTML locally:
+
+```sh
+# macOS
+open tvdoctor-report/report.html
+
+# Linux
+xdg-open tvdoctor-report/report.html
+
+# Windows PowerShell
+Start-Process .\tvdoctor-report\report.html
+```
+
+Unavailable evidence is represented explicitly. Report generation escapes
+target-controlled content and redacts common credential shapes, but screenshots,
+UI text, logs, URLs, and search input can still contain sensitive information.
+Review the entire bundle before sharing or uploading it.
+
+## Replay
+
+With the target running, copy a deterministic issue ID from the report:
+
+```sh
+npm run tvdoctor -- replay ISSUE_ID \
+  --report tvdoctor-report/report.json \
+  --target http://127.0.0.1:5173
+```
+
+Replay V1 resets the target, executes the stored setup path, checks the focus
+precondition, sends the final remote action, and compares the observed transition.
+It does not rerun the audit and it does not prove root cause.
+
+Only deterministic focus-transition findings with an available, correlated V1
+replay are executable. Numeric playback state, selection, focus styling,
+geometry, clipping, latency, log, crash, and screenshot findings remain
+review-only when V1 cannot express their corrected state.
+
+Reports strip credentials and may strip an original URL's query or fragment. If
+the audited route depended on a query string or hash, replay must not guess it:
+pass the exact authorised route again with `--target`. Never put passwords,
+tokens, session IDs, or personal data in that URL.
+
+## CI and release checks
+
+The repository workflow uses Node 24, installs Playwright Chromium, runs build,
+lint, typecheck, unit and real-browser integration gates, executes the exact CLI
+M7 integration, performs clean tarball/consumer smoke testing, and uploads useful
+failure artifacts. It uses no repository secrets.
+
+Run the same release-relevant checks locally:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run check
+npm run test:package-smoke
+node examples/baseline-ci-example.mjs
+```
+
+Generated artifacts are ignored by Git. The [release procedure](RELEASE.md)
+requires a clean worktree and a hosted run at the exact candidate commit; an
+older green run is supporting evidence, not proof of a changed candidate.
+
+## Troubleshooting
+
+- **Chromium executable is missing:** run `npx playwright install chromium`; on
+  Linux CI use `--with-deps`, then rerun `tvdoctor doctor`.
+- **Unsupported Node/npm:** install a Node 24/npm 11 environment and rerun
+  `npm ci`. Do not use `--force` to bypass the declared engine range.
+- **Target cannot be reached:** open the URL in Chromium from the same host,
+  confirm the local server is still running, and avoid production/authenticated
+  targets.
+- **Output directory already exists or is unwritable:** choose a new directory
+  under a trusted writable location. TVDoctor does not merge report bundles.
+- **Audit seems slow:** packs intentionally reset and replay paths; dynamic pages
+  can consume the bounded settle and duration budgets. Use `quick` for an initial
+  probe, then inspect partial reasons before increasing scope.
+- **Replay is inconclusive:** confirm the target version and route match the
+  report, supply `--target` when query/hash routing was redacted, and check the
+  issue has an available deterministic replay.
+- **Interrupted run:** confirm the target and browser processes stopped, retain
+  any partial bundle for diagnosis, and rerun into a fresh directory.
+
+## Compatibility and support
 
 Status words are deliberate:
 
-- **Stable** — compatibility and production support are promised. Nothing is
-  Stable in the v0.1 preview.
-- **Beta** — substantially verified, but public APIs or formats may still change
-  before 1.0.
-- **Experimental** — useful for controlled evaluation; support and coverage are
-  intentionally narrow.
-- **Planned** — no current support claim.
+- **Stable** promises maintained production compatibility. Nothing is Stable in
+  the v0.1 preview.
+- **Beta** has repeatable controlled evidence, but can still change before 1.0.
+- **Experimental** is useful for bounded evaluation with intentionally narrow
+  support and evidence.
+- **Planned** is not implemented or supported.
 
 | Surface | Status | Evidence and boundary |
 | --- | --- | --- |
-| Node.js 24 + npm 11 workspace | Beta | Verified local toolchain; other major versions are outside the declared engine range. |
-| `tvdoctor.report/v1` and `tvdoctor.replay/v1` | Beta | Strict parsing, cross-link, redaction, rendering, and fresh-browser replay tests. |
-| Deterministic core and streaming pack | Beta | Unit tests and controlled real-Chromium gates; no general-app accuracy claim. |
-| Playwright Chromium web driver | Experimental | Real Chromium against Northstar; DOM semantic tree is not a browser accessibility tree. |
-| General `tvdoctor test URL` CLI audit | Experimental | Bounded local host is wired; the complete controlled audit release gate is still pending. |
-| Android TV ADB/UIAutomator driver | Experimental | Implementation and fake-ADB unit tests exist; real emulator/device gate is pending. |
-| Baseline comparison library | Experimental | Versioned fail-closed library; CLI/hosted-CI release workflow is pending. |
-| Linux and macOS release verification | Planned | No hosted matrix is claimed in this checkout. |
-| Physical Android/Google TV devices | Planned verification | Never claim support from emulator or fake-ADB evidence alone. |
-| Fire TV, Roku, Tizen, and webOS drivers | Planned | No adapters or support commitments yet. |
+| Node.js 24 + npm 11 source workspace | Beta | Clean local and hosted Linux installs have passed; other major versions are outside the declared engine range. |
+| `tvdoctor.report/v1` and `tvdoctor.replay/v1` | Beta | Strict parsing, cross-link, redaction, rendering, and real-browser replay tests. Formats remain pre-1.0. |
+| Deterministic core and streaming pack | Beta | Unit and controlled real-Chromium fixture gates; no arbitrary-app accuracy claim. |
+| Playwright Chromium web driver | Experimental | Real Chromium and bounded production probes; DOM semantic tree is not the browser accessibility tree. |
+| `tvdoctor test URL` audit host | Experimental | Complete controlled M7 fixture gate and bounded production stress evidence; broader framework/browser evidence is still limited. |
+| Android TV ADB/UIAutomator driver | Experimental | Fake-executor tests plus a disposable API 36 Android TV emulator gate; no physical-device/vendor compatibility claim. |
+| Baseline comparison library | Experimental | Versioned fail-closed library, controlled lifecycle proof, hosted example; not yet a standalone CLI workflow. |
+| Linux hosted verification | Beta evidence | Earlier exact candidates passed on `ubuntu-latest`; every changed release candidate needs a new exact-SHA run. |
+| Windows development verification | Experimental evidence | Local release work has run on Windows; no hosted Windows matrix is claimed. |
+| macOS release verification | Planned | No hosted matrix is claimed. |
+| Physical Android/Google TV devices | Planned verification | Emulator evidence never implies physical-device support. |
+| Fire TV, Roku, Tizen, and webOS | Planned | No adapters or compatibility commitments. |
 
-See [current limitations](docs/limitations.md) before using TVDoctor on an app
-or in CI.
-
-## Architecture
-
-Drivers translate a platform into the small `TVDoctorDriver` contract. The core
-builds bounded state graphs; independent packs interpret observable behaviour;
-reporters write a canonical local bundle; the baseline library compares two
-compatible runs. Platform-specific probes remain outside the neutral core.
-
-The [architecture guide](docs/architecture.md) describes the trust boundaries,
-package ownership, observability rules, and extension points.
+Read [current limitations](docs/limitations.md), the
+[architecture guide](docs/architecture.md), and [baselines and CI](docs/baselines-and-ci.md)
+before relying on a result.
 
 ## Documentation
 
 - [Demo and exact reproduction](docs/demo.md)
-- [Architecture](docs/architecture.md)
 - [Examples](docs/examples.md)
 - [Fixtures and benchmark controls](docs/fixtures.md)
 - [Web driver](docs/drivers/web.md)
-- [Android driver status](docs/drivers/android.md)
+- [Android driver](docs/drivers/android.md)
 - [Writing a driver](docs/drivers/authoring.md)
 - [Baselines and CI](docs/baselines-and-ci.md)
+- [Architecture](docs/architecture.md)
 - [Limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
+- [Release procedure](RELEASE.md)
+- [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
-## Contributing and security
+## Contributing, security, and licence
 
-Bug reports, fixture improvements, diagnostics, and carefully scoped driver work
-are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md) first. Do not include secrets, proprietary
-application data, or unredacted reports in an issue.
+Bug reports, fixtures, diagnostics, and carefully scoped driver work are welcome.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Do not put secrets, proprietary target
+data, or unredacted report bundles in an issue.
 
-Report suspected vulnerabilities privately as described in
-[SECURITY.md](SECURITY.md).
-
-## Licence
-
-TVDoctor is available under the [MIT Licence](LICENSE).
+Report suspected vulnerabilities through GitHub's private vulnerability-reporting
+flow described in [SECURITY.md](SECURITY.md). TVDoctor is available under the
+[MIT Licence](LICENSE).

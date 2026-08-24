@@ -5,8 +5,7 @@ import {
   type TVDoctorIssue,
   type TVDoctorReportV1,
 } from "@tvdoctor/protocol";
-import { ISSUE_EVIDENCE_SLOTS } from "./artifact-store.js";
-import { sanitiseReportForOutput } from "./report-builder.js";
+import { issueOwnsArtifactId, sanitiseReportForOutput } from "./report-builder.js";
 
 export function validReport(report: TVDoctorReportV1): TVDoctorReportV1 {
   return sanitiseReportForOutput(report);
@@ -31,12 +30,22 @@ export function formatRemoteSequence(steps: readonly RemotePressStep[]): string 
   return steps.map((step) => step.repeat === 1 ? step.key : `${step.key} × ${String(step.repeat)}`).join(" → ");
 }
 
+export function replayTargetOverrideRequired(report: TVDoctorReportV1): boolean {
+  return report.target.environment["replayTargetOverride"] === "required";
+}
+
+export function replayCommand(report: TVDoctorReportV1, issueId: string): string {
+  const base = `tvdoctor replay ${issueId}`;
+  return replayTargetOverrideRequired(report)
+    ? `${base} --target <ORIGINAL_URL>`
+    : base;
+}
+
 export function artifactsForIssue(
   report: TVDoctorReportV1,
   issue: TVDoctorIssue,
 ): readonly ArtifactDescriptor[] {
-  const ownedIds = new Set(ISSUE_EVIDENCE_SLOTS.map((slot) => `${issue.id}:${slot}`));
-  return report.artifacts.filter((artifact) => ownedIds.has(artifact.id));
+  return report.artifacts.filter((artifact) => issueOwnsArtifactId(issue.id, artifact.id));
 }
 
 export function availableArtifactPath(

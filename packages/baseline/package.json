@@ -3,7 +3,29 @@
   "version": "0.1.0",
   
   "description": "Fail-closed semantic baseline comparison for TVDoctor reports.",
+  "keywords": [
+    "tvdoctor",
+    "tv",
+    "testing",
+    "baseline",
+    "regression"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/baseline"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,13 +37,15 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false"
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
+    "prepack": "npm run build -- --force"
   },
   "dependencies": {
     "@tvdoctor/protocol": "0.1.0"

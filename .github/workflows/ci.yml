@@ -6,21 +6,40 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  FORCE_COLOR: "0"
+  PLAYWRIGHT_HTML_OPEN: "never"
+
 jobs:
   quality-gate:
-    name: Aggregate quality gate
+    name: Aggregate release-candidate gate
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the exact candidate
+        # actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - name: Configure Node.js 24
+        # actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
           cache: npm
 
-      - run: npm ci
+      - name: Install locked dependencies
+        run: npm ci
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
@@ -43,14 +62,35 @@ jobs:
       - name: Web driver integration tests
         run: npm run test:driver
 
-      - name: Core explorer + M8 + M10 integration tests
+      - name: Core explorer, carousel, and baseline integrations
         run: npm run test:core-integration
 
-      - name: Report/replay integration tests (M5)
+      - name: Report and replay integration
         run: npm run test:report-integration
 
-      - name: Streaming journey integration tests (M6)
+      - name: Streaming journey integration
         run: npm run test:streaming-integration
 
-      - name: Baseline CI example
+      - name: Exact CLI M7 integration
+        run: npm run test:cli-integration
+
+      - name: Baseline consumer example
         run: node examples/baseline-ci-example.mjs
+
+      - name: Package tarball and clean-consumer smoke test
+        run: npm run test:package-smoke
+
+      - name: Upload diagnostic artifacts after failure
+        if: ${{ failure() }}
+        # actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tvdoctor-ci-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/
+            test-results/
+            playwright-report/
+            packages/**/test-results/
+            packages/**/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,7 +1,8 @@
 # Examples
 
-These examples describe the current source workspaces. Registry commands remain
-pending until v0.1 package publication and clean-consumer verification.
+These examples describe the current `0.1.0` source packages. Package/consumer
+smoke tests exist, but registry commands remain unsupported until npm publication
+and post-publication installation are verified.
 
 ## Inspect a web target through the driver
 
@@ -112,7 +113,9 @@ npm run tvdoctor -- replay ISSUE_ID --report tvdoctor-report/report.json
 
 Use `--target http://127.0.0.1:3000` to override a recorded web target. The CLI
 accepts deterministic, correlated focus-transition replays; unsupported issue
-semantics are rejected instead of approximated.
+semantics are rejected instead of approximated. When an audited route used a
+query string or fragment, the report may redact it; pass the exact authorised
+route again with `--target` rather than replaying a different page.
 
 ## Experimental local CLI audit
 
@@ -124,6 +127,12 @@ npm run tvdoctor -- test http://127.0.0.1:3000 --pack navigation --pack streamin
 
 Pack names are `navigation`, `streaming`, `search`, `settings`, `accessibility`,
 `layout`, `performance`, and `crashes`. Repeating `--pack` selects several;
-omitting it selects `all`. The source-checkout host is wired but remains
-Experimental until its complete real-browser integration gate passes. After
-registry publication, the intended equivalent is `npx tvdoctor test ...`.
+omitting it selects `all`. The complete controlled M7 fixture gate has passed;
+the audit host remains Experimental because that evidence does not establish
+arbitrary-app accuracy. After registry publication, the intended equivalent is
+`npx tvdoctor test ...`.
+
+A complete run can exit 1 when it finds issues. A partial/inconclusive run exits
+3 and is never a clean result. Write each run to a new trusted output directory,
+then open `report.html` and inspect pack coverage and unavailable evidence before
+using `report.json` in automation.

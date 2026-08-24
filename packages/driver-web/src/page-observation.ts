@@ -33,12 +33,23 @@ export interface PageObservationTimings {
   readonly browserRoundTripAndQueueingMs: number;
 }
 
+export interface PageObservationWorkLimits {
+  readonly maxDepth: number;
+  readonly maxScannedNodeCount: number;
+  readonly maxTextChars: number;
+}
+
 export async function capturePageObservation(
   page: Page,
   maxNodeCount: number,
+  workLimits: PageObservationWorkLimits = {
+    maxDepth: 128,
+    maxScannedNodeCount: 20_000,
+    maxTextChars: 512_000,
+  },
 ): Promise<CapturedPageObservation> {
   const captureStartedAtMs = performance.now();
-  const observation = await page.evaluate((nodeLimit) => {
+  const observation = await page.evaluate(({ nodeLimit, limits }) => {
     const evaluationStartedAtMs = performance.now();
     interface Bounds {
       x: number;
@@ -65,19 +76,88 @@ export async function capturePageObservation(
       attributes: Record<string, string>;
     }
 
+    type TruncationReason = "captured-nodes" | "depth" | "scanned-nodes" | "text";
+
     const textLimit = 240;
+    const textInspectionLimit = textLimit * 4;
+    const truncationReasons = new Set<TruncationReason>();
+    let capturedNodeCount = 0;
+    let scannedNodeCount = 0;
+    let textCharsRead = 0;
+    let textNodesScanned = 0;
+
+    const consumeTextPrefix = (value: string, maximum: number): string => {
+      const remaining = Math.max(0, limits.maxTextChars - textCharsRead);
+      const inspectedLength = Math.min(value.length, maximum, remaining);
+      if (inspectedLength < Math.min(value.length, maximum)) {
+        truncationReasons.add("text");
+      }
+      textCharsRead += inspectedLength;
+      return value.slice(0, inspectedLength);
+    };
+
     const boundedValue = (value: string | null | undefined): string | null => {
       if (typeof value !== "string" || value.length === 0) {
         return null;
       }
-      return value.slice(0, textLimit);
+      const bounded = consumeTextPrefix(value, textLimit);
+      return bounded.length === 0 ? null : bounded;
     };
 
     const normaliseText = (value: string | null): string | null => {
       if (value === null) {
         return null;
       }
-      const normalised = value.replace(/\s+/gu, " ").trim();
+      const normalised = consumeTextPrefix(value, textInspectionLimit).replace(/\s+/gu, " ").trim();
+      return normalised.length === 0 ? null : normalised.slice(0, textLimit);
+    };
+
+    const textFromSubtree = (root: Node, directOnly = false): string | null => {
+      const pieces: string[] = [];
+      let normalisedLength = 0;
+      const stack: { readonly node: Node; readonly depth: number }[] = [];
+      const initialCount = Math.min(
+        root.childNodes.length,
+        Math.max(0, limits.maxScannedNodeCount - textNodesScanned),
+      );
+      if (initialCount < root.childNodes.length) truncationReasons.add("text");
+      for (let index = initialCount - 1; index >= 0; index -= 1) {
+        const child = root.childNodes.item(index);
+        if (child !== null) stack.push({ node: child, depth: 1 });
+      }
+
+      while (stack.length > 0 && normalisedLength < textLimit) {
+        if (textNodesScanned >= limits.maxScannedNodeCount || textCharsRead >= limits.maxTextChars) {
+          truncationReasons.add("text");
+          break;
+        }
+        const current = stack.pop();
+        if (current === undefined) break;
+        textNodesScanned += 1;
+        if (current.node.nodeType === Node.TEXT_NODE) {
+          const piece = normaliseText(current.node.nodeValue);
+          if (piece !== null) {
+            pieces.push(piece);
+            normalisedLength += piece.length + 1;
+          }
+          continue;
+        }
+        if (directOnly || current.depth >= limits.maxDepth) {
+          if (!directOnly && current.node.hasChildNodes()) truncationReasons.add("text");
+          continue;
+        }
+        const remainingNodeWork = Math.max(
+          0,
+          limits.maxScannedNodeCount - textNodesScanned - stack.length,
+        );
+        const childCount = Math.min(current.node.childNodes.length, remainingNodeWork);
+        if (childCount < current.node.childNodes.length) truncationReasons.add("text");
+        for (let index = childCount - 1; index >= 0; index -= 1) {
+          const child = current.node.childNodes.item(index);
+          if (child !== null) stack.push({ node: child, depth: current.depth + 1 });
+        }
+      }
+      const normalised = pieces.join(" ").replace(/\s+/gu, " ").trim();
       return normalised.length === 0 ? null : normalised.slice(0, textLimit);
     };
 
@@ -160,17 +240,20 @@ export async function capturePageObservation(
 
       const labelledBy = element.getAttribute("aria-labelledby");
       if (labelledBy !== null) {
-        const labels = labelledBy.split(/\s+/u)
-          .map((id) => document.getElementById(id)?.textContent ?? "")
-          .join(" ");
-        const labelledName = normaliseText(labels);
+        const labels = boundedValue(labelledBy)?.split(/\s+/u) ?? [];
+        const labelledName = normaliseText(labels
+          .map((id) => {
+            const label = element.ownerDocument.getElementById(id);
+            return label === null ? "" : textFromSubtree(label) ?? "";
+          })
+          .join(" "));
         if (labelledName !== null) {
           return labelledName;
         }
       }
 
       if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-        const labelText = Array.from(element.labels ?? []).map((label) => label.textContent ?? "").join(" ");
+        const labelText = Array.from(element.labels ?? []).map((label) => textFromSubtree(label) ?? "").join(" ");
         const labelledName = normaliseText(labelText);
         if (labelledName !== null) {
           return labelledName;
@@ -198,16 +281,11 @@ export async function capturePageObservation(
         "tab",
       ]);
       return role !== null && rolesNamedByContent.has(role)
-        ? normaliseText(element.textContent)
+        ? textFromSubtree(element)
         : null;
     };
 
-    const directTextFor = (element: Element): string | null => normaliseText(
-      Array.from(element.childNodes)
-        .filter((node) => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.textContent ?? "")
-        .join(" "),
-    );
+    const directTextFor = (element: Element): string | null => textFromSubtree(element, true);
 
     type SelectionState = "on" | "off" | "mixed";
 
@@ -315,7 +393,7 @@ export async function capturePageObservation(
     const attributesFor = (element: Element): Record<string, string> => Object.fromEntries(
       Array.from(element.attributes)
         .filter((attribute) => allowedAttribute(attribute.name))
-        .map((attribute) => [attribute.name, attribute.value.slice(0, textLimit)]),
+        .map((attribute) => [attribute.name, consumeTextPrefix(attribute.value, textLimit)]),
     );
 
     const isEnabled = (element: Element): boolean => {
@@ -376,25 +454,85 @@ export async function capturePageObservation(
       "ul",
     ]);
 
+    const auxiliaryStartedAtMs = performance.now();
     let deepActiveElement: Element = document.activeElement ?? document.documentElement;
-
-    let capturedNodeCount = 0;
-    let truncated = false;
-
-    const visit = (element: Element): DomNode[] => {
-      if (capturedNodeCount >= nodeLimit) {
-        truncated = true;
-        return [];
+    for (let depth = 0; depth < limits.maxDepth; depth += 1) {
+      let nestedActive: Element | null = null;
+      if (deepActiveElement instanceof HTMLIFrameElement) {
+        try {
+          nestedActive = deepActiveElement.contentDocument?.activeElement ?? null;
+        } catch {
+          nestedActive = null;
+        }
+      } else if (deepActiveElement.shadowRoot !== null) {
+        nestedActive = deepActiveElement.shadowRoot.activeElement;
       }
+      if (nestedActive === null
+        || nestedActive === nestedActive.ownerDocument.body
+        || nestedActive === nestedActive.ownerDocument.documentElement) {
+        break;
+      }
+      deepActiveElement = nestedActive;
+      if (depth === limits.maxDepth - 1) truncationReasons.add("depth");
+    }
+    const activeElement = deepActiveElement !== deepActiveElement.ownerDocument.body
+      && deepActiveElement !== deepActiveElement.ownerDocument.documentElement
+      ? deepActiveElement
+      : null;
 
+    const childElementsFor = (element: Element, maximum: number): readonly Element[] => {
+      const collections: HTMLCollection[] = [];
+      if (element instanceof HTMLIFrameElement && frameBoundaryFor(element) === "same-origin") {
+        const frameChildren = element.contentDocument?.body?.children;
+        if (frameChildren === undefined) return [];
+        collections.push(frameChildren);
+      } else {
+        if (element.shadowRoot !== null) collections.push(element.shadowRoot.children);
+        collections.push(element.children);
+      }
+      const children: Element[] = [];
+      let totalChildren = 0;
+      for (const collection of collections) {
+        totalChildren += collection.length;
+        for (let index = 0; index < collection.length && children.length < maximum; index += 1) {
+          const child = collection.item(index);
+          if (child !== null) children.push(child);
+        }
+      }
+      if (children.length < totalChildren) truncationReasons.add("scanned-nodes");
+      return children;
+    };
+
+    interface PendingElement {
+      readonly element: Element;
+      readonly output: DomNode[];
+      readonly depth: number;
+    }
+
+    const observedMediaElements: HTMLMediaElement[] = [];
+    const uiTree: DomNode[] = [];
+    const pendingElements: PendingElement[] = [{ element: document.documentElement, output: uiTree, depth: 0 }];
+
+    const domEnumerationStartedAtMs = performance.now();
+    const semanticAnalysisStartedAtMs = performance.now();
+    while (pendingElements.length > 0) {
+      if (scannedNodeCount >= limits.maxScannedNodeCount) {
+        truncationReasons.add("scanned-nodes");
+        break;
+      }
+      const pending = pendingElements.pop();
+      if (pending === undefined) break;
+      if (pending.depth > limits.maxDepth) {
+        truncationReasons.add("depth");
+        continue;
+      }
+      scannedNodeCount += 1;
+
+      const { element } = pending;
+      if (element instanceof HTMLMediaElement) observedMediaElements.push(element);
       const role = roleFor(element);
       const tagName = element.tagName.toLowerCase();
       const stableId = stableIdFor(element);
-    const focusable = element.nodeType === Node.ELEMENT_NODE
-      && "tabIndex" in element
-      && typeof element.tabIndex === "number"
-      && element.tabIndex >= 0
-      && isEnabled(element);
       const frameBoundary = frameBoundaryFor(element);
       const include = element === document.body
         || stableId !== null
@@ -403,62 +541,61 @@ export async function capturePageObservation(
         || semanticTags.has(tagName)
         || element.hasAttribute("data-screen");
 
-      if (!include) {
-        return Array.from(element.children).flatMap((child) => visit(child));
+      let childOutput = pending.output;
+      if (include) {
+        if (capturedNodeCount >= nodeLimit) {
+          truncationReasons.add("captured-nodes");
+          break;
+        }
+        capturedNodeCount += 1;
+        const focused = element === document.activeElement || element === deepActiveElement;
+        // Roving-focus TV interfaces intentionally keep the active control at
+        // tabindex=-1 and move focus programmatically with the D-pad. Preserve
+        // sequential tab semantics for inactive controls while reporting the
+        // currently focused, enabled control as TV/programmatically focusable.
+        const visible = isVisible(element);
+        const enabled = isEnabled(element);
+        const focusable = "tabIndex" in element
+          && typeof element.tabIndex === "number"
+          && (element.tabIndex >= 0 || (focused && visible))
+          && enabled;
+        const node: DomNode = {
+          stableId,
+          role,
+          name: nameFor(element, role),
+          text: directTextFor(element),
+          bounds: boundsFor(element),
+          visible,
+          modal: isModal(element, role),
+          focusable,
+          focused,
+          selectionState: selectionStateFor(element),
+          valueNow: valueNowFor(element),
+          children: [],
+          tagName,
+          enabled,
+          attributes: attributesFor(element),
+        };
+        if (frameBoundary !== null) node.attributes["data-tv-frame"] = frameBoundary;
+        pending.output.push(node);
+        childOutput = node.children;
       }
 
-      capturedNodeCount += 1;
-      const node: DomNode = {
-        stableId,
-        role,
-        name: nameFor(element, role),
-        text: directTextFor(element),
-        bounds: boundsFor(element),
-        visible: isVisible(element),
-        modal: isModal(element, role),
-        focusable,
-        focused: element === document.activeElement || element === deepActiveElement,
-        selectionState: selectionStateFor(element),
-        valueNow: valueNowFor(element),
-        children: [],
-        tagName,
-        enabled: isEnabled(element),
-        attributes: attributesFor(element),
-      };
-      if (frameBoundary !== null) {
-        node.attributes["data-tv-frame"] = frameBoundary;
+      const remainingScanCapacity = Math.max(
+        0,
+        limits.maxScannedNodeCount - scannedNodeCount - pendingElements.length,
+      );
+      const children = childElementsFor(element, remainingScanCapacity);
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        const child = children[index];
+        if (child !== undefined) {
+          pendingElements.push({ element: child, output: childOutput, depth: pending.depth + 1 });
+        }
       }
-      node.children = frameBoundary === "same-origin" && element instanceof HTMLIFrameElement
-        ? Array.from(element.contentDocument?.body?.children ?? [])
-          .filter((child) => child.nodeType === Node.ELEMENT_NODE)
-          .flatMap((child) => visit(child))
-        : Array.from(element.children).flatMap((child) => visit(child));
-      return [node];
-    };
-
-    const auxiliaryStartedAtMs = performance.now();
-    let activeCandidate: Element = document.activeElement ?? document.documentElement;
-    while (activeCandidate instanceof HTMLIFrameElement) {
-      let nestedActive: Element | null;
-      try {
-        nestedActive = activeCandidate.contentDocument?.activeElement ?? null;
-      } catch {
-        nestedActive = null;
-      }
-      if (nestedActive === null
-        || nestedActive.nodeType !== Node.ELEMENT_NODE
-        || nestedActive === nestedActive.ownerDocument.body
-        || nestedActive === nestedActive.ownerDocument.documentElement) {
-        break;
-      }
-      activeCandidate = nestedActive as Element;
     }
-    deepActiveElement = activeCandidate;
-    const activeElement = activeCandidate.nodeType === Node.ELEMENT_NODE
-      && activeCandidate !== activeCandidate.ownerDocument.body
-      && activeCandidate !== activeCandidate.ownerDocument.documentElement
-      ? activeCandidate
-      : null;
+    const domEnumerationMs = performance.now() - domEnumerationStartedAtMs;
+    const semanticAnalysisMs = performance.now() - semanticAnalysisStartedAtMs;
+
     let focus: FocusTarget | null = null;
     if (activeElement !== null) {
       const role = roleFor(activeElement);
@@ -478,7 +615,7 @@ export async function capturePageObservation(
       focus = candidate;
     }
 
-    const mediaElements = Array.from(document.querySelectorAll<HTMLMediaElement>("audio, video")).map((media) => {
+    const mediaElements = observedMediaElements.map((media) => {
       const buffered: { startSeconds: number; endSeconds: number }[] = [];
       for (let index = 0; index < media.buffered.length; index += 1) {
         buffered.push({
@@ -520,14 +657,6 @@ export async function capturePageObservation(
     const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     const optionalDuration = (value: number): number | null => Number.isFinite(value) && value >= 0 ? value : null;
 
-    const domEnumerationStartedAtMs = performance.now();
-    const domElementCount = document.querySelectorAll("*").length;
-    const domEnumerationMs = performance.now() - domEnumerationStartedAtMs;
-
-    const semanticAnalysisStartedAtMs = performance.now();
-    const uiTree = visit(document.body);
-    const semanticAnalysisMs = performance.now() - semanticAnalysisStartedAtMs;
-
     return {
       focus,
       mediaElements,
@@ -546,9 +675,16 @@ export async function capturePageObservation(
       uiTree,
       uiTreeMetadata: {
         capturedNodeCount,
+        domElementCount: scannedNodeCount,
+        maxDepth: limits.maxDepth,
         maxNodeCount: nodeLimit,
-        truncated,
-        domElementCount,
+        maxScannedNodeCount: limits.maxScannedNodeCount,
+        maxTextChars: limits.maxTextChars,
+        scannedNodeCount,
+        textCharsRead,
+        textNodesScanned,
+        truncationReasons: Array.from(truncationReasons),
+        truncated: truncationReasons.size > 0,
       },
       timings: {
         browserEvaluationMs: performance.now() - evaluationStartedAtMs,
@@ -564,7 +700,7 @@ export async function capturePageObservation(
         scrollY: window.scrollY,
       },
     };
-  }, maxNodeCount) as Omit<CapturedPageObservation, "timings"> & {
+  }, { nodeLimit: maxNodeCount, limits: workLimits }) as Omit<CapturedPageObservation, "timings"> & {
     readonly timings: {
       readonly browserEvaluationMs: number;
       readonly domEnumerationMs: number;

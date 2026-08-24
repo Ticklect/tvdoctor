@@ -1,8 +1,9 @@
 # Baselines and CI
 
 `@tvdoctor/baseline` compares one complete semantic audit with a compatible
-complete current audit. It is an Experimental library surface; this repository
-does not claim an active hosted CI run or a released baseline CLI workflow.
+complete current audit. It is an Experimental library surface with a controlled
+real-Chromium lifecycle proof and earlier successful hosted CI runs. It is not a
+standalone baseline CLI workflow.
 
 ## Baseline contents
 
@@ -93,18 +94,19 @@ show clean → regressed as exactly one new high regression, regressed → resto
 as exactly one resolved issue, and clean → clean as no change before this
 workflow is promoted.
 
-## CI safety model
+## Repository CI safety model
 
-An initial browser-only CI job should:
+The repository's browser-only CI job:
 
-1. use a read-only source checkout where possible;
-2. install the declared Node/npm versions and a pinned lockfile;
-3. install only the Playwright Chromium dependency required by the job;
-4. run bounded fixture gates with a job timeout;
-5. upload report artifacts even when diagnostics fail;
-6. avoid secrets for forked or untrusted pull requests;
-7. retain artifacts for the shortest useful period;
-8. fail when the run is partial or the comparison fails closed.
+1. grants only read access to repository contents;
+2. pins official actions to reviewed commit SHAs;
+3. installs the declared Node/npm versions from the lockfile;
+4. installs Playwright Chromium and its Linux dependencies;
+5. runs bounded unit, fixture, driver, core, report/replay, streaming, exact CLI
+   M7, baseline-example, and package/consumer smoke gates under one job timeout;
+6. fails on focused or flaky Playwright tests in CI;
+7. uploads bounded diagnostic artifacts on failure with short retention; and
+8. uses no secrets, privileged Android devices, or publish credentials.
 
 Android/emulator CI is a separate trust tier. Never expose privileged hardware,
 signing keys, production APKs, or persistent emulator state to untrusted pull
@@ -112,7 +114,13 @@ request code.
 
 ## Hosted status
 
-Workflow files can be syntax-checked and commands can be run locally, but that
-does not prove a hosted service executed them. Until this repository has a real
-remote and recorded green run, documentation and release notes must say “CI
-example” or “locally validated workflow,” not “CI passing.”
+Earlier exact candidates have recorded green GitHub Actions runs on
+`ubuntu-latest`, including the aggregate browser gates and baseline example. That
+is valid historical evidence. It does not transfer to a changed commit: the final
+release record must cite the exact candidate SHA, workflow run, attempt number,
+and conclusion after all release changes are committed.
+
+The workflow also runs `npm run test:package-smoke`, which builds tarballs,
+inspects their contents, installs all packages into a clean consumer directory,
+and checks public imports and CLI startup. This proves local tarball consumption;
+it does not prove that npm publication has occurred.

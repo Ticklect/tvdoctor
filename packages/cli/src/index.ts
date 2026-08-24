@@ -9,6 +9,7 @@ export {
   type CliContext,
   type CliIO,
   type CliOperations,
+  type RuntimeProbeResult,
   type ReplayCommandRequest,
   type ReplayCommandResult,
   type ReplayCommandStatus,
@@ -26,7 +27,15 @@ export {
   type DiagnosticStatus,
   type DoctorReport,
   type RuntimeEnvironment,
+  type EnvironmentCapabilities,
 } from "./diagnostics.js";
+export {
+  isSafeTerminalArgument,
+  safeDisplayUrl,
+  sanitizeTerminalText,
+  type TerminalSanitizerOptions,
+} from "./terminal.js";
+export { CLI_VERSION } from "./version.js";
 export {
   createNodeAuditOperation,
   type NodeAuditDependencies,

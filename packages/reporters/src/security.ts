@@ -1,4 +1,8 @@
+import { stripVTControlCharacters } from "node:util";
+
 const DEFAULT_MAX_TEXT_LENGTH = 4_000;
+
+const BIDI_FORMAT_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 
 function redactUrl(candidate: string): string {
   try {
@@ -13,18 +17,35 @@ function redactUrl(candidate: string): string {
   }
 }
 
+function redactUrls(text: string): string {
+  return text.replace(/https?:\/\/[^\s<>"']+/giu, (match) => {
+    const trailing = match.match(/[),.;!?\]}]+$/u)?.[0] ?? "";
+    const candidate = trailing.length === 0 ? match : match.slice(0, -trailing.length);
+    return `${redactUrl(candidate)}${trailing}`;
+  });
+}
+
 /** Bounded defence-in-depth redaction for all target-controlled report text. */
 export function sanitiseUntrustedText(
   text: string,
   maxLength: number = DEFAULT_MAX_TEXT_LENGTH,
 ): string {
-  const withoutControlCharacters = Array.from(text)
+  // Remove complete terminal escape sequences before filtering individual
+  // controls; removing ESC alone would leave visible CSI/OSC payload fragments.
+  const withoutTerminalSequences = stripVTControlCharacters(text);
+  const withoutControlCharacters = Array.from(withoutTerminalSequences)
     .filter((character) => {
       const code = character.codePointAt(0) ?? 0;
-      return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+      return code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159));
     })
-    .join("");
-  const withoutBearerTokens = withoutControlCharacters.replace(
+    .join("")
+    .replace(BIDI_FORMAT_CONTROLS, "");
+  const withoutSensitiveUrls = redactUrls(withoutControlCharacters);
+  const withoutSensitiveHeaders = withoutSensitiveUrls.replace(
+    /\b(authorization|proxy-authorization|cookie|set-cookie)(\s*:\s*)[^\n]*/giu,
+    (_match, header: string, separator: string) => `${header}${separator}[REDACTED]`,
+  );
+  const withoutBearerTokens = withoutSensitiveHeaders.replace(
     /\bBearer\s+[^\s,;]+/giu,
     "Bearer [REDACTED]",
   );
@@ -33,16 +54,12 @@ export function sanitiseUntrustedText(
     "Basic [REDACTED]",
   );
   const withoutNamedSecrets = withoutBasicCredentials.replace(
-    /(["']?)([A-Za-z0-9_-]*(?:api[-_ ]?key|authorization|cookie|password|secret|session|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
+    /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|authorization|cookie|password|passwd|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
     (_match, quote: string, key: string, separator: string) => (
       `${quote}${key}${quote}${separator}${quote}[REDACTED]${quote}`
     ),
   );
-  const withoutSensitiveUrls = withoutNamedSecrets.replace(
-    /https?:\/\/[^\s<>"']+/giu,
-    (match) => redactUrl(match),
-  );
-  return withoutSensitiveUrls.slice(0, Math.max(0, maxLength));
+  return Array.from(withoutNamedSecrets).slice(0, Math.max(0, maxLength)).join("");
 }
 
 export function sanitiseTargetLocation(location: string): string {

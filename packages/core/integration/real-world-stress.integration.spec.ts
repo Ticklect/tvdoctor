@@ -361,8 +361,10 @@ test("fails closed when lazy-loaded structural churn prevents a stable baseline"
 
     expect(result.statistics.physicalActions).toBeLessThanOrEqual(6);
     expect(result.statistics.elapsedMs).toBeLessThan(12_000);
+    expect(result.termination.complete).toBe(false);
     expect([
       "settling-exhausted",
+      "replay-diverged",
       "max-depth",
       "max-duration",
       "max-actions",

@@ -8,6 +8,8 @@ const fixtureDirectory = resolve(packageDirectory, "../../fixtures/broken-stream
 export default defineConfig({
   testDir: "./test",
   fullyParallel: false,
+  forbidOnly: process.env["CI"] !== undefined,
+  failOnFlakyTests: process.env["CI"] !== undefined,
   retries: 1,
   timeout: 20_000,
   use: {
@@ -18,7 +20,7 @@ export default defineConfig({
     command: "npm run dev -- --port 4179 --strictPort",
     cwd: fixtureDirectory,
     port: 4179,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 30_000,
   },
 });

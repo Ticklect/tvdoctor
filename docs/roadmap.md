@@ -36,13 +36,18 @@ higher support level only after its complete gate is repeatable.
 - reopened production stress phase closed with component profiling, corrected
   classifications, deterministic regression fixtures, production reruns, and a
   passing aggregate gate; see
-  [`docs/m11-production-stress-status.md`](./docs/m11-production-stress-status.md).
+  [`m11-production-stress-status.md`](./m11-production-stress-status.md).
 
-### Release gates still required
+### Release-candidate closure still required
 
-- capture and review the 15–30 second public demo;
-- run the clean aggregate quality gate from a fresh install (hosted CI now
-  covers a clean Linux runner).
+- run the clean aggregate, exact CLI M7, and package/consumer gates from a fresh
+  install at the final candidate SHA;
+- record a first-attempt hosted Linux run for that exact SHA and review uploaded
+  failures if any;
+- decide repository visibility and npm publication explicitly—neither is implied
+  by passing source tests;
+- optionally capture the documented 15–30 second public demo; absence of an
+  edited marketing asset does not weaken the executable source gates.
 
 ## After v0.1
 

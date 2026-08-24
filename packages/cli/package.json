@@ -3,7 +3,27 @@
   "version": "0.1.0",
   
   "description": "Command-line entry point for TVDoctor.",
+  "keywords": [
+    "tvdoctor",
+    "tv",
+    "testing",
+    "cli",
+    "playwright",
+    "remote-control"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,16 +34,19 @@
     }
   },
   "bin": {
-    "tvdoctor": "./dist/bin.js"
+    "tvdoctor": "dist/bin.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --pretty false",
+    "build": "tsc -b --pretty false",
     "test:integration": "playwright test --config playwright.config.ts",
     "test": "vitest run --config vitest.config.ts --root ../.. packages/cli/test",
-    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit && tsc -p tsconfig.integration.json --pretty false"
+    "typecheck": "tsc -p tsconfig.json --pretty false --noEmit && tsc -p tsconfig.integration.json --pretty false",
+    "prepack": "npm run build -- --force"
   },
   "dependencies": {
     "@tvdoctor/baseline": "0.1.0",

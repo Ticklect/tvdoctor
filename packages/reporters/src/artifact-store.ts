@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
+  link,
   lstat,
   mkdir,
   readFile,
@@ -56,7 +58,7 @@ export interface DescribeIssueArtifactRequest {
   readonly mediaType?: string;
 }
 
-interface SlotDetails {
+export interface IssueEvidenceSlotDetails {
   readonly extension: string;
   readonly kind: ArtifactKind;
   readonly mediaType: string;
@@ -119,7 +121,10 @@ function assertSafeIdentifier(value: string, label: string): void {
   }
 }
 
-function slotDetails(slot: IssueEvidenceSlot, requestedMediaType?: string): SlotDetails {
+export function issueEvidenceSlotDetails(
+  slot: IssueEvidenceSlot,
+  requestedMediaType?: string,
+): IssueEvidenceSlotDetails {
   switch (slot) {
     case "before-screenshot":
     case "after-screenshot": {
@@ -144,7 +149,7 @@ function slotDetails(slot: IssueEvidenceSlot, requestedMediaType?: string): Slot
   }
 }
 
-function relativeIssueArtifactPath(
+export function relativeIssueArtifactPath(
   issueId: string,
   slot: IssueEvidenceSlot,
   extension: string,
@@ -168,6 +173,10 @@ export class ArtifactStore {
   static async create(outputRoot: string, options: ArtifactStoreOptions = {}): Promise<ArtifactStore> {
     const absoluteRoot = resolve(outputRoot);
     await mkdir(absoluteRoot, { recursive: true });
+    const rootMetadata = await lstat(absoluteRoot);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+      throw new Error("Artifact output root must be a real directory, not a symbolic link or junction.");
+    }
     const realRoot = await realpath(absoluteRoot);
     return new ArtifactStore(absoluteRoot, realRoot, options.overwrite ?? false);
   }
@@ -182,7 +191,7 @@ export class ArtifactStore {
     mediaType?: string,
   ): IssueArtifactLocation {
     assertSafeIdentifier(issueId, "Issue ID");
-    const details = slotDetails(slot, mediaType);
+    const details = issueEvidenceSlotDetails(slot, mediaType);
     const relativePath = relativeIssueArtifactPath(issueId, slot, details.extension);
     assertPortableRelativePath(relativePath);
     const absolutePath = resolve(this.#outputRoot, ...relativePath.split("/"));
@@ -235,6 +244,69 @@ export class ArtifactStore {
     return resolve(this.#outputRoot, ...relativePath.split("/"));
   }
 
+  /**
+   * In overwrite mode, remove the old canonical completeness marker before
+   * replacing any derivative. A failed refresh can then leave an incomplete
+   * directory, but it cannot masquerade as a coherent completed bundle.
+   */
+  async prepareReportBundleWrite(): Promise<void> {
+    if (!this.#overwrite) return;
+    const markerPath = resolve(this.#outputRoot, "report.json");
+    try {
+      const metadata = await lstat(markerPath);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error("Existing report.json completeness marker is not a regular non-link file.");
+      }
+      const realMarker = await realpath(markerPath);
+      if (!isContained(this.#realOutputRoot, realMarker)) {
+        throw new Error("Existing report.json completeness marker resolves outside the output root.");
+      }
+      await unlink(markerPath);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+    }
+  }
+
+  /**
+   * Verify that a descriptor still names the exact immutable bytes inside this
+   * store. Bundle writers call this before publishing any report derivative.
+   */
+  async verifyAvailableArtifact(descriptor: AvailableArtifactDescriptor): Promise<void> {
+    assertPortableRelativePath(descriptor.path);
+    const absolutePath = resolve(this.#outputRoot, ...descriptor.path.split("/"));
+    if (!isContained(this.#outputRoot, absolutePath)) {
+      throw new Error(`Artifact ${descriptor.id} escaped the output root.`);
+    }
+    const metadata = await lstat(absolutePath).catch((error: unknown) => {
+      if (errorCode(error) === "ENOENT") {
+        throw new Error(`Available artifact ${descriptor.id} is missing: ${descriptor.path}`);
+      }
+      throw error;
+    });
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error(`Available artifact ${descriptor.id} must be a regular non-link file.`);
+    }
+    const realFile = await realpath(absolutePath);
+    if (!isContained(this.#realOutputRoot, realFile)) {
+      throw new Error(`Available artifact ${descriptor.id} resolves outside the output root.`);
+    }
+    const currentMetadata = await stat(realFile);
+    if (!currentMetadata.isFile() || currentMetadata.size !== descriptor.byteLength) {
+      throw new Error(`Available artifact ${descriptor.id} byte length does not match its descriptor.`);
+    }
+    if (descriptor.sha256 === null) {
+      throw new Error(`Available artifact ${descriptor.id} is missing its SHA-256 digest.`);
+    }
+    // Artifacts can legitimately be large traces or screenshots. Hash them as
+    // a bounded-memory stream instead of loading descriptor-controlled sizes.
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(realFile)) hash.update(chunk);
+    const digest = hash.digest("hex");
+    if (digest !== descriptor.sha256) {
+      throw new Error(`Available artifact ${descriptor.id} SHA-256 does not match its descriptor.`);
+    }
+  }
+
   async #ensureSafeParent(absolutePath: string): Promise<void> {
     const parent = dirname(absolutePath);
     if (!isContained(this.#outputRoot, parent)) {
@@ -279,10 +351,23 @@ export class ArtifactStore {
     }
 
     this.#temporarySequence += 1;
-    const temporaryPath = `${absolutePath}.${String(process.pid)}.${String(this.#temporarySequence)}.tmp`;
+    const temporaryPath = `${absolutePath}.${String(process.pid)}.${String(this.#temporarySequence)}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporaryPath, data, { flag: "wx" });
-      await rename(temporaryPath, absolutePath);
+      if (this.#overwrite) {
+        await rename(temporaryPath, absolutePath);
+      } else {
+        // A hard link publishes the same-filesystem temporary file with
+        // atomic no-replace semantics on every supported host. Plain rename
+        // would overwrite a concurrently created destination on POSIX.
+        await link(temporaryPath, absolutePath);
+        try {
+          await unlink(temporaryPath);
+        } catch {
+          // The destination is complete. A controlled temp-link cleanup
+          // failure must not turn a successful publication into a false error.
+        }
+      }
     } catch (error) {
       try {
         await unlink(temporaryPath);

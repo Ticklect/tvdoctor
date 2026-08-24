@@ -248,14 +248,63 @@ export class WebPackSession {
   }
 
   public ensureDuration(): void {
-    if (this.#elapsed() > this.#budgets.maxDurationMs) {
+    if (this.#elapsed() >= this.#budgets.maxDurationMs) {
       throw new WebPackStop("max-duration", "The web-pack monotonic duration budget was exhausted.");
     }
   }
 
-  public async capabilities(): Promise<ReadonlySet<Capability>> {
+  /**
+   * Runs one driver or host hook operation under the pack-wide deadline.
+   *
+   * Checking the clock only between awaited operations is insufficient: a
+   * driver or hook is an integration boundary and may never settle. The timer
+   * is always cleared when the operation settles so successful runs do not
+   * retain deadline handles.
+   */
+  public async withinDuration<T>(operation: () => T | PromiseLike<T>): Promise<T> {
     this.ensureDuration();
-    const capabilities = await this.#driver.capabilities();
+    const remainingMs = this.#budgets.maxDurationMs - this.#elapsed();
+    if (remainingMs <= 0) {
+      throw new WebPackStop("max-duration", "The web-pack monotonic duration budget was exhausted.");
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new WebPackStop(
+          "max-duration",
+          "The web-pack monotonic duration budget was exhausted while awaiting a driver or hook operation.",
+        ));
+      }, Math.max(1, Math.ceil(remainingMs)));
+
+      Promise.resolve()
+        .then(operation)
+        .then(
+          (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try {
+              this.ensureDuration();
+              resolve(value);
+            } catch (error) {
+              reject(error);
+            }
+          },
+          (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+    });
+  }
+
+  public async capabilities(): Promise<ReadonlySet<Capability>> {
+    const capabilities = await this.withinDuration(() => this.#driver.capabilities());
     if (typeof capabilities !== "object" || capabilities === null
       || !(Symbol.iterator in capabilities)) {
       throw new TypeError("Driver capabilities must be an iterable ReadonlySet.");
@@ -272,8 +321,7 @@ export class WebPackSession {
   }
 
   public async snapshot(): Promise<StateSnapshot> {
-    this.ensureDuration();
-    const snapshot = await this.#driver.snapshot();
+    const snapshot = await this.withinDuration(() => this.#driver.snapshot());
     this.#snapshots += 1;
     if (typeof snapshot.capturedAt !== "string" || snapshot.capturedAt.length === 0 || snapshot.capturedAt.length > 128) {
       throw new TypeError("Driver snapshot capturedAt was invalid.");
@@ -297,7 +345,7 @@ export class WebPackSession {
     if (category === "discovery") this.#discoveryActions += 1;
     else if (category === "probe") this.#probeActions += 1;
     else this.#replayActions += 1;
-    const result = await this.#driver.press(key);
+    const result = await this.withinDuration(() => this.#driver.press(key));
     validateTiming(result, key);
     return result;
   }
@@ -306,9 +354,9 @@ export class WebPackSession {
     this.ensureDuration();
     try {
       if (this.#options.restoreInitialState !== undefined) {
-        await this.#options.restoreInitialState();
+        await this.withinDuration(() => this.#options.restoreInitialState?.());
       } else if (this.#driver.reset !== undefined) {
-        await this.#driver.reset(this.#options.resetStrategy ?? "reload");
+        await this.withinDuration(() => this.#driver.reset?.(this.#options.resetStrategy ?? "reload"));
       } else {
         throw new WebPackStop(
           "restoration-unavailable",

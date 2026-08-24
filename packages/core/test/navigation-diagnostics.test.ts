@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   diagnoseNavigation,
   NAVIGATION_DIAGNOSTIC_RULES,
+  NAVIGATION_UI_TREE_LIMITS,
   type ExplorationActionAttempt,
   type ExplorationResult,
   type FocusState,
@@ -272,6 +273,59 @@ function findingIdForSource(result: ExplorationResult, stableId: string): string
 }
 
 describe("navigation diagnostics", () => {
+  function resultForUntrustedTree(tree: readonly UiNodeSnapshot[]): ExplorationResult {
+    const focused = control("focus", 0, 0, { focused: true });
+    const state: TestState = {
+      id: "focus-untrusted",
+      screenId: "screen-untrusted",
+      discoveredBy: [],
+      snapshot: snapshot("untrusted", target("focus", 0, 0), [focused, ...tree]),
+    };
+    return makeResult([state], ALL_KEYS, completeActions([state.id], ALL_KEYS));
+  }
+
+  it("rejects cyclic driver snapshots with a bounded diagnostic error", () => {
+    const children: UiNodeSnapshot[] = [];
+    const cyclic = node("cyclic", "group", null, { children });
+    children.push(cyclic);
+
+    expect(() => diagnoseNavigation(resultForUntrustedTree([cyclic])))
+      .toThrow(/repeated or cyclic node reference/u);
+  });
+
+  it("rejects a 10,000-level driver snapshot without recursive stack exhaustion", () => {
+    let deep = node("depth-10000", "group", null);
+    for (let depth = 9_999; depth >= 0; depth -= 1) {
+      deep = node(`depth-${String(depth)}`, "group", null, { children: [deep] });
+    }
+
+    expect(() => diagnoseNavigation(resultForUntrustedTree([deep])))
+      .toThrow(/navigation diagnostic depth limit/u);
+  });
+
+  it("enforces independent node and text bounds on untrusted snapshots", () => {
+    const explosive = Array.from(
+      { length: NAVIGATION_UI_TREE_LIMITS.maxNodes },
+      (_, index) => node(`wide-${String(index)}`, "group", null),
+    );
+    expect(() => diagnoseNavigation(resultForUntrustedTree(explosive)))
+      .toThrow(/navigation diagnostic node limit/u);
+
+    const oversizedText: UiNodeSnapshot = {
+      ...node("oversized", "group", null),
+      text: "x".repeat(NAVIGATION_UI_TREE_LIMITS.maxTextLength + 1),
+    };
+    expect(() => diagnoseNavigation(resultForUntrustedTree([oversizedText])))
+      .toThrow(/navigation diagnostic text limit/u);
+  });
+
+  it("rejects an unknown navigation reset strategy", () => {
+    expect(() => diagnoseNavigation(
+      resultForUntrustedTree([]),
+      { resetStrategy: "factory-reset" as never },
+    )).toThrow(/resetStrategy/u);
+  });
+
   it("reports an observed non-null to null focus loss, but not unavailable focus", () => {
     const beforeTree = [node("root", "main", null, {
       children: [control("source", 0, 0, { focused: true }), control("other", 120, 0)],
@@ -376,6 +430,35 @@ describe("navigation diagnostics", () => {
       status: "available",
       originalSequence: [{ key: "RIGHT", repeat: 2 }],
     });
+  });
+
+  it("accepts a visible enabled focused roving control even when sequential focusability is false", () => {
+    const tree = [node("row", "group", null, {
+      children: [
+        control("roving-active", 0, 0, { focusable: false, focused: true }),
+        control("unreachable", 120, 0, { focusable: false }),
+      ],
+    })];
+    const state: TestState = {
+      id: "focus-roving-active",
+      screenId: "screen-roving",
+      discoveredBy: [],
+      snapshot: snapshot("roving", target("roving-active", 0, 0), tree),
+    };
+    const result = makeResult(
+      [state],
+      ALL_KEYS,
+      completeActions([state.id], ALL_KEYS),
+    );
+
+    expect(diagnoseNavigation(result).deterministicFindings).toEqual([
+      expect.objectContaining({
+        issue: expect.objectContaining({ rule: NAVIGATION_DIAGNOSTIC_RULES.unreachable }),
+        target: expect.objectContaining({
+          element: expect.objectContaining({ stableId: "unreachable" }),
+        }),
+      }),
+    ]);
   });
 
   it("uses the exact caption-like DOWN skip as non-empty reachability reproduction", () => {

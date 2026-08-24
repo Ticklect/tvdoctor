@@ -9,6 +9,7 @@ import type {
 export interface AdbCommandOptions {
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface AdbCommandResult {

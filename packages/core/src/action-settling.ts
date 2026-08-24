@@ -68,8 +68,8 @@ function positiveInteger(value: number, name: string): number {
 }
 
 function nonNegativeFinite(value: number, name: string): number {
-  if (!Number.isFinite(value) || value < 0 || value > MAX_SETTLING_INTERVAL_MS) {
-    throw new TypeError(`${name} must be a non-negative finite duration.`);
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SETTLING_INTERVAL_MS) {
+    throw new TypeError(`${name} must be a non-negative safe integer duration.`);
   }
   return value;
 }
@@ -89,6 +89,9 @@ function sameCanonicalState(previous: StateSnapshot, current: StateSnapshot): bo
 export function normaliseActionSettlingOptions(
   options: ActionSettlingOptions = {},
 ): NormalisedActionSettlingOptions {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new TypeError("settling must be an object.");
+  }
   if (options.wait !== undefined && typeof options.wait !== "function") {
     throw new TypeError("wait must be a function.");
   }

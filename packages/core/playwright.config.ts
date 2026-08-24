@@ -8,6 +8,8 @@ const fixtureDirectory = resolve(packageDirectory, "../../fixtures/broken-stream
 export default defineConfig({
   testDir: "./integration",
   fullyParallel: false,
+  forbidOnly: process.env["CI"] !== undefined,
+  failOnFlakyTests: process.env["CI"] !== undefined,
   retries: 1,
   timeout: 150_000,
   use: {

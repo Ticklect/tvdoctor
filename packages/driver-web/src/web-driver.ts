@@ -41,7 +41,11 @@ import type {
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 } as const;
 const DEFAULT_MAX_LOG_ENTRIES = 500;
+const DEFAULT_MAX_PENDING_NETWORK_REQUESTS = 1_000;
+const DEFAULT_MAX_UI_DEPTH = 128;
 const DEFAULT_MAX_UI_NODES = 750;
+const DEFAULT_MAX_UI_SCAN_NODES = 20_000;
+const DEFAULT_MAX_UI_TEXT_CHARS = 512_000;
 const DEFAULT_RECENT_NETWORK_ENTRIES = 200;
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 15_000;
 const DEFAULT_SETTLE_CONFIGURATION: SettleConfiguration = {
@@ -90,7 +94,11 @@ interface NormalisedOptions {
   readonly contextOptions: NonNullable<PlaywrightWebDriverOptions["contextOptions"]>;
   readonly headless: boolean;
   readonly maxLogEntries: number;
+  readonly maxPendingNetworkRequests: number;
+  readonly maxUiDepth: number;
   readonly maxUiNodes: number;
+  readonly maxUiScanNodes: number;
+  readonly maxUiTextChars: number;
   readonly navigationTimeoutMs: number;
   readonly recentNetworkEntries: number;
   readonly settle: SettleConfiguration;
@@ -115,7 +123,14 @@ function normaliseOptions(options: PlaywrightWebDriverOptions): NormalisedOption
     contextOptions: options.contextOptions ?? {},
     headless: options.headless ?? options.browserLaunchOptions?.headless ?? true,
     maxLogEntries: positiveInteger(options.maxLogEntries, DEFAULT_MAX_LOG_ENTRIES),
+    maxPendingNetworkRequests: positiveInteger(
+      options.maxPendingNetworkRequests,
+      DEFAULT_MAX_PENDING_NETWORK_REQUESTS,
+    ),
+    maxUiDepth: positiveInteger(options.maxUiDepth, DEFAULT_MAX_UI_DEPTH),
     maxUiNodes: positiveInteger(options.maxUiNodes, DEFAULT_MAX_UI_NODES),
+    maxUiScanNodes: positiveInteger(options.maxUiScanNodes, DEFAULT_MAX_UI_SCAN_NODES),
+    maxUiTextChars: positiveInteger(options.maxUiTextChars, DEFAULT_MAX_UI_TEXT_CHARS),
     navigationTimeoutMs: positiveDuration(options.navigationTimeoutMs, DEFAULT_NAVIGATION_TIMEOUT_MS),
     recentNetworkEntries: positiveInteger(options.recentNetworkEntries, DEFAULT_RECENT_NETWORK_ENTRIES),
     settle: {
@@ -172,9 +187,12 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #currentApp: AppReference | null = null;
   #logs: WebLogEntry[] = [];
   #networkEntries: MutableNetworkEntry[] = [];
-  #pendingRequests = new Map<Request, MutableNetworkEntry>();
+  #pendingRequestEntries = new WeakMap<Request, MutableNetworkEntry>();
+  #pendingRequestsRetained = new Set<Request>();
+  #pendingRequestsDropped = 0;
   #page: Page | null = null;
   #requestsFailed = 0;
+  #requestsInFlight = 0;
   #requestsStarted = 0;
   #requestsSucceeded = 0;
   #screenshotSequence = 0;
@@ -307,7 +325,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
     const location = availableObservation(sanitiseUrl(page.url()));
     try {
-      const observation = await capturePageObservation(page, this.#options.maxUiNodes);
+      const observation = await capturePageObservation(page, this.#options.maxUiNodes, {
+        maxDepth: this.#options.maxUiDepth,
+        maxScannedNodeCount: this.#options.maxUiScanNodes,
+        maxTextChars: this.#options.maxUiTextChars,
+      });
       return {
         capturedAt,
         location,
@@ -396,7 +418,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       requestsStarted: this.#requestsStarted,
       requestsSucceeded: this.#requestsSucceeded,
       requestsFailed: this.#requestsFailed,
-      requestsInFlight: this.#pendingRequests.size,
+      requestsInFlight: this.#requestsInFlight,
+      pendingRequestsTracked: this.#pendingRequestsRetained.size,
+      pendingRequestsDropped: this.#pendingRequestsDropped,
       recentEntries: this.#networkEntries.map((entry) => toPublicNetworkEntry(entry)),
     };
   }
@@ -425,7 +449,8 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     const context = this.#context;
     this.#page = null;
     this.#context = null;
-    this.#pendingRequests.clear();
+    this.#pendingRequestEntries = new WeakMap();
+    this.#pendingRequestsRetained.clear();
     if (context !== null) {
       await context.close();
     }
@@ -434,8 +459,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #clearTelemetry(): void {
     this.#logs = [];
     this.#networkEntries = [];
-    this.#pendingRequests.clear();
+    this.#pendingRequestEntries = new WeakMap();
+    this.#pendingRequestsRetained.clear();
+    this.#pendingRequestsDropped = 0;
     this.#requestsFailed = 0;
+    this.#requestsInFlight = 0;
     this.#requestsStarted = 0;
     this.#requestsSucceeded = 0;
   }
@@ -513,19 +541,28 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       failure: null,
     };
     this.#requestsStarted += 1;
-    this.#pendingRequests.set(request, entry);
+    this.#requestsInFlight += 1;
+    this.#pendingRequestEntries.set(request, entry);
+    if (this.#pendingRequestsRetained.size >= this.#options.maxPendingNetworkRequests) {
+      const oldest = this.#pendingRequestsRetained.values().next().value as Request | undefined;
+      if (oldest !== undefined) {
+        this.#pendingRequestsRetained.delete(oldest);
+        this.#pendingRequestsDropped += 1;
+      }
+    }
+    this.#pendingRequestsRetained.add(request);
     this.#pushNetworkEntry(entry);
   }
 
   #recordResponse(response: Response): void {
-    const entry = this.#pendingRequests.get(response.request());
+    const entry = this.#pendingRequestEntries.get(response.request());
     if (entry !== undefined) {
       entry.status = response.status();
     }
   }
 
   #finishRequest(request: Request): void {
-    const entry = this.#pendingRequests.get(request);
+    const entry = this.#pendingRequestEntries.get(request);
     if (entry === undefined) {
       return;
     }
@@ -533,12 +570,14 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     entry.outcome = "succeeded";
     entry.finishedAt = new Date(finishedAtMs).toISOString();
     entry.durationMs = finishedAtMs - entry.startedAtMs;
-    this.#pendingRequests.delete(request);
+    this.#pendingRequestEntries.delete(request);
+    this.#pendingRequestsRetained.delete(request);
+    this.#requestsInFlight = Math.max(0, this.#requestsInFlight - 1);
     this.#requestsSucceeded += 1;
   }
 
   #failRequest(request: Request): void {
-    const entry = this.#pendingRequests.get(request);
+    const entry = this.#pendingRequestEntries.get(request);
     if (entry === undefined) {
       return;
     }
@@ -547,7 +586,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     entry.finishedAt = new Date(finishedAtMs).toISOString();
     entry.durationMs = finishedAtMs - entry.startedAtMs;
     entry.failure = sanitiseObservedText(request.failure()?.errorText ?? "Request failed");
-    this.#pendingRequests.delete(request);
+    this.#pendingRequestEntries.delete(request);
+    this.#pendingRequestsRetained.delete(request);
+    this.#requestsInFlight = Math.max(0, this.#requestsInFlight - 1);
     this.#requestsFailed += 1;
   }
 }

@@ -25,8 +25,8 @@ npm run check
 ```
 
 `npm run check` is the repository's aggregate foundation gate. While the v0.1
-workspace wiring is being completed, contributors touching newer packages must
-also run their package gates explicitly:
+preview remains unpublished, contributors must also run the release gates that
+match their change. Package-scoped examples are:
 
 ```sh
 npm run typecheck --workspace @tvdoctor/pack-web
@@ -49,9 +49,13 @@ packs:
 npm run test:core-integration
 npm run test:report-integration
 npm run test:streaming-integration
+npm run test:integration --workspace tvdoctor
+npm run test:package-smoke
 ```
 
-These gates take longer and write ignored files under `artifacts/`.
+The exact CLI M7 gate takes several minutes. Browser gates write ignored files
+under `artifacts/`; package smoke uses an isolated temporary consumer. A partial
+or flaky result is a failure in CI, not evidence to rerun until green.
 
 ## Change requirements
 

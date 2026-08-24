@@ -22,6 +22,11 @@ export interface DoctorReport {
   readonly ai: DiagnosticCheck;
 }
 
+export interface EnvironmentCapabilities {
+  readonly auditOrchestrationAvailable: boolean;
+  readonly browser: DiagnosticCheck;
+}
+
 function nodeMajor(version: string): number | undefined {
   const match = /^v?(\d+)(?:\.|$)/u.exec(version);
   const majorText = match?.[1];
@@ -36,6 +41,13 @@ function nodeMajor(version: string): number | undefined {
 
 export function diagnoseEnvironment(
   environment: RuntimeEnvironment,
+  capabilities: EnvironmentCapabilities = {
+    auditOrchestrationAvailable: false,
+    browser: {
+      status: "unavailable",
+      detail: "Browser runtime was not probed",
+    },
+  },
 ): DoctorReport {
   const major = nodeMajor(environment.nodeVersion);
   const runtimeSupported = major === SUPPORTED_NODE_MAJOR;
@@ -46,7 +58,7 @@ export function diagnoseEnvironment(
   return {
     project: {
       status: "ok",
-      detail: "Milestone 6 semantic streaming and player pack (experimental)",
+      detail: "TVDoctor command-line audit",
     },
     runtime: {
       status: runtimeSupported ? "ok" : "unsupported",
@@ -57,12 +69,14 @@ export function diagnoseEnvironment(
       detail: `${environment.platform} ${environment.architecture}`,
     },
     drivers: {
-      status: "ok",
-      detail: "Playwright web adapter (experimental library)",
+      status: capabilities.browser.status,
+      detail: capabilities.browser.detail,
     },
     audits: {
-      status: "unavailable",
-      detail: "CLI audit orchestration is not implemented",
+      status: capabilities.auditOrchestrationAvailable ? "ok" : "unavailable",
+      detail: capabilities.auditOrchestrationAvailable
+        ? "Local web audit orchestration is available"
+        : "Local web audit orchestration is unavailable in this host",
     },
     ai: {
       status: "ok",
@@ -72,7 +86,9 @@ export function diagnoseEnvironment(
 }
 
 export function doctorSucceeded(report: DoctorReport): boolean {
-  return report.runtime.status === "ok";
+  return report.runtime.status === "ok"
+    && report.drivers.status === "ok"
+    && report.audits.status === "ok";
 }
 
 export function renderDoctorReport(report: DoctorReport): string {
@@ -94,6 +110,6 @@ export function renderDoctorReport(report: DoctorReport): string {
     "",
     ...renderedRows,
     "",
-    "Experimental web-library support only; no production TV platform support is claimed.",
+    "Doctor checks this host only; target availability is verified when an audit starts.",
   ].join("\n");
 }

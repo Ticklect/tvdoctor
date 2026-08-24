@@ -3,7 +3,30 @@
   "version": "0.1.0",
   
   "description": "Platform-neutral semantic streaming and player journey pack for TVDoctor.",
+  "keywords": [
+    "tvdoctor",
+    "tv",
+    "testing",
+    "streaming",
+    "media",
+    "remote-control"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/pack-streaming"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,7 +38,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -b --pretty false",
@@ -23,7 +47,8 @@
     "pretest:integration": "npm --prefix ../.. run clean && npm --prefix ../.. run build",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "playwright test --config playwright.config.ts",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.integration.json --pretty false"
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.integration.json --pretty false",
+    "prepack": "npm run build -- --force"
   },
   "dependencies": {
     "@tvdoctor/core": "0.1.0",

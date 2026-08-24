@@ -15,6 +15,10 @@ import {
   type TVDoctorReportV1,
 } from "@tvdoctor/protocol";
 import { createNodeCliOperations } from "../src/node-replay.js";
+import {
+  REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
+  REPLAY_TARGET_OVERRIDE_REQUIRED,
+} from "../src/node-audit.js";
 
 const ISSUE_ID = "TVDOCTOR-NAV-TEST000000000000000000000001";
 
@@ -152,6 +156,57 @@ async function writeReport(value: unknown): Promise<string> {
 }
 
 describe("Node replay operation", () => {
+  it("returns inconclusive when a redacted route requires an explicit target override", async () => {
+    const source = report();
+    const path = await writeReport({
+      ...source,
+      target: {
+        ...source.target,
+        environment: {
+          ...source.target.environment,
+          [REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]: REPLAY_TARGET_OVERRIDE_REQUIRED,
+        },
+      },
+    });
+    let constructions = 0;
+    const operation = createNodeCliOperations({
+      createDriver() {
+        constructions += 1;
+        return new FakeReplayDriver();
+      },
+    });
+
+    const result = await operation.replayIssue({ issueId: ISSUE_ID, reportPath: path });
+    expect(result.status).toBe("inconclusive");
+    expect(result.details).toContain("Replay target override REQUIRED");
+    expect(result.details.join("\n")).toContain("--target");
+    expect(constructions).toBe(0);
+  });
+
+  it("uses the complete explicit route when a redacted report requires it", async () => {
+    const source = report();
+    const path = await writeReport({
+      ...source,
+      target: {
+        ...source.target,
+        environment: {
+          ...source.target.environment,
+          [REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]: REPLAY_TARGET_OVERRIDE_REQUIRED,
+        },
+      },
+    });
+    const driver = new FakeReplayDriver();
+    const operation = createNodeCliOperations({ createDriver: () => driver });
+    const result = await operation.replayIssue({
+      issueId: ISSUE_ID,
+      reportPath: path,
+      targetOverride: "https://example.test/app?route=player#captions",
+    });
+
+    expect(result.status).toBe("reproduced");
+    expect(driver.launched?.launchUri).toBe("https://example.test/app?route=player#captions");
+  });
+
   it("loads a correlated V1 report, honors a safe target override, and reproduces", async () => {
     const path = await writeReport(report());
     const driver = new FakeReplayDriver();

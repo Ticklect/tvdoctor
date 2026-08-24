@@ -17,7 +17,11 @@ import type {
   ReplayCommandRequest,
   ReplayCommandResult,
 } from "./cli.js";
-import { createNodeAuditOperation } from "./node-audit.js";
+import {
+  REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
+  REPLAY_TARGET_OVERRIDE_REQUIRED,
+  createNodeAuditOperation,
+} from "./node-audit.js";
 
 function terminalText(value: string, maximumLength = 500): string {
   let printable = "";
@@ -145,6 +149,18 @@ async function replayIssue(
     `replay for ${terminalText(issue.id)}`,
   );
   const plan = compileStoredReplay(issue, replay);
+  if (report.target.environment[REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]
+      === REPLAY_TARGET_OVERRIDE_REQUIRED
+    && request.targetOverride === undefined) {
+    return {
+      status: "inconclusive",
+      details: [
+        "Replay target override REQUIRED",
+        "The original audit URL contained a query or fragment that was redacted from the report.",
+        "Run replay again with --target and the original complete HTTP(S) URL.",
+      ],
+    };
+  }
   const driver = createDriver();
 
   try {

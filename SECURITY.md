@@ -6,15 +6,18 @@ and the current user's filesystem—not as a security sandbox.
 
 ## Reporting a vulnerability
 
-Use the repository host's private security-advisory feature when it is available
-(on GitHub: **Security → Report a vulnerability**). Include the affected commit
-or version, impact, minimal reproduction, and any proposed mitigation.
+If this repository exposes GitHub's **Security → Report a vulnerability** flow,
+use it. Include the affected commit or version, impact, minimal reproduction,
+and any proposed mitigation. Confirm that the conversation is private before
+attaching a report bundle or exploit details.
 
-If private advisories are not enabled, contact a maintainer privately through
-their repository profile and ask for a secure reporting channel. Do not publish
-exploit details, credentials, private targets, or sensitive report artifacts in
-a public issue. General hardening suggestions without exploit details may use
-the security issue category.
+If private vulnerability reporting is unavailable, contact the repository owner
+through the private contact method on their GitHub profile and ask for a secure
+channel. If no private contact method is listed, a public issue may ask the
+maintainer to enable a channel, but it must contain no vulnerability details.
+Do not publish exploit details, credentials, private targets, or sensitive report
+artifacts in a public issue. General hardening suggestions without exploit detail
+may use the normal bug-report form.
 
 No response-time or bounty programme is promised during the pre-1.0 preview.
 Maintainers will validate scope, coordinate a fix and disclosure where possible,
@@ -26,8 +29,8 @@ There is no published supported release yet.
 
 | Version | Security fixes |
 | --- | --- |
-| Current development branch | Best effort while v0.1 is prepared |
-| Private `0.0.0` workspaces | Not a released support line |
+| Current `main` source candidate | Best effort while v0.1 is prepared |
+| `0.1.0` package candidate | Not supported until registry publication is verified |
 | Older snapshots and forks | Not supported by this project |
 
 This table will be replaced with explicit release lines when v0.1 is published.

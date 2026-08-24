@@ -1,8 +1,9 @@
 # Demo and exact reproduction
 
-The public demo should show evidence, not a staged success message. The current
-source checkout can reproduce the verified Northstar streaming gate; a polished
-15–30 second capture remains a v0.1 release artifact.
+The demo shows evidence, not a staged success message. The current source
+checkout reproduces the verified Northstar streaming gate. The short storyboard
+below can be captured for release communications, but the executable gate and
+generated bundle are the verification source of truth.
 
 ## Verified source sequence
 
@@ -54,10 +55,10 @@ Replay restores a fresh target, executes the stored setup actions, checks the
 pre-action focus checkpoint, dispatches the final key, and classifies the
 observed transition. It does not rerun the complete audit.
 
-## 20-second capture storyboard
+## Optional 20-second capture storyboard
 
-The intended public capture is an edited explanation, not a claim that the full
-audit finishes in 20 seconds:
+Any public capture is an edited explanation, not a claim that the full audit
+finishes in 20 seconds:
 
 | Time | Visible action |
 | --- | --- |

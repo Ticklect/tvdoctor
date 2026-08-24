@@ -17,6 +17,7 @@ import {
   createCanonicalSemanticIdentity,
   createSemanticIssueId,
 } from "./semantic-issue-id.js";
+import { flattenBoundedUiTree } from "./bounded-ui-tree.js";
 
 export const NAVIGATION_DIAGNOSTIC_RULES = {
   lostFocus: "remote.lost-focus",
@@ -172,6 +173,16 @@ function normalise(value: string | null | undefined): string {
   return value?.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase() ?? "";
 }
 
+/**
+ * An enabled visible node that is already focused is demonstrably reachable
+ * by the TV application's programmatic/roving focus model even when its DOM
+ * sequential-tab flag is false (for example tabindex=-1).
+ */
+function isTvFocusable(node: UiNodeSnapshot): boolean {
+  return node.focusable === true
+    || (node.focused === true && node.visible === true && node.enabled === true);
+}
+
 function semanticElementIdentity(element: NavigationElementMetadata | null): readonly string[] | null {
   if (element === null) return null;
   const stableId = normalise(element.stableId);
@@ -210,7 +221,7 @@ function semanticScreenIdentity(screen: ScreenState | undefined): {
   if (snapshot.uiTree.status !== "available") return { location, landmarks: [] };
 
   const landmarks: string[][] = [];
-  const visit = (node: UiNodeSnapshot): void => {
+  for (const { node } of flattenBoundedUiTree(snapshot.uiTree.value)) {
     const role = normalise(node.role);
     if (node.visible !== false && SCREEN_LANDMARK_ROLES.has(role)) {
       const name = normalise(node.name ?? node.text);
@@ -221,9 +232,7 @@ function semanticScreenIdentity(screen: ScreenState | undefined): {
         landmarks.push(landmark);
       }
     }
-    for (const child of node.children) visit(child);
-  };
-  for (const node of snapshot.uiTree.value) visit(node);
+  }
   return { location, landmarks: landmarks.slice(0, 32) };
 }
 
@@ -314,14 +323,7 @@ function focusedTarget(snapshot: StateSnapshot): FocusTarget | null {
 
 function flattenSnapshot(snapshot: StateSnapshot): readonly IndexedNode[] {
   if (snapshot.uiTree.status !== "available") return [];
-  const indexed: IndexedNode[] = [];
-  const visit = (node: UiNodeSnapshot, ancestors: readonly UiNodeSnapshot[]): void => {
-    indexed.push({ node, ancestors, order: indexed.length });
-    const nextAncestors = [...ancestors, node];
-    for (const child of node.children) visit(child, nextAncestors);
-  };
-  for (const node of snapshot.uiTree.value) visit(node, []);
-  return indexed;
+  return flattenBoundedUiTree(snapshot.uiTree.value);
 }
 
 function visibleDialog(nodes: readonly IndexedNode[]): IndexedNode | null {
@@ -349,13 +351,11 @@ function activeNodes(snapshot: StateSnapshot): readonly IndexedNode[] {
 
 function subtreeText(root: IndexedNode): string {
   const parts: string[] = [];
-  const visit = (node: UiNodeSnapshot): void => {
+  for (const { node } of flattenBoundedUiTree([root.node])) {
     for (const value of [node.name, node.text]) {
       if (value !== null && value.trim().length > 0) parts.push(value);
     }
-    for (const child of node.children) visit(child);
-  };
-  visit(root.node);
+  }
   return normalise(parts.join(" "));
 }
 
@@ -833,7 +833,7 @@ function addUnreachableFindings(
         || nodeIdentity(focusedNode.node) !== identity
         || focusedNode.node.visible !== true
         || focusedNode.node.enabled !== true
-        || focusedNode.node.focusable !== true) {
+        || !isTvFocusable(focusedNode.node)) {
         observationsComplete = false;
         break;
       }
@@ -890,7 +890,7 @@ function addUnreachableFindings(
           || nodeIdentity(sourceIndexed.node) !== sourceIdentity
           || sourceIndexed.node.visible !== true
           || sourceIndexed.node.enabled !== true
-          || sourceIndexed.node.focusable !== true
+          || !isTvFocusable(sourceIndexed.node)
           || !finiteBounds(sourceIndexed.node.bounds)) continue;
         const observedNodes = activeNodes(attempt.afterSnapshot);
         const observedIndexed = focusNode(attempt.afterSnapshot, observedNodes);
@@ -898,7 +898,7 @@ function addUnreachableFindings(
           || nodeIdentity(observedIndexed.node) !== observedIdentity
           || observedIndexed.node.visible !== true
           || observedIndexed.node.enabled !== true
-          || observedIndexed.node.focusable !== true) continue;
+          || !isTvFocusable(observedIndexed.node)) continue;
         const matchingCandidates = scopedNodes.filter((indexed) => (
           nodeIdentity(indexed.node) === identity
           && indexed.node.visible === true
@@ -1374,6 +1374,15 @@ export function diagnoseNavigation(
   result: ExplorationResult,
   options: NavigationDiagnosticOptions = {},
 ): NavigationDiagnostics {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new TypeError("Navigation diagnostic options must be an object.");
+  }
+  if (options.resetStrategy !== undefined
+    && options.resetStrategy !== "reload"
+    && options.resetStrategy !== "relaunch"
+    && options.resetStrategy !== "clear-data") {
+    throw new TypeError("resetStrategy must be reload, relaunch, or clear-data.");
+  }
   const resetStrategy = options.resetStrategy ?? "reload";
   const screenById = new Map(
     result.graph.screens.states.map((state) => [state.id, state]),

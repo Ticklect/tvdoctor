@@ -6,9 +6,10 @@ import {
   renderReportHtml,
   renderReportJson,
   renderReportMarkdown,
+  sanitiseUntrustedText,
 } from "../src/index.js";
 import { artifactsForIssue } from "../src/render-helpers.js";
-import { ISSUE_ID, sampleIssue, sampleReportInput } from "./sample.js";
+import { ISSUE_ID, sampleIssue, sampleReplay, sampleReportInput } from "./sample.js";
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -174,7 +175,7 @@ describe("canonical report construction and rendering", () => {
       ai: sha256(renderAiCoderReport(report)),
     }).toEqual({
       json: "e9d77eeebb61760b7a9d42eb291586189295bfd07201cddbf79e357696aca2b1",
-      html: "36a563494c439c44280671c8e22ec9ea848dc0f83a3cf71725410a4d89ea7f3f",
+      html: "0ff373c953cf1ec8389f511e5c1547bb53dc9d3748030c49e5b40901795a3646",
       markdown: "da656d7a5464ec4849d70a7a6a962f21418f1afa57df03f87c94f555508846ca",
       ai: "436b357ad80c8a9aecb75301015ea4f4021b1abb4771b47e4adbac79d04e2a6a",
     });
@@ -287,7 +288,7 @@ describe("canonical report construction and rendering", () => {
         ...(input.artifacts ?? []),
         { ...transitionArtifact, id: `${ISSUE_ID}:duplicate-transition` },
       ],
-    })).toThrow("Multiple available artifacts use path");
+    })).toThrow("is orphaned");
   });
 
   it("revalidates reporter-owned cross-links before any rendering", () => {
@@ -333,23 +334,15 @@ describe("canonical report construction and rendering", () => {
       reproduction: unavailable,
     };
     const longArtifact = {
-      id: "A:B:transition",
-      kind: "transition" as const,
-      status: "available" as const,
-      path: "evidence/AB/transition.json",
-      mediaType: "application/json",
-      byteLength: 2,
-      sha256: "b".repeat(64),
+      id: "A:B:before-screenshot",
+      kind: "screenshot" as const,
+      status: "unavailable" as const,
+      reason: "Screenshot capture was not available.",
     };
     const longIssue = {
       ...sampleIssue("A:B"),
       confidence: "unobservable" as const,
-      evidence: [{
-        kind: "verified-fact" as const,
-        summary: "Owned by the longer id.",
-        source: null,
-        artifact: longArtifact.path,
-      }],
+      evidence: [],
       reproduction: unavailable,
     };
     const report = buildTVDoctorReportV1({
@@ -361,6 +354,172 @@ describe("canonical report construction and rendering", () => {
 
     expect(artifactsForIssue(report, shortIssue)).toEqual([]);
     expect(artifactsForIssue(report, longIssue)).toEqual([longArtifact]);
+  });
+
+  it("strips terminal and bidi controls while retaining normal international text", () => {
+    const hostile = [
+      "\u001B]8;;https://attacker.test\u0007click\u001B]8;;\u0007 \u001B[31mRED\u001B[0m",
+      "\u202Espoof\u0085 العربية 👩‍💻 https://user:pass@example.test/app?token=SECRET#fragment",
+      "Cookie: sid=COOKIESECRET",
+    ].join("\n");
+    const safe = sanitiseUntrustedText(hostile);
+
+    expect(safe).toContain("click RED");
+    expect(safe).toContain("العربية 👩‍💻");
+    expect(safe).toContain("https://example.test/app");
+    expect(safe).toContain("Cookie: [REDACTED]");
+    expect(Array.from(safe).some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 27
+        || (code >= 128 && code <= 159)
+        || code === 0x061c
+        || code === 0x200e
+        || code === 0x200f
+        || (code >= 0x202a && code <= 0x202e)
+        || (code >= 0x2066 && code <= 0x2069);
+    })).toBe(false);
+    expect(safe).not.toMatch(/attacker|user:pass|SECRET|fragment|\]8;;|\[31m/u);
+  });
+
+  it("rejects cross-issue, wrong-slot, and orphaned artifact descriptors", () => {
+    const input = sampleReportInput();
+    const first = {
+      ...sampleIssue("ISSUE-A"),
+      evidence: [{
+        kind: "deterministic-failure" as const,
+        summary: "Wrongly points at issue B.",
+        source: null,
+        artifact: "evidence/ISSUE-B/transition.json",
+      }],
+      reproduction: { status: "unavailable" as const, reason: "Not recorded." },
+    };
+    const second = {
+      ...sampleIssue("ISSUE-B"),
+      evidence: [],
+      reproduction: { status: "unavailable" as const, reason: "Not recorded." },
+    };
+    const ownedBySecond = {
+      id: "ISSUE-B:transition",
+      kind: "transition" as const,
+      status: "available" as const,
+      path: "evidence/ISSUE-B/transition.json",
+      mediaType: "application/json",
+      byteLength: 2,
+      sha256: "a".repeat(64),
+    };
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [first, second],
+      artifacts: [ownedBySecond],
+      replays: [],
+    })).toThrow("owned by ISSUE-B:transition");
+
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [{ ...first, evidence: [] }],
+      artifacts: [{
+        ...ownedBySecond,
+        id: "ISSUE-A:before-screenshot",
+        path: "evidence/ISSUE-A/before-screenshot.json",
+      }],
+      replays: [],
+    })).toThrow("kind transition does not match slot before-screenshot");
+
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [{ ...first, evidence: [] }],
+      artifacts: [{
+        ...ownedBySecond,
+        id: "ISSUE-A:transition",
+        path: "evidence/ISSUE-A/transition.json",
+        mediaType: "text/yaml",
+      }],
+      replays: [],
+    })).toThrow("media type text/yaml does not match slot transition");
+
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [{ ...first, evidence: [] }],
+      artifacts: [{
+        ...ownedBySecond,
+        id: "ISSUE-A:transition",
+        path: "evidence/ISSUE-A/not-transition.json",
+      }],
+      replays: [],
+    })).toThrow("path evidence/ISSUE-A/not-transition.json does not match its owned slot");
+
+    const originalReproduction = sampleIssue("ISSUE-A").reproduction;
+    if (originalReproduction.status !== "available") throw new Error("Expected available reproduction.");
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [{
+        ...first,
+        evidence: [],
+        reproduction: { ...originalReproduction, artifact: "replays/ISSUE-B.yaml" },
+      }, second],
+      artifacts: [{
+        id: "ISSUE-B:replay",
+        kind: "replay",
+        status: "available",
+        path: "replays/ISSUE-B.yaml",
+        mediaType: "text/yaml",
+        byteLength: 2,
+        sha256: "b".repeat(64),
+      }],
+      replays: [sampleReplay("ISSUE-A")],
+    })).toThrow("missing or non-replay reproduction artifact");
+
+    expect(() => buildTVDoctorReportV1({
+      ...input,
+      issues: [{ ...first, evidence: [] }],
+      artifacts: [{ ...ownedBySecond, id: "UNKNOWN:transition", path: "evidence/UNKNOWN/transition.json" }],
+      replays: [],
+    })).toThrow("is orphaned");
+  });
+
+  it("prominently marks partial reports as inconclusive with recorded reasons", () => {
+    const input = sampleReportInput();
+    const report = buildTVDoctorReportV1({
+      ...input,
+      run: { ...input.run, status: "partial" },
+      coverage: {
+        ...input.coverage,
+        packs: [{ pack: "navigation", status: "partial" }],
+        budget: { ...input.coverage.budget, exhausted: ["duration"] },
+      },
+    });
+    const html = renderReportHtml(report);
+    const markdown = renderReportMarkdown(report);
+    expect(html).toContain("Inconclusive — partial run");
+    expect(html).toContain("navigation: partial");
+    expect(html).toContain("duration budget exhausted");
+    expect(html).toContain("grid-template-columns:minmax(0,1fr)");
+    expect(markdown).toContain("INCONCLUSIVE — PARTIAL RUN");
+    expect(markdown).toContain("navigation: partial; duration budget exhausted");
+  });
+
+  it("requires an explicit original target in every replay-capable renderer after route redaction", () => {
+    const input = sampleReportInput();
+    const report = buildTVDoctorReportV1({
+      ...input,
+      target: {
+        ...input.target,
+        environment: {
+          ...input.target.environment,
+          replayTargetOverride: "required",
+        },
+      },
+    });
+
+    for (const output of [
+      renderReportHtml(report),
+      renderReportMarkdown(report),
+      renderAiCoderReport(report),
+    ]) {
+      expect(output).toContain(`tvdoctor replay ${ISSUE_ID} --target`);
+      expect(output).toMatch(/ORIGINAL_URL|ORIGINAL_URL&gt;/u);
+      expect(output).toContain("original authorised URL");
+    }
   });
 
   it("keeps exact replay and evidence semantics visible in every human format", () => {

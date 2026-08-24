@@ -1,5 +1,6 @@
 import {
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -16,6 +17,7 @@ import {
   createArtifactStore,
   writeIssueEvidence,
   writeReportBundle,
+  type ArtifactStore,
   type JsonValue,
 } from "../src/index.js";
 import { ISSUE_ID, sampleReportInput } from "./sample.js";
@@ -26,6 +28,28 @@ async function temporaryDirectory(label: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), `tvdoctor-reporters-${label}-`));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function materialiseSampleReport(store: ArtifactStore): Promise<ReturnType<typeof buildTVDoctorReportV1>> {
+  const input = sampleReportInput();
+  const transition = await store.writeIssueArtifact({
+    issueId: ISSUE_ID,
+    slot: "transition",
+    data: "{}\n",
+  });
+  const replay = await store.writeIssueArtifact({
+    issueId: ISSUE_ID,
+    slot: "replay",
+    data: "version: 1\nsteps: []\n",
+  });
+  return buildTVDoctorReportV1({
+    ...input,
+    artifacts: (input.artifacts ?? []).map((artifact) => {
+      if (artifact.id === transition.id) return transition;
+      if (artifact.id === replay.id) return replay;
+      return artifact;
+    }),
+  });
 }
 
 afterEach(async () => {
@@ -226,10 +250,18 @@ describe("secure artifact storage", () => {
     expect(await readFile(join(root, "evidence", ISSUE_ID, "transition.json"), "utf8")).toBe("first");
   });
 
+  it("rejects a symbolic-link or junction output root", async () => {
+    const parent = await temporaryDirectory("root-link-parent");
+    const outside = await temporaryDirectory("root-link-target");
+    const linkedRoot = join(parent, "linked-root");
+    await symlink(outside, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    await expect(createArtifactStore(linkedRoot)).rejects.toThrow("not a symbolic link or junction");
+  });
+
   it("writes all four report formats and leaves no temporary files", async () => {
     const root = await temporaryDirectory("bundle");
     const store = await createArtifactStore(root);
-    const report = buildTVDoctorReportV1(sampleReportInput());
+    const report = await materialiseSampleReport(store);
     const bundle = await writeReportBundle(store, report);
 
     expect(bundle.reportJson.relativePath).toBe("report.json");
@@ -246,49 +278,72 @@ describe("secure artifact storage", () => {
     expect(parsed.schemaVersion).toBe("tvdoctor.report/v1");
   });
 
+  it("publishes non-overwrite files with atomic no-clobber semantics", async () => {
+    const root = await temporaryDirectory("concurrent-no-clobber");
+    const first = await createArtifactStore(root);
+    const second = await createArtifactStore(root);
+    const outcomes = await Promise.allSettled([
+      first.writeBundleFile("race.txt", "first"),
+      second.writeBundleFile("race.txt", "second"),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(["first", "second"]).toContain(await readFile(join(root, "race.txt"), "utf8"));
+  });
+
+  it("removes a stale completeness marker before an overwrite can fail", async () => {
+    const root = await temporaryDirectory("bundle-overwrite-failure");
+    const store = await createArtifactStore(root, { overwrite: true });
+    const report = await materialiseSampleReport(store);
+    await writeReportBundle(store, report);
+
+    await rm(join(root, "report.html"));
+    await mkdir(join(root, "report.html"));
+    await expect(writeReportBundle(store, report)).rejects.toThrow("not a regular file");
+    await expect(lstat(join(root, "report.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("redacts direct and post-build report inputs at the bundle boundary without mutating them", async () => {
     const reports = [
       {
         label: "mutated",
         sentinel: "MUTATED_BUNDLE_SENTINEL",
-        create(): ReturnType<typeof buildTVDoctorReportV1> {
-          const report = buildTVDoctorReportV1(sampleReportInput());
-          (report.target.environment as Record<string, string>)["SESSION_TOKEN"] = this.sentinel;
-          const evidence = report.issues[0]?.evidence[0] as { summary: string } | undefined;
-          if (evidence === undefined) throw new Error("Expected sample evidence.");
-          evidence.summary = JSON.stringify({ nested: { apiKey: this.sentinel } });
-          return report;
-        },
       },
       {
         label: "direct",
         sentinel: "DIRECT_BUNDLE_SENTINEL",
-        create(): ReturnType<typeof buildTVDoctorReportV1> {
-          const base = buildTVDoctorReportV1(sampleReportInput());
-          return {
-            ...base,
-            target: {
-              ...base.target,
-              environment: { ...base.target.environment, AUTHORIZATION: this.sentinel },
-            },
-            issues: base.issues.map((issue, issueIndex) => ({
-              ...issue,
-              evidence: issue.evidence.map((evidence, evidenceIndex) => ({
-                ...evidence,
-                source: issueIndex === 0 && evidenceIndex === 0
-                  ? JSON.stringify({ outer: { sessionToken: this.sentinel } })
-                  : evidence.source,
-              })),
-            })),
-          };
-        },
       },
     ];
 
     for (const candidate of reports) {
       const root = await temporaryDirectory(`bundle-${candidate.label}`);
       const store = await createArtifactStore(root);
-      const report = candidate.create();
+      const base = await materialiseSampleReport(store);
+      const report = candidate.label === "mutated"
+        ? base
+        : {
+            ...base,
+            target: {
+              ...base.target,
+              environment: { ...base.target.environment, AUTHORIZATION: candidate.sentinel },
+            },
+            issues: base.issues.map((issue, issueIndex) => ({
+              ...issue,
+              evidence: issue.evidence.map((evidence, evidenceIndex) => ({
+                ...evidence,
+                source: issueIndex === 0 && evidenceIndex === 0
+                  ? JSON.stringify({ outer: { sessionToken: candidate.sentinel } })
+                  : evidence.source,
+              })),
+            })),
+          };
+      if (candidate.label === "mutated") {
+        (report.target.environment as Record<string, string>)["SESSION_TOKEN"] = candidate.sentinel;
+        const evidence = report.issues[0]?.evidence[0] as { summary: string } | undefined;
+        if (evidence === undefined) throw new Error("Expected sample evidence.");
+        evidence.summary = JSON.stringify({ nested: { apiKey: candidate.sentinel } });
+      }
       const bundle = await writeReportBundle(store, report);
       for (const output of Object.values(bundle)) {
         const content = await readFile(output.absolutePath, "utf8");
@@ -297,5 +352,20 @@ describe("secure artifact storage", () => {
       }
       expect(JSON.stringify(report)).toContain(candidate.sentinel);
     }
+  });
+
+  it("rejects missing and mutated available artifacts before writing report files", async () => {
+    const missingRoot = await temporaryDirectory("bundle-missing");
+    const missingStore = await createArtifactStore(missingRoot);
+    const missingReport = buildTVDoctorReportV1(sampleReportInput());
+    await expect(writeReportBundle(missingStore, missingReport)).rejects.toThrow("is missing");
+    expect(await readdir(missingRoot)).toEqual([]);
+
+    const mutatedRoot = await temporaryDirectory("bundle-mutated-artifact");
+    const mutatedStore = await createArtifactStore(mutatedRoot);
+    const mutatedReport = await materialiseSampleReport(mutatedStore);
+    await writeFile(join(mutatedRoot, "evidence", ISSUE_ID, "transition.json"), "[]\n");
+    await expect(writeReportBundle(mutatedStore, mutatedReport)).rejects.toThrow(/byte length|SHA-256/u);
+    expect((await readdir(mutatedRoot)).some((name) => name.startsWith("report."))).toBe(false);
   });
 });

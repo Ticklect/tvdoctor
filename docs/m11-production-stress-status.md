@@ -1,11 +1,14 @@
 # M11 production stress status
 
-Status: **M6 RELIABILITY REVALIDATED LOCALLY; EXACT-CANDIDATE HOSTED PROOF
-CONTROLS FINAL CLOSURE**. This is the controlling record for the reopened
-real-world stress phase and the M6 first-attempt reliability closure. The
-annotated `m11-m6-reliability-proof` tag must point at the exact release
-candidate and record its successful hosted run. The older
-`m11-production-stress-proof` tag is historical and is not final M6 proof.
+Status: **M6 FIRST-ATTEMPT RELIABILITY CLOSED FOR THE TAGGED EXACT
+CANDIDATE**. This is the controlling record for the reopened real-world stress
+phase and M6 reliability closure. The annotated `m11-m6-reliability-proof` tag
+points to `e779e8ab24f81515cf96d2c6dd01a25350fbeff3`; GitHub Actions run
+[`32702314158`](https://github.com/Ticklect/tvdoctor/actions/runs/32702314158)
+passed at that exact SHA on attempt 1. The older `m11-production-stress-proof`
+tag remains historical. Changes after the tagged candidate require their own
+final clean and hosted release proof; they do not reopen the documented M6 root
+cause.
 
 ## Required lifecycle
 
@@ -343,8 +346,13 @@ of the complete aggregate gate then passed end to end:
 - streaming integration: one semantic journey/report/replay showcase;
 - package and fixture builds: passed.
 
-This closed the earlier production-stress phase at that commit, but it does not
+This closed the earlier production-stress phase at that commit, but it did not
 serve as final proof for the later M6 first-attempt reliability closure. The
-final clean aggregate gate and hosted run must use the exact candidate recorded
-by `m11-m6-reliability-proof`. No result promotes any surface beyond its current
-support level.
+final M6 candidate was `e779e8ab24f81515cf96d2c6dd01a25350fbeff3`; its clean
+local gate is recorded in the annotated `m11-m6-reliability-proof` tag, and
+GitHub Actions run
+[`32702314158`](https://github.com/Ticklect/tvdoctor/actions/runs/32702314158)
+passed on attempt 1 with no retry or flaky marker. This closes the M6-specific
+proof. The broader v0.1 candidate has changed since that tag and needs a new
+exact-SHA aggregate/package/hosted run. No result promotes any surface beyond
+its current support level.

@@ -27,7 +27,15 @@ export interface PlaywrightWebDriverOptions {
   readonly contextOptions?: BrowserContextOptions;
   readonly headless?: boolean;
   readonly maxLogEntries?: number;
+  /** Maximum DOM depth inspected while constructing a UI snapshot. */
+  readonly maxUiDepth?: number;
   readonly maxUiNodes?: number;
+  /** Maximum elements inspected, including non-semantic wrapper elements. */
+  readonly maxUiScanNodes?: number;
+  /** Maximum source text characters inspected while deriving labels and text. */
+  readonly maxUiTextChars?: number;
+  /** Maximum in-flight requests retained strongly for status correlation. */
+  readonly maxPendingNetworkRequests?: number;
   readonly navigationTimeoutMs?: number;
   readonly recentNetworkEntries?: number;
   readonly settle?: WebSettleOptions;
@@ -42,8 +50,17 @@ export interface WebDomNodeSnapshot extends UiNodeSnapshot {
 
 export interface WebUiTreeMetadata {
   readonly capturedNodeCount: number;
+  /** Elements inspected across the main document, open shadow roots, and same-origin frames. */
   readonly domElementCount: number;
+  readonly maxDepth: number;
   readonly maxNodeCount: number;
+  readonly maxScannedNodeCount: number;
+  readonly maxTextChars: number;
+  readonly scannedNodeCount: number;
+  readonly textCharsRead: number;
+  /** Nodes inspected while deriving bounded accessible names and direct text. */
+  readonly textNodesScanned: number;
+  readonly truncationReasons: readonly ("captured-nodes" | "depth" | "scanned-nodes" | "text")[];
   readonly truncated: boolean;
 }
 
@@ -114,6 +131,10 @@ export interface WebNetworkSnapshot {
   readonly requestsSucceeded: number;
   readonly requestsFailed: number;
   readonly requestsInFlight: number;
+  /** In-flight requests still held strongly for bounded status correlation. */
+  readonly pendingRequestsTracked: number;
+  /** Requests evicted from that bounded retention set while still in flight. */
+  readonly pendingRequestsDropped: number;
   readonly recentEntries: readonly WebNetworkEntry[];
 }
 

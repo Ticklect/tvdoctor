@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { mkdir } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import {
   compileIssueReplay,
   diagnoseNavigation,
@@ -44,6 +46,7 @@ import {
   buildTVDoctorReportV1,
   createArtifactStore,
   sanitiseEvidenceJson,
+  sanitiseUntrustedText,
   stableJson,
   writeIssueEvidence,
   writeReportBundle,
@@ -60,6 +63,13 @@ import {
   createStreamingAuditPointerProbe,
   createWebAuditHooks,
 } from "./web-audit-hooks.js";
+import { CLI_VERSION } from "./version.js";
+
+export const REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY = "replayTargetOverride";
+export const REPLAY_TARGET_OVERRIDE_REQUIRED = "required";
+export const MAX_ISSUES_WITH_FRESH_EVIDENCE = 32;
+export const MAX_EVIDENCE_CAPTURE_DURATION_MS = 120_000;
+export const EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS = 20_000;
 
 const WEB_STAGE_BY_PACK: Readonly<Partial<Record<TestCommandRequest["packs"][number], WebStageName>>> = {
   search: "search",
@@ -127,14 +137,14 @@ const WEB_BUDGETS: Readonly<Record<ExplorationProfile, WebPackBudgets>> = {
   },
 };
 
-interface AuditRunProducts {
+export interface AuditRunProducts {
   readonly navigation: ExplorationResult | null;
   readonly navigationFindings: readonly NavigationDiagnosticFinding[];
   readonly streaming: StreamingPackResult | null;
   readonly web: WebPackResult | null;
 }
 
-interface CapturedIssue {
+export interface CapturedIssue {
   readonly issue: TVDoctorIssue;
   readonly artifacts: readonly ArtifactDescriptor[];
   readonly replay: TVDoctorReplayV1 | null;
@@ -404,10 +414,34 @@ function sequenceForIssue(products: AuditRunProducts, issue: TVDoctorIssue): rea
   return navigation?.source.actionSequence ?? [];
 }
 
+async function withinDeadline<T>(
+  operation: Promise<T>,
+  deadlineMs: number,
+  label: string,
+): Promise<T> {
+  const remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) throw new Error(`${label} exceeded the bounded evidence-capture deadline.`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded the bounded evidence-capture deadline.`)),
+          remainingMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function captureContext(
   target: string,
   sequence: readonly RemoteKey[],
   createDriver: () => PlaywrightWebDriver,
+  maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
 ): Promise<{
   readonly before: StateSnapshot;
   readonly after: StateSnapshot;
@@ -417,26 +451,81 @@ async function captureContext(
   readonly logs: readonly WebLogEntry[];
 }> {
   const driver = createDriver();
-  await driver.launch({ id: "cli-issue-evidence", launchUri: target });
+  const deadlineMs = Date.now() + maximumDurationMs;
   try {
+    await withinDeadline(
+      driver.launch({ id: "cli-issue-evidence", launchUri: target }),
+      deadlineMs,
+      "Evidence browser launch",
+    );
     const setup = sequence.length === 0 ? [] : sequence.slice(0, -1);
     for (const key of setup) {
-      const result = await driver.press(key);
+      const result = await withinDeadline(driver.press(key), deadlineMs, `Evidence setup ${key}`);
       if (result.outcome !== "applied") throw new Error(`Evidence setup ${key} was ${result.outcome}.`);
     }
-    const before = await driver.snapshot();
-    const beforePng = await driver.getPage().screenshot({ type: "png", animations: "disabled" });
+    const before = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence before snapshot");
+    const beforePng = await withinDeadline(
+      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+      deadlineMs,
+      "Evidence before screenshot",
+    );
     const assertion = sequence.at(-1);
-    const action = assertion === undefined ? null : await driver.press(assertion);
+    const action = assertion === undefined
+      ? null
+      : await withinDeadline(driver.press(assertion), deadlineMs, `Evidence assertion ${assertion}`);
     if (action !== null && action.outcome !== "applied") {
       throw new Error(`Evidence assertion ${assertion} was ${action.outcome}.`);
     }
-    const after = await driver.snapshot();
-    const afterPng = await driver.getPage().screenshot({ type: "png", animations: "disabled" });
-    return { before, after, beforePng, afterPng, action, logs: await driver.getLogs() };
+    const after = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence after snapshot");
+    const afterPng = await withinDeadline(
+      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+      deadlineMs,
+      "Evidence after screenshot",
+    );
+    const logs = await withinDeadline(driver.getLogs(), deadlineMs, "Evidence log capture");
+    return { before, after, beforePng, afterPng, action, logs };
   } finally {
-    await driver.close();
+    await withinDeadline(
+      driver.close(),
+      Date.now() + 5_000,
+      "Evidence browser cleanup",
+    ).catch(() => undefined);
   }
+}
+
+function focusedIdentity(snapshot: StateSnapshot): string | null {
+  if (snapshot.focusedElement.status !== "available") return null;
+  const target = snapshot.focusedElement.value;
+  for (const value of [target?.stableId, target?.name, target?.role]) {
+    const candidate = value?.trim();
+    if (candidate !== undefined && candidate.length > 0) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Return a bounded reason when a fresh evidence journey no longer witnesses
+ * the discovery transition. A stale transition must never be labelled as a
+ * fresh observation merely because the action sequence still executes.
+ */
+export function freshEvidenceDriftReason(
+  issue: TVDoctorIssue,
+  context: Pick<Awaited<ReturnType<typeof captureContext>>, "before" | "after" | "action">,
+): string | null {
+  const transition = issue.transition;
+  if (transition === null) return null;
+  const before = focusedIdentity(context.before);
+  const after = focusedIdentity(context.after);
+  if (context.action === null || context.action.key !== transition.action) {
+    return "Fresh evidence did not execute the recorded assertion action.";
+  }
+  if (transition.fromElement !== null && before !== transition.fromElement) {
+    return "Fresh evidence reached a different pre-action focus identity than discovery.";
+  }
+  if (transition.observedElement !== null && after !== transition.observedElement) {
+    return "Fresh evidence reached a different post-action focus identity than discovery.";
+  }
+  return null;
 }
 
 function replayText(replay: TVDoctorReplayV1): string {
@@ -450,7 +539,61 @@ function availablePath(
   return paths[slot] ?? null;
 }
 
-async function captureIssue(
+function evidenceUnavailableIssue(sourceIssue: TVDoctorIssue, rawReason: string): TVDoctorIssue {
+  const reason = sanitiseUntrustedText(rawReason, 600)
+    || "Fresh issue evidence was unavailable.";
+  return {
+    ...sourceIssue,
+    evidence: [
+      ...sourceIssue.evidence.map((entry) => ({ ...entry, artifact: null })),
+      {
+        kind: "verified-fact",
+        summary: reason,
+        source: "TVDoctor bounded evidence capture",
+        artifact: null,
+      },
+    ],
+    reproduction: { status: "unavailable", reason },
+  };
+}
+
+async function writeFailedCaptureEvidence(
+  store: ArtifactStore,
+  sourceIssue: TVDoctorIssue,
+  sequence: readonly RemoteKey[],
+  rawReason: string,
+): Promise<CapturedIssue> {
+  const reason = sanitiseUntrustedText(rawReason, 600)
+    || "Fresh issue evidence was unavailable.";
+  const written = await writeIssueEvidence(store, {
+    issueId: sourceIssue.id,
+    artifacts: [
+      { slot: "before-screenshot", capture: { status: "failed", reason } },
+      { slot: "after-screenshot", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
+      { slot: "ui-excerpt", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
+      { slot: "transition", capture: { status: "failed", reason: "A fresh matching transition was not observed." } },
+      { slot: "console-log", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
+      {
+        slot: "navigation-path",
+        capture: {
+          status: "available",
+          format: "json",
+          value: sanitiseEvidenceJson(asJson({ exactResetRelativeSequence: sequence })),
+        },
+      },
+      { slot: "replay", capture: { status: "unavailable", reason: "Fresh evidence was inconclusive, so no replay was retained." } },
+      { slot: "trace", capture: { status: "unavailable", reason: "Browser tracing was disabled." } },
+    ],
+  });
+  return {
+    issue: evidenceUnavailableIssue(sourceIssue, reason),
+    artifacts: written.descriptors,
+    replay: null,
+    failed: true,
+  };
+}
+
+export async function captureIssue(
   store: ArtifactStore,
   target: string,
   products: AuditRunProducts,
@@ -464,8 +607,21 @@ async function captureIssue(
     slot: slot as IssueEvidenceSlot,
     capture: { status: "failed", reason },
   });
+  let context: Awaited<ReturnType<typeof captureContext>>;
   try {
-    const context = await captureContext(target, sequence, createDriver);
+    context = await captureContext(target, sequence, createDriver);
+    const driftReason = freshEvidenceDriftReason(sourceIssue, context);
+    if (driftReason !== null) throw new Error(driftReason);
+  } catch (error) {
+    return await writeFailedCaptureEvidence(
+      store,
+      sourceIssue,
+      sequence,
+      `Evidence capture was inconclusive: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  try {
     const safeArtifact = (
       slot: IssueEvidenceSlot,
       build: () => IssueEvidenceArtifactInput,
@@ -483,24 +639,31 @@ async function captureIssue(
       safeArtifact("ui-excerpt", () => ({
         slot: "ui-excerpt" as const,
         capture: (() => {
-          const value = asJson({ before: boundedSnapshot(context.before), after: boundedSnapshot(context.after) });
-          sanitiseEvidenceJson(value);
+          const value = sanitiseEvidenceJson(asJson({
+            before: boundedSnapshot(context.before),
+            after: boundedSnapshot(context.after),
+          }));
           return { status: "available" as const, format: "json" as const, value };
         })(),
       })),
       safeArtifact("transition", () => ({
         slot: "transition" as const,
         capture: (() => {
-          const value = asJson({ transition: sourceIssue.transition, action: context.action });
-          sanitiseEvidenceJson(value);
+          const value = sanitiseEvidenceJson(asJson({
+            freshlyObserved: {
+              beforeFocusedElement: focusedIdentity(context.before),
+              action: context.action,
+              afterFocusedElement: focusedIdentity(context.after),
+            },
+            recordedExpectedElement: sourceIssue.transition?.expectedElement ?? null,
+          }));
           return { status: "available" as const, format: "json" as const, value };
         })(),
       })),
       safeArtifact("console-log", () => ({
         slot: "console-log" as const,
         capture: (() => {
-          const value = asJson(context.logs);
-          sanitiseEvidenceJson(value);
+          const value = sanitiseEvidenceJson(asJson(context.logs));
           return { status: "available" as const, format: "json" as const, value };
         })(),
       })),
@@ -511,7 +674,14 @@ async function captureIssue(
         { slot: "before-screenshot", capture: { status: "available", format: "binary", data: context.beforePng, mediaType: "image/png" } },
         { slot: "after-screenshot", capture: { status: "available", format: "binary", data: context.afterPng, mediaType: "image/png" } },
         ...artifacts,
-        { slot: "navigation-path", capture: { status: "available", format: "json", value: asJson({ resetStrategy: "reload", exactResetRelativeSequence: sequence }) } },
+        {
+          slot: "navigation-path",
+          capture: {
+            status: "available",
+            format: "json",
+            value: sanitiseEvidenceJson(asJson({ resetStrategy: "reload", exactResetRelativeSequence: sequence })),
+          },
+        },
         {
           slot: "replay",
           capture: plan === null
@@ -552,23 +722,63 @@ async function captureIssue(
         ? { ...sourceIssue.reproduction, artifact: replayPath }
         : sourceIssue.reproduction,
     };
-    return { issue, artifacts: written.descriptors, replay: plan?.replay ?? null, failed: false };
+    return {
+      issue,
+      artifacts: written.descriptors,
+      replay: plan?.replay ?? null,
+      failed: written.descriptors.some((descriptor) => descriptor.status === "failed"),
+    };
   } catch (error) {
-    const written = await writeIssueEvidence(store, {
-      issueId: sourceIssue.id,
-      artifacts: [
-        { slot: "before-screenshot", capture: { status: "failed", reason: `Evidence capture failed: ${error instanceof Error ? error.message : String(error)}` } },
-        { slot: "after-screenshot", capture: { status: "failed", reason: "The evidence journey did not complete." } },
-        { slot: "ui-excerpt", capture: { status: "failed", reason: "The evidence journey did not complete." } },
-        { slot: "transition", capture: { status: "failed", reason: "The evidence journey did not complete." } },
-        { slot: "console-log", capture: { status: "failed", reason: "The evidence journey did not complete." } },
-        { slot: "navigation-path", capture: { status: "available", format: "json", value: asJson({ exactResetRelativeSequence: sequence }) } },
-        { slot: "replay", capture: { status: "unavailable", reason: "Evidence capture failed before a replay artifact could be retained." } },
-        { slot: "trace", capture: { status: "unavailable", reason: "Browser tracing was disabled." } },
-      ],
-    });
-    return { issue: sourceIssue, artifacts: written.descriptors, replay: null, failed: true };
+    // Filesystem failures after an evidence write begins cannot be repaired by
+    // writing a second set into the same immutable store. Surface the failure
+    // to the command rather than publishing a mixed bundle.
+    throw new Error(
+      `Evidence artifacts could not be retained for ${sourceIssue.id}: ${sanitiseUntrustedText(error instanceof Error ? error.message : String(error), 400)}`,
+      { cause: error },
+    );
   }
+}
+
+function skippedEvidenceIssue(sourceIssue: TVDoctorIssue, reason: string): CapturedIssue {
+  return {
+    issue: evidenceUnavailableIssue(sourceIssue, reason),
+    artifacts: [],
+    replay: null,
+    failed: true,
+  };
+}
+
+type IssueCapturer = typeof captureIssue;
+
+export async function captureIssuesWithinBudget(
+  store: ArtifactStore,
+  target: string,
+  products: AuditRunProducts,
+  issues: readonly TVDoctorIssue[],
+  createDriver: () => PlaywrightWebDriver,
+  capture: IssueCapturer = captureIssue,
+  now: () => number = Date.now,
+): Promise<readonly CapturedIssue[]> {
+  const startedAtMs = now();
+  const captured: CapturedIssue[] = [];
+  for (const [index, issue] of issues.entries()) {
+    if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
+      captured.push(skippedEvidenceIssue(
+        issue,
+        `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
+      ));
+      continue;
+    }
+    if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
+      captured.push(skippedEvidenceIssue(
+        issue,
+        `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
+      ));
+      continue;
+    }
+    captured.push(await capture(store, target, products, issue, createDriver));
+  }
+  return captured;
 }
 
 function packCoverage(products: AuditRunProducts, packs: ReadonlySet<string>): readonly {
@@ -591,11 +801,18 @@ function packCoverage(products: AuditRunProducts, packs: ReadonlySet<string>): r
   return result;
 }
 
-function exhaustedBudgets(products: AuditRunProducts): ("actions" | "states" | "depth" | "duration" | "repetitive-items")[] {
+export function exhaustedBudgets(
+  products: AuditRunProducts,
+  selectedPacks: ReadonlySet<string>,
+): ("actions" | "states" | "depth" | "duration" | "repetitive-items")[] {
   const exhausted = new Set<"actions" | "states" | "depth" | "duration" | "repetitive-items">();
+  // A streaming journey may be used internally to establish the player route
+  // required by selected web layout/performance stages. Its full-pack budget
+  // is not selected coverage and must not make a successfully proven web run
+  // contradict itself by reporting an exhausted unrequested pack.
   const reasons = [
-    products.navigation?.termination.reason,
-    products.streaming?.termination.reason,
+    selectedPacks.has("navigation") ? products.navigation?.termination.reason : undefined,
+    selectedPacks.has("streaming") ? products.streaming?.termination.reason : undefined,
     products.web?.termination.reason,
   ];
   for (const reason of reasons) {
@@ -607,15 +824,86 @@ function exhaustedBudgets(products: AuditRunProducts): ("actions" | "states" | "
   return [...exhausted];
 }
 
+export function partialRunDetails(
+  products: AuditRunProducts,
+  selectedPacks: ReadonlySet<string>,
+  evidenceFailureCount: number,
+): readonly string[] {
+  const details: string[] = [];
+  if (selectedPacks.has("navigation") && products.navigation?.termination.complete === false) {
+    details.push(`Partial reason: navigation stopped at ${products.navigation.termination.reason}.`);
+  }
+  if (selectedPacks.has("streaming") && products.streaming?.status !== "complete") {
+    details.push(`Partial reason: streaming stopped at ${products.streaming?.termination.reason ?? "unavailable"}: ${products.streaming?.termination.detail ?? "No streaming result was produced."}`);
+  }
+  if (products.web?.termination.complete === false) {
+    details.push(`Partial reason: web diagnostics stopped at ${products.web.termination.reason}: ${products.web.termination.detail}`);
+  }
+  for (const stage of products.web?.stages ?? []) {
+    if (stage.status === "partial" || stage.status === "unobservable" || stage.status === "skipped") {
+      details.push(`Partial pack ${stage.stage === "crash" ? "crashes" : stage.stage}: ${stage.status}: ${stage.detail}`);
+    }
+  }
+  if (evidenceFailureCount > 0) {
+    details.push(`Partial reason: fresh evidence was unavailable for ${String(evidenceFailureCount)} issue${evidenceFailureCount === 1 ? "" : "s"}.`);
+  }
+  return details.slice(0, 12);
+}
+
 function highestSeverity(issues: readonly TVDoctorIssue[]): TestCommandResult["highestSeverity"] {
   const order = ["critical", "high", "medium", "low", "info"] as const;
   return order.find((severity) => issues.some((issue) => issue.severity === severity)) ?? null;
+}
+
+export function targetRequiresReplayOverride(target: string): boolean {
+  const parsed = new URL(target);
+  return parsed.search.length > 0 || parsed.hash.length > 0;
+}
+
+/** Exclusively reserve a new output leaf before constructing a browser. */
+export async function reserveAuditOutput(outputPath: string): Promise<ArtifactStore> {
+  const absoluteOutput = resolve(outputPath);
+  await mkdir(dirname(absoluteOutput), { recursive: true });
+  await mkdir(absoluteOutput);
+  return await createArtifactStore(absoluteOutput);
+}
+
+export async function writeAuditAuxiliaryArtifacts(
+  store: ArtifactStore,
+  ledgerValue: JsonValue,
+  inventoryValue: JsonValue,
+): Promise<readonly ArtifactDescriptor[]> {
+  const ledgerText = stableJson(sanitiseEvidenceJson(ledgerValue));
+  await store.writeBundleFile("stage-ledger.json", ledgerText);
+  const inventoryText = stableJson(sanitiseEvidenceJson(inventoryValue));
+  await store.writeBundleFile("inventory.json", inventoryText);
+  return [
+    {
+      id: "run:stage-ledger",
+      kind: "report",
+      status: "available",
+      path: "stage-ledger.json",
+      mediaType: "application/json",
+      byteLength: Buffer.byteLength(ledgerText),
+      sha256: createHash("sha256").update(ledgerText).digest("hex"),
+    },
+    {
+      id: "run:inventory",
+      kind: "report",
+      status: "available",
+      path: "inventory.json",
+      mediaType: "application/json",
+      byteLength: Buffer.byteLength(inventoryText),
+      sha256: createHash("sha256").update(inventoryText).digest("hex"),
+    },
+  ];
 }
 
 async function runAudit(
   request: TestCommandRequest,
   createDriver: () => PlaywrightWebDriver,
 ): Promise<TestCommandResult> {
+  const store = await reserveAuditOutput(request.outputPath);
   const startedAt = new Date();
   const packs = selectedPacks(request);
   const webStages = selectedWebStages(packs);
@@ -677,11 +965,13 @@ async function runAudit(
   const uniqueIds = new Set(rawIssues.map((issue) => issue.id));
   if (uniqueIds.size !== rawIssues.length) throw new TypeError("Audit packs produced duplicate semantic issue IDs.");
 
-  const store = await createArtifactStore(request.outputPath);
-  const captured: CapturedIssue[] = [];
-  for (const issue of rawIssues) {
-    captured.push(await captureIssue(store, request.target, products, issue, createDriver));
-  }
+  const captured = await captureIssuesWithinBudget(
+    store,
+    request.target,
+    products,
+    rawIssues,
+    createDriver,
+  );
   const inventory = navigationInventory(navigation, web);
   const ledgerValue = asJson({
     schemaVersion: 1,
@@ -693,30 +983,7 @@ async function runAudit(
     streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
     web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
   });
-  const ledgerText = stableJson(ledgerValue);
-  await store.writeBundleFile("stage-ledger.json", ledgerText);
-  const inventoryText = stableJson(asJson(inventory));
-  await store.writeBundleFile("inventory.json", inventoryText);
-  const globalArtifacts: ArtifactDescriptor[] = [
-    {
-      id: "run:stage-ledger",
-      kind: "report",
-      status: "available",
-      path: "stage-ledger.json",
-      mediaType: "application/json",
-      byteLength: Buffer.byteLength(ledgerText),
-      sha256: createHash("sha256").update(ledgerText).digest("hex"),
-    },
-    {
-      id: "run:inventory",
-      kind: "report",
-      status: "available",
-      path: "inventory.json",
-      mediaType: "application/json",
-      byteLength: Buffer.byteLength(inventoryText),
-      sha256: createHash("sha256").update(inventoryText).digest("hex"),
-    },
-  ];
+  const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
   const evidenceFailed = captured.some((entry) => entry.failed);
   const coverage = packCoverage(products, packs);
   const runPartial = evidenceFailed || coverage.some((entry) => entry.status !== "completed");
@@ -724,7 +991,7 @@ async function runAudit(
   const report = buildTVDoctorReportV1({
     run: {
       id: `audit-${startedAt.getTime().toString(36)}`,
-      tvdoctorVersion: "0.0.0",
+      tvdoctorVersion: CLI_VERSION,
       mode: request.mode,
       status: runPartial ? "partial" : "completed",
       startedAt: startedAt.toISOString(),
@@ -739,6 +1006,9 @@ async function runAudit(
         browser: "chromium",
         viewport: "1280x720",
         orchestration: "bounded semantic local audit",
+        ...(targetRequiresReplayOverride(request.target)
+          ? { [REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]: REPLAY_TARGET_OVERRIDE_REQUIRED }
+          : {}),
       },
     },
     coverage: {
@@ -767,7 +1037,7 @@ async function runAudit(
           + (streaming?.budgets.maxDurationMs ?? 0)
           + (web?.budgets.maxDurationMs ?? 0),
         maxRepetitiveItems: request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
-        exhausted: exhaustedBudgets(products),
+        exhausted: exhaustedBudgets(products, packs),
       },
     },
     issues: captured.map((entry) => entry.issue),
@@ -775,6 +1045,7 @@ async function runAudit(
     replays: captured.flatMap((entry) => entry.replay === null ? [] : [entry.replay]),
   });
   const bundle = await writeReportBundle(store, report);
+  const evidenceFailureCount = captured.filter((entry) => entry.failed).length;
   return {
     status: report.run.status,
     issueCount: report.issues.length,
@@ -783,7 +1054,8 @@ async function runAudit(
     details: [
       `Packs ${String(coverage.filter((entry) => entry.status === "completed").length)}/${String(coverage.length)} completed`,
       `Actions ${String(report.coverage.actionsSent)}/${String(report.coverage.budget.maxActions ?? 0)}`,
-      `States ${String(report.coverage.focusStatesDiscovered)}; issues ${String(report.issues.length)}; evidence failures ${String(captured.filter((entry) => entry.failed).length)}`,
+      `States ${String(report.coverage.focusStatesDiscovered)}; issues ${String(report.issues.length)}; evidence failures ${String(evidenceFailureCount)}`,
+      ...(runPartial ? partialRunDetails(products, packs, evidenceFailureCount) : []),
     ],
   };
 }

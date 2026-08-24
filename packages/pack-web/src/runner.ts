@@ -76,6 +76,10 @@ const MAX_HOOK_TEXT = 1_024;
 // a conservative warning rather than a visual-certification threshold.
 const WEAK_FOCUS_CROP_RATIO = 0.05;
 
+function rethrowPackStop(error: unknown): void {
+  if (error instanceof WebPackStop) throw error;
+}
+
 function observation(
   kind: string,
   status: WebStageObservation["status"],
@@ -272,12 +276,12 @@ async function enterQueryWithRemote(
 
   const runHook = async (): Promise<{ readonly result: SearchQueryEntryResult; readonly snapshot: StateSnapshot }> => {
     const base = await session.restoreAndReplay(searchSequence, "probe");
-    const result = await hook.enter({
+    const result = await session.withinDuration(() => hook.enter({
       query: config.searchQuery,
       input,
       snapshot: base,
       inputSequence: searchSequence,
-    });
+    }));
     validateQueryHookResult(result, config.searchQuery);
     return { result, snapshot: await session.snapshot() };
   };
@@ -285,6 +289,7 @@ async function enterQueryWithRemote(
   try {
     first = await runHook();
   } catch (error) {
+    rethrowPackStop(error);
     return {
       status: "unavailable",
       detail: `${remoteUnavailableReason} The explicit query hook failed safely: ${safeErrorMessage(error)}`,
@@ -393,12 +398,13 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
     } else {
       session.recordPointerProbe();
       try {
-        const pointer = await options.hooks.pointerProbe.probe({
+        const pointer = await session.withinDuration(() => options.hooks?.pointerProbe?.probe({
           kind: "search-submit",
           element: submit.descriptor,
           snapshot: opened.snapshot,
           surfaceSequence: opened.sequence,
-        });
+        }));
+        if (pointer === undefined) throw new TypeError("Pointer hook became unavailable during the stage.");
         validateHookText(pointer.detail, "Pointer hook detail");
         if (pointer.status === "activated") {
           validateHookText(pointer.observedEffect, "Pointer hook observedEffect");
@@ -412,6 +418,7 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
           observations.push(observation("search-submit", "unavailable", `Pointer proof was ${pointer.status}: ${pointer.detail}`, opened.sequence, submit.descriptor));
         }
       } catch (error) {
+        rethrowPackStop(error);
         observations.push(observation("search-submit", "unavailable", `Pointer proof failed safely: ${safeErrorMessage(error)}`, opened.sequence, submit.descriptor));
       }
     }
@@ -743,11 +750,11 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
     const element = describeWebElement(focused.node);
     session.recordFocusProbe();
     try {
-      const result = await hook.probe({
+      const result = await session.withinDuration(() => hook.probe({
         element,
         snapshot: restored,
         focusSequence: probeState.exactPath,
-      });
+      }));
       validateHookText(result.detail, "Focus hook detail");
       if (result.status !== "available") {
         incompleteFocusProofs += 1;
@@ -787,6 +794,7 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
         ));
       }
     } catch (error) {
+      rethrowPackStop(error);
       incompleteFocusProofs += 1;
       observations.push(observation(
         "focus-visibility-proof",
@@ -865,7 +873,7 @@ async function runLayoutInternal(context: StageContext): Promise<WebStageResult>
   }
   let viewportResult;
   try {
-    viewportResult = await hook.observe(snapshot);
+    viewportResult = await context.session.withinDuration(() => hook.observe(snapshot));
     if (viewportResult.status !== "available") {
       validateHookText(viewportResult.detail, "Viewport hook detail");
       return stage("layout", "unobservable", `Viewport proof was ${viewportResult.status}: ${viewportResult.detail}`, [], [
@@ -875,6 +883,7 @@ async function runLayoutInternal(context: StageContext): Promise<WebStageResult>
     validateHookText(viewportResult.source, "Viewport hook source");
     validateViewport(viewportResult.viewport);
   } catch (error) {
+    rethrowPackStop(error);
     return stage("layout", "unobservable", `Viewport proof failed safely: ${safeErrorMessage(error)}`, [], [
       observation("viewport", "unavailable", safeErrorMessage(error), sequence),
     ]);
@@ -1002,15 +1011,20 @@ function validateLogs(value: readonly LogEntry[], maximum: number): readonly Log
 }
 
 async function runCrashInternal(context: StageContext): Promise<WebStageResult> {
-  if (!context.capabilities.has("logs") || context.session.driver.getLogs === undefined) {
+  const getLogs = context.session.driver.getLogs;
+  if (!context.capabilities.has("logs") || getLogs === undefined) {
     return stage("crash", "unobservable", "The driver did not expose bounded application logs.", [], [
       observation("driver-logs", "unavailable", "logs capability or getLogs implementation unavailable."),
     ]);
   }
   let logs: readonly LogEntry[];
   try {
-    logs = validateLogs(await context.session.driver.getLogs(), context.session.budgets.maxLogs);
+    logs = validateLogs(
+      await context.session.withinDuration(() => getLogs.call(context.session.driver)),
+      context.session.budgets.maxLogs,
+    );
   } catch (error) {
+    rethrowPackStop(error);
     return stage("crash", "unobservable", `Log observation failed safely: ${safeErrorMessage(error)}`, [], [
       observation("driver-logs", "unavailable", safeErrorMessage(error)),
     ]);
@@ -1043,6 +1057,7 @@ async function runCrashInternal(context: StageContext): Promise<WebStageResult> 
           : "The UI tree exposed no visible semantic nodes; blank-screen robustness was not passed.",
       );
     } catch (error) {
+      rethrowPackStop(error);
       liveSurface = observation(
         "live-surface",
         "unavailable",
@@ -1129,11 +1144,13 @@ export async function runWebPack(
   }
 
   const stages: WebStageResult[] = [];
+  let activeStage: WebStageName | null = null;
   try {
     const capabilities = await session.capabilities();
     const context: StageContext = { session, options, config, capabilities };
     for (const name of config.stages) {
       session.ensureDuration();
+      activeStage = name;
       switch (name) {
         case "search":
           stages.push(await runSearchInternal(context));
@@ -1154,6 +1171,7 @@ export async function runWebPack(
           stages.push(await runCrashInternal(context));
           break;
       }
+      activeStage = null;
     }
     const issues = stages.flatMap((item) => item.issues);
     const uniqueIds = new Set(issues.map((issue) => issue.id));
@@ -1179,14 +1197,27 @@ export async function runWebPack(
       ? error
       : new WebPackStop("driver-error", safeErrorMessage(error));
     const completedNames = new Set(stages.map((item) => item.stage));
-    const remaining = config.stages.filter((name) => !completedNames.has(name));
+    const interruptedName = stop.reason === "max-duration" ? activeStage : null;
+    const interruptedStage = interruptedName !== null
+      ? [stage(
+        interruptedName,
+        "partial",
+        `Stage was interrupted by the pack-wide deadline: ${stop.message}`,
+        [],
+        [],
+      )]
+      : [];
+    const remaining = config.stages.filter((name) => (
+      !completedNames.has(name) && name !== interruptedName
+    ));
     const retainedIssues = stages.flatMap((item) => item.issues);
     return {
-      status: "error",
+      status: stop.reason === "max-duration" ? "partial" : "error",
       termination: { reason: stop.reason, complete: false, detail: stop.message },
       budgets: config.budgets,
       stages: [
         ...stages,
+        ...interruptedStage,
         ...skippedStages(remaining, `Run stopped before this selected stage completed: ${stop.message}`),
       ],
       issues: retainedIssues,

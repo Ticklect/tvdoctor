@@ -7,6 +7,8 @@ import {
   formatDuration,
   formatRemoteSequence,
   issueCounts,
+  replayCommand,
+  replayTargetOverrideRequired,
   validReport,
 } from "./render-helpers.js";
 
@@ -39,8 +41,11 @@ function renderTransition(issue: TVDoctorIssue): string {
 
 function renderIssue(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
   const artifacts = artifactsForIssue(report, issue);
+  const replayOverrideWarning = replayTargetOverrideRequired(report)
+    ? "<p class=\"status unavailable\"><strong>Original target required:</strong> Query or fragment data was redacted from this report. Supply the original authorised URL explicitly; replay refuses to run without it.</p>"
+    : "";
   const reproduction = issue.reproduction.status === "available"
-    ? `<p><strong>Reset:</strong> ${escapeHtml(issue.reproduction.resetStrategy)} · <strong>Confidence:</strong> ${escapeHtml(issue.reproduction.confidence)}</p><p><strong>Original sequence executed by replay:</strong></p><pre>${formatRemoteSequence(issue.reproduction.originalSequence)}</pre>${issue.reproduction.minimizedSequence === null ? "" : `<p><strong>Recorded minimized candidate (not executed by the M5 replay command):</strong></p><pre>${formatRemoteSequence(issue.reproduction.minimizedSequence)}</pre>`}<p><strong>Replay command:</strong> <code>tvdoctor replay ${escapeHtml(issue.id)}</code></p>`
+    ? `<p><strong>Reset:</strong> ${escapeHtml(issue.reproduction.resetStrategy)} · <strong>Confidence:</strong> ${escapeHtml(issue.reproduction.confidence)}</p><p><strong>Original sequence executed by replay:</strong></p><pre>${formatRemoteSequence(issue.reproduction.originalSequence)}</pre>${issue.reproduction.minimizedSequence === null ? "" : `<p><strong>Recorded minimized candidate (not executed by the M5 replay command):</strong></p><pre>${formatRemoteSequence(issue.reproduction.minimizedSequence)}</pre>`}${replayOverrideWarning}<p><strong>Replay command:</strong> <code>${escapeHtml(replayCommand(report, issue.id))}</code></p>`
     : `<p class="status unavailable">Unavailable</p><pre>${escapeHtml(issue.reproduction.reason)}</pre>`;
   const reproductionHeading = issue.reproduction.status !== "available"
     ? "Reproduction"
@@ -60,6 +65,17 @@ function renderIssue(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
       <section><h4>Artifacts</h4>${artifacts.length === 0 ? "<p class=\"meta\">No artifacts were recorded.</p>" : `<ul>${artifacts.map((artifact) => renderArtifact(artifact)).join("")}</ul>`}</section>
     </div>
   </details>`;
+}
+
+function renderRunWarning(report: TVDoctorReportV1): string {
+  if (report.run.status !== "partial") return "";
+  const packReasons = report.coverage.packs
+    .filter((pack) => pack.status !== "completed")
+    .map((pack) => `${pack.pack}: ${pack.status}`);
+  const budgetReasons = report.coverage.budget.exhausted
+    .map((budget) => `${budget} budget exhausted`);
+  const reasons = [...packReasons, ...budgetReasons];
+  return `<aside class="run-warning" role="alert"><h2>Inconclusive — partial run</h2><p>This report describes only the coverage that completed. Do not interpret absent findings as a pass.</p><p><strong>Recorded reasons:</strong> ${reasons.length === 0 ? "The run ended before all requested coverage completed; no more-specific reason was recorded." : reasons.map((reason) => escapeHtml(reason)).join(" · ")}</p></aside>`;
 }
 
 export function renderReportHtml(report: TVDoctorReportV1): string {
@@ -85,7 +101,7 @@ export function renderReportHtml(report: TVDoctorReportV1): string {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <title>TVDoctor Report</title>
   <style>
-    :root{color-scheme:dark;--bg:#0a0f1b;--panel:#121a2b;--panel2:#19233a;--text:#f3f6ff;--muted:#9dabca;--line:#2a3857;--accent:#64e0c1;--critical:#ff667a;--high:#ff9d62;--medium:#ffd166;--low:#6fb5ff;--info:#a9b8d6}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#080d17,#111a2c);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:42px 0 80px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:rgba(18,26,43,.94)}h1{margin:0;font-size:2.2rem}h2{margin-top:36px}h3,h4{margin-bottom:8px}.tagline,.meta{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:24px}.metric{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.metric strong{display:block;font-size:1.65rem}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:18px}.panel{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid var(--line)}th{color:var(--muted);width:34%}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}code,kbd{font-family:ui-monospace,monospace}kbd{padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:#050913}.issue{margin:12px 0;border:1px solid var(--line);border-left:5px solid var(--info);border-radius:12px;background:var(--panel)}.severity-critical{border-left-color:var(--critical)}.severity-high{border-left-color:var(--high)}.severity-medium{border-left-color:var(--medium)}.severity-low{border-left-color:var(--low)}summary{display:flex;align-items:center;gap:10px;cursor:pointer;padding:16px}.issue-body{padding:4px 20px 22px}.badge{padding:3px 7px;border-radius:999px;font-size:.72rem;font-weight:750;letter-spacing:.04em}.badge.severity{background:#342438}.badge.confidence{background:#183848;color:var(--accent)}dl{display:grid;grid-template-columns:110px 1fr;gap:6px 12px}dt{color:var(--muted)}dd{margin:0}.expected-observed,.screenshots{display:grid;grid-template-columns:1fr 1fr;gap:14px}.expected-observed section,figure,.shot{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1322}figure{margin:0}img{display:block;width:100%;height:auto;border-radius:8px}figcaption{padding-top:8px;color:var(--muted)}a{color:var(--accent)}.status.failed{color:var(--critical)}.status.unavailable{color:var(--medium)}@media(max-width:680px){.expected-observed,.screenshots{grid-template-columns:1fr}summary{align-items:flex-start;flex-wrap:wrap}}
+    :root{color-scheme:dark;--bg:#0a0f1b;--panel:#121a2b;--panel2:#19233a;--text:#f3f6ff;--muted:#9dabca;--line:#2a3857;--accent:#64e0c1;--critical:#ff667a;--high:#ff9d62;--medium:#ffd166;--low:#6fb5ff;--info:#a9b8d6}*{box-sizing:border-box;min-width:0}body{margin:0;background:linear-gradient(135deg,#080d17,#111a2c);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:42px 0 80px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:rgba(18,26,43,.94)}h1{margin:0;font-size:2.2rem}h2{margin-top:36px}h3,h4{margin-bottom:8px}.tagline,.meta{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:24px}.metric{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.metric strong{display:block;font-size:1.65rem}.run-warning{margin-top:18px;padding:18px 22px;border:2px solid var(--medium);border-radius:14px;background:#352d18}.run-warning h2{margin:0;color:#ffe59a}.run-warning p:last-child{margin-bottom:0}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:18px}.panel{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{color:var(--muted);width:34%}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit}code,kbd{font-family:ui-monospace,monospace}code,a,.meta,dd,li,summary span{overflow-wrap:anywhere;word-break:break-word}kbd{padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:#050913}ul{padding-left:1.35rem}.issue{margin:12px 0;border:1px solid var(--line);border-left:5px solid var(--info);border-radius:12px;background:var(--panel)}.severity-critical{border-left-color:var(--critical)}.severity-high{border-left-color:var(--high)}.severity-medium{border-left-color:var(--medium)}.severity-low{border-left-color:var(--low)}summary{display:flex;align-items:center;gap:10px;cursor:pointer;padding:16px}.issue-body{padding:4px 20px 22px;overflow-wrap:anywhere}.badge{padding:3px 7px;border-radius:999px;font-size:.72rem;font-weight:750;letter-spacing:.04em}.badge.severity{background:#342438}.badge.confidence{background:#183848;color:var(--accent)}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px 12px}dt{color:var(--muted)}dd{margin:0}.expected-observed,.screenshots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.expected-observed section,figure,.shot{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1322}figure{margin:0}img{display:block;width:100%;height:auto;border-radius:8px}figcaption{padding-top:8px;color:var(--muted)}a{color:var(--accent)}.status.failed{color:var(--critical)}.status.unavailable{color:var(--medium)}@media(max-width:680px){main{width:calc(100% - 20px);padding-top:18px}header{padding:18px}.panels,.expected-observed,.screenshots{grid-template-columns:minmax(0,1fr)}summary{align-items:flex-start;flex-wrap:wrap}.issue-body{padding-left:14px;padding-right:14px}dl{grid-template-columns:88px minmax(0,1fr)}}
   </style>
 </head>
 <body><main>
@@ -95,6 +111,7 @@ export function renderReportHtml(report: TVDoctorReportV1): string {
       ${ISSUE_SEVERITIES.map((severity) => `<div class="metric"><strong>${String(counts[severity] ?? 0)}</strong><span>${severity.toUpperCase()}</span></div>`).join("")}
     </div>
   </header>
+  ${renderRunWarning(valid)}
   <div class="panels">
     <section class="panel"><h2>Run</h2><table><tbody><tr><th>ID</th><td><code>${escapeHtml(valid.run.id)}</code></td></tr><tr><th>Status</th><td>${escapeHtml(valid.run.status)}</td></tr><tr><th>Mode</th><td>${escapeHtml(valid.run.mode)}</td></tr><tr><th>Duration</th><td>${formatDuration(valid.run.durationMs)}</td></tr><tr><th>Started</th><td>${escapeHtml(valid.run.startedAt)}</td></tr></tbody></table></section>
     <section class="panel"><h2>Target</h2><table><tbody><tr><th>Name</th><td><pre>${escapeHtml(valid.target.name)}</pre></td></tr><tr><th>Platform</th><td>${escapeHtml(valid.target.platform)}</td></tr><tr><th>Location</th><td><pre>${escapeHtml(valid.target.location)}</pre></td></tr>${environmentRows}</tbody></table></section>

@@ -3,6 +3,8 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: false,
+  forbidOnly: process.env["CI"] !== undefined,
+  failOnFlakyTests: process.env["CI"] !== undefined,
   retries: 1,
   timeout: 15_000,
   use: {
@@ -13,7 +15,7 @@ export default defineConfig({
   webServer: {
     command: "vite --host 127.0.0.1 --port 4178 --strictPort",
     port: 4178,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 30_000,
   },
 });
