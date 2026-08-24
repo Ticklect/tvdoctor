@@ -202,8 +202,43 @@ export function activeWebSurfaceEntries(snapshot: StateSnapshot): readonly Seman
   return entries.filter((entry) => entry.node === modal.node || entry.ancestors.includes(modal.node));
 }
 
-function ownText(node: UiNodeSnapshot): string {
+export function ownText(node: UiNodeSnapshot): string {
   return normaliseWebSemanticText([node.name, node.text].filter((value) => value !== null).join(" "));
+}
+
+const MAX_VISIBLE_SURFACE_SIGNATURE_ENTRIES = 96;
+const MAX_VISIBLE_SURFACE_TEXT_LENGTH = 160;
+
+/**
+ * Summarises visible semantic content that appeared after an action but was
+ * absent before it. State identity intentionally compresses surfaces to
+ * focus/headings/main/modals, so informational additions such as a status note
+ * need this bounded companion signal for isolated pointer proofs.
+ */
+export function distinctVisibleSurfaceChange(
+  before: StateSnapshot,
+  after: StateSnapshot,
+): string | null {
+  if (before.uiTree.status === "unavailable" || after.uiTree.status === "unavailable") return null;
+  const collect = (roots: readonly UiNodeSnapshot[]): Set<string> => {
+    const entries = new Set<string>();
+    const pending = [...roots];
+    while (pending.length > 0 && entries.size < MAX_VISIBLE_SURFACE_SIGNATURE_ENTRIES) {
+      const node = pending.shift();
+      if (node === undefined) break;
+      if (node.visible === true) {
+        const text = ownText(node).slice(0, MAX_VISIBLE_SURFACE_TEXT_LENGTH);
+        if (text.length > 0) entries.add(`${normaliseWebSemanticText(node.role)}|${text}`);
+      }
+      pending.push(...node.children);
+    }
+    return entries;
+  };
+  const beforeEntries = collect(before.uiTree.value);
+  for (const key of collect(after.uiTree.value)) {
+    if (!beforeEntries.has(key)) return key.split("|")[1] ?? null;
+  }
+  return null;
 }
 
 export function webSemanticContext(entry: SemanticNodeEntry): string {

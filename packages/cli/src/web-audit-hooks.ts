@@ -6,6 +6,7 @@ import {
 } from "@tvdoctor/driver-web";
 import {
   activeWebSurfaceEntries,
+  distinctVisibleSurfaceChange,
   rankWebCandidates,
   webSemanticStateIdentity,
   type IsolatedPointerProbe,
@@ -269,7 +270,20 @@ function createPointerProbe(
         await locator.click();
         const afterSnapshot = await isolated.snapshot();
         const after = webSemanticStateIdentity(afterSnapshot);
-        if (before === null || after === null || before === after) {
+        if (before === null || after === null) {
+          return { status: "not-activated", detail: "Pointer dispatch produced no distinct observable semantic state." };
+        }
+        const surfaceChange = before === after
+          ? distinctVisibleSurfaceChange(beforeSnapshot, afterSnapshot)
+          : null;
+        if (surfaceChange !== null) {
+          return {
+            status: "activated",
+            observedEffect: `Pointer activation introduced new visible semantic content: ${surfaceChange.slice(0, 200)}`,
+            detail: "A fresh Chromium context replayed the remote surface route and activated the uniquely corroborated stable target.",
+          };
+        }
+        if (before === after) {
           return { status: "not-activated", detail: "Pointer dispatch produced no distinct observable semantic state." };
         }
         return {
