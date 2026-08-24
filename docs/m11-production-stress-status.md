@@ -353,6 +353,40 @@ local gate is recorded in the annotated `m11-m6-reliability-proof` tag, and
 GitHub Actions run
 [`32702314158`](https://github.com/Ticklect/tvdoctor/actions/runs/32702314158)
 passed on attempt 1 with no retry or flaky marker. This closes the M6-specific
-proof. The broader v0.1 candidate has changed since that tag and needs a new
-exact-SHA aggregate/package/hosted run. No result promotes any surface beyond
-its current support level.
+proof.
+
+## v0.1 release candidate hosted proof
+
+Status: **closed at exact SHA** `345eeefc35f8defe18b45423f9ce1354ea40fab2`.
+
+The v0.1 release-readiness work added the CLI integration, package tarball, and
+clean-consumer gates to CI and produced two first-attempt fixes before closure:
+
+- `TVDOCTOR-M11-PTR`: isolated pointer proofs compared only compressed state
+  identity (focus/headings/main/modals), so a click whose only effect was new
+  visible informational content reported `not-activated`. The search pack then
+  fell through to the seeded Details-Back restoration check and returned
+  `partial`, failing the exact CLI M7 gate on both hosted attempts of run
+  `32724488680`. Pointer activation now also accepts bounded newly added
+  visible semantic content, with regression coverage in the CLI unit suite.
+- `TVDOCTOR-M11-FIXTURE-SETTLE`: the caption-appearance fixture journey still
+  pressed Enter across screen transitions without settling, so a key could land
+  in the render-to-focus window and be lost. The retry passed, but hosted runs
+  fail on flaky tests by release policy; run `32763991427` failed there. The
+  journey now settles each navigation step like the paused-rewind contract.
+
+Local verification at this candidate: lint zero warnings; strict typecheck
+matrix passed; 23 unit files / 417 tests passed; fixture browser tests 12/12;
+the exact CLI M7 integration passed first attempt in 7.3 minutes with retries
+disabled.
+
+Hosted proof: GitHub Actions run
+[`32764545521`](https://github.com/Ticklect/tvdoctor/actions/runs/32764545521)
+passed at the exact SHA on attempt 1 in about 35 minutes. All steps were green:
+build, lint, typecheck, unit tests, fixture browser tests, web-driver
+integration, core explorer/carousel/baseline integrations, M5 report/replay,
+M6 streaming journey, exact CLI M7 integration, baseline consumer example, and
+package tarball/clean-consumer smoke. There were no retry or flaky markers and
+no failure artifacts.
+
+No result promotes any surface beyond its current support level.
