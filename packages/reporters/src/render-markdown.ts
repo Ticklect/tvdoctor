@@ -3,8 +3,12 @@ import { markdownDataBlock } from "./security.js";
 import {
   artifactHref,
   artifactsForIssue,
+  exhaustedBudgetReasons,
   formatDuration,
   formatRemoteSequence,
+  hasDeterministicCliReplay,
+  findingActionability,
+  issuePatterns,
   issueCounts,
   replayCommand,
   replayTargetOverrideRequired,
@@ -20,18 +24,21 @@ function artifactMarkdown(artifact: ArtifactDescriptor): string {
 
 function issueMarkdown(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
   const artifacts = artifactsForIssue(report, issue);
-  const replayOverrideWarning = replayTargetOverrideRequired(report)
-    ? "\n\n**Original target required:** Query or fragment data was redacted from this report. Supply the original authorised URL explicitly; replay refuses to run without it."
-    : "";
+  const cliReplayable = hasDeterministicCliReplay(report, issue);
+  const replayCommandMarkdown = cliReplayable
+    ? `${replayTargetOverrideRequired(report)
+      ? "\n\n**Original target required:** Query or fragment data was redacted from this report. Supply the original authorised URL explicitly; replay refuses to run without it."
+      : ""}\n\nReplay command (deterministic):\n\n    ${replayCommand(report, issue.id)}`
+    : "\n\n**Deterministic replay required.** The recorded sequence and evidence remain available, but the CLI rejects best-effort or otherwise non-deterministic reproductions; no replay command is shown.";
   const transition = issue.transition === null
     ? "No single transition assertion was available."
     : `From:\n\n${markdownDataBlock(issue.transition.fromElement ?? "unobserved")}\n\nAction: \`${issue.transition.action}\`\n\nExpected target:\n\n${markdownDataBlock(issue.transition.expectedElement ?? "unobserved")}\n\nObserved target:\n\n${markdownDataBlock(issue.transition.observedElement ?? "unobserved")}`;
   const reproduction = issue.reproduction.status === "available"
-    ? `Original sequence executed by replay:\n\n${formatRemoteSequence(issue.reproduction.originalSequence)}${issue.reproduction.minimizedSequence === null ? "" : `\n\nRecorded minimized candidate (not executed by the M5 replay command):\n\n${formatRemoteSequence(issue.reproduction.minimizedSequence)}`}${replayOverrideWarning}\n\nReplay command (${issue.reproduction.confidence}):\n\n    ${replayCommand(report, issue.id)}`
+    ? `Recorded original sequence:\n\n${formatRemoteSequence(issue.reproduction.originalSequence)}${issue.reproduction.minimizedSequence === null ? "" : `\n\nRecorded minimized candidate (not executed by the M5 replay command):\n\n${formatRemoteSequence(issue.reproduction.minimizedSequence)}`}${replayCommandMarkdown}`
     : `Unavailable:\n\n${markdownDataBlock(issue.reproduction.reason)}`;
   const reproductionHeading = issue.reproduction.status !== "available"
     ? "Reproduction"
-    : issue.reproduction.confidence === "deterministic"
+    : cliReplayable
       ? "Exact reproduction"
       : "Best-effort reproduction";
   return `### ${issue.id}
@@ -85,15 +92,17 @@ export function renderReportMarkdown(report: TVDoctorReportV1): string {
     ...valid.coverage.packs
       .filter((pack) => pack.status !== "completed")
       .map((pack) => `${pack.pack}: ${pack.status}`),
-    ...valid.coverage.budget.exhausted.map((budget) => `${budget} budget exhausted`),
+    ...exhaustedBudgetReasons(valid),
   ];
   const partialWarning = valid.run.status === "partial"
     ? `> **INCONCLUSIVE — PARTIAL RUN**\n>\n> This report describes only completed coverage. Do not interpret absent findings as a pass.\n>\n> Recorded reasons: ${incompleteCoverage.join("; ") || "The run ended before all requested coverage completed; no more-specific reason was recorded."}\n\n`
-    : "";
+    : valid.run.status === "failed"
+      ? "> **RUN FAILED — NOT A TARGET PASS**\n>\n> TVDoctor could not complete this audit. Zero findings do not mean the target passed.\n\n"
+      : "";
   const severitySummary = ISSUE_SEVERITIES.map((severity) => `| ${severity.toUpperCase()} | ${String(counts[severity] ?? 0)} |`).join("\n");
-  const groups = ISSUE_SEVERITIES.map((severity) => {
-    const issues = valid.issues.filter((issue) => issue.severity === severity);
-    return issues.length === 0 ? "" : `## ${severity.toUpperCase()} findings\n\n${issues.map((issue) => issueMarkdown(valid, issue)).join("\n")}`;
+  const groups = (["FIX NOW", "REVIEW", "SETUP / INFO"] as const).map((label) => {
+    const issues = valid.issues.filter((issue) => findingActionability(issue) === label);
+    return issues.length === 0 ? "" : `## ${label}\n\n${issues.map((issue) => issueMarkdown(valid, issue)).join("\n")}`;
   }).filter((group) => group.length > 0).join("\n");
   return `# TVDoctor Report
 
@@ -117,13 +126,18 @@ ${partialWarning}## Summary
 | --- | ---: |
 ${severitySummary}
 
+${(() => {
+  const patterns = issuePatterns(valid);
+  return patterns.length === 0 ? "" : `## Repeated patterns\n\n${patterns.map((pattern) => `- **${pattern.label}** - ${String(pattern.count)} related findings across ${String(pattern.stateCount)} screen(s): ${pattern.issueIds.map((id) => `\`${id}\``).join(", ")}`).join("\n")}\n`;
+})()}
+
 ## Coverage
 
 - Screens discovered: ${String(valid.coverage.screenStatesDiscovered)}
 - Focus targets discovered: ${String(valid.coverage.focusStatesDiscovered)}
 - Transitions tested: ${String(valid.coverage.transitionsTested)}
 - Actions sent: ${String(valid.coverage.actionsSent)}
-- Exhausted budgets: ${valid.coverage.budget.exhausted.join(", ") || "none"}
+- Exhausted budgets: ${exhaustedBudgetReasons(valid).join(" ") || "none"}
 
 ${groups || "## Findings\n\nNo issues were reported for the observed coverage. This is not a claim of exhaustive testing."}
 

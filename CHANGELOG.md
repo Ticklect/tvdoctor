@@ -27,6 +27,25 @@ that `tvdoctor@0.1.0` has been published.
 - disposable Android TV API 36 emulator evidence for fixture install, DPAD input,
   seeded focus-loss detection, screenshot/log capture, and teardown;
 - package tarball/clean-consumer smoke automation and least-privilege hosted CI.
+- event-driven initial page settling that observes boot work without an
+  unconditional pre-reset sleep;
+- per-prefix replay checkpoints that reject divergent paths before they can
+  reconverge to the expected final focus state;
+- navigation and web-driver performance profiling fields for bounded
+  diagnostics ledgers;
+- explicit deterministic-replay guidance across HTML, Markdown, and AI-coder
+  reports, including a navigable AI finding index;
+- pack-aware exhausted-duration reasons and protocol-bounded punctuation for
+  unavailable reproduction reasons.
+- generic startup preparation and explicit setup-blocker classification for
+  consent, onboarding, login, region, age, and system walls;
+- caller-selected remote preparation sequences with fresh-reset reproducibility
+  verification and fail-closed prepared-state replay;
+- completion-driven Deep exploration with a 30-minute default safety ceiling,
+  advanced/CI duration overrides, and explicit remaining-frontier reporting;
+- safer structural identity for dynamic sites by ignoring explicitly invisible
+  template/sprite state while preserving enabled, focusable, and modal
+  distinctions.
 
 ### Verification status
 

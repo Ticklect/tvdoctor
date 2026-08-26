@@ -7,6 +7,8 @@ import {
   diagnoseNavigation,
   executeReplay,
   explore,
+  PreparedStateDivergenceError,
+  prepareStartup,
 } from "../src/index.js";
 import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
 import {
@@ -92,6 +94,59 @@ test("identifies a deterministic local consent wall and remains fail-closed", as
     expect(result.statistics.physicalActions).toBeLessThanOrEqual(40);
   } finally {
     await driver.close();
+  }
+});
+
+test("startup preparation records consent, selects a reproducible path, and fails closed on drift", async ({ baseURL }) => {
+  const fixtureUrl = `${requireBaseURL(baseURL)}/consent-wall.html`;
+  const stability = {
+    maxSnapshots: 4,
+    requiredStableSnapshots: 2,
+    pollIntervalMs: 25,
+    timeoutMs: 5_000,
+  };
+
+  const observer = new PlaywrightWebDriver();
+  await observer.launch({ id: "consent-observe", launchUri: fixtureUrl });
+  try {
+    const observed = await prepareStartup(observer, {
+      policy: { kind: "observe" },
+      resetStrategy: "reload",
+      stability,
+    });
+    expect(observed.status).toBe("setup-blocker");
+    expect(observed.blockers[0]).toMatchObject({ kind: "consent-wall" });
+    expect(observed.controls.map((control) => control.stableId)).toEqual([
+      "reject-consent",
+      "accept-consent",
+    ]);
+  } finally {
+    await observer.close();
+  }
+
+  for (const [actions, choice] of [
+    [["RIGHT", "SELECT"], "accepted"],
+    [["SELECT"], "rejected"],
+  ] as const) {
+    const driver = new PlaywrightWebDriver();
+    await driver.launch({ id: `consent-${choice}`, launchUri: fixtureUrl });
+    try {
+      const prepared = await prepareStartup(driver, {
+        policy: { kind: "remote-sequence", actions },
+        resetStrategy: "reload",
+        stability,
+      });
+      expect(prepared.status).toBe("ready");
+      expect(prepared.blockers).toHaveLength(1);
+      await expect(focusedStableId(await driver.snapshot())).toBe("catalogue-home");
+
+      await driver.getPage().evaluate(() => sessionStorage.clear());
+      await expect(prepared.restoreToPreparedState?.()).rejects.toBeInstanceOf(
+        PreparedStateDivergenceError,
+      );
+    } finally {
+      await driver.close();
+    }
   }
 });
 

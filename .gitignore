@@ -1,4 +1,7 @@
 node_modules/
+Tests/
+/*.rar
+/android-vlc-smoke.mjs
 .cache/
 dist/
 coverage/

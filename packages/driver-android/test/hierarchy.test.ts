@@ -49,6 +49,13 @@ describe("UIAutomator hierarchy parsing", () => {
     expect(parsed.settleSignature.length).toBeGreaterThan(20);
   });
 
+  it("treats text changes on stable resource IDs as semantic changes", () => {
+    const first = parseUiAutomatorHierarchy(HIERARCHY);
+    const second = parseUiAutomatorHierarchy(HIERARCHY.replace("Watch", "Resume"));
+
+    expect(second.settleSignature).not.toBe(first.settleSignature);
+  });
+
   it("reports duplicate focus without selecting an arbitrary node", () => {
     const duplicate = HIERARCHY.replace(
       'resource-id="org.tvdoctor.fixture:id/captions" class="android.widget.CheckBox"',

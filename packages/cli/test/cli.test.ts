@@ -196,7 +196,7 @@ describe("TVDoctor CLI", () => {
       stderr: "",
       stdout:
         "Auditing https://example.test/app...\n" +
-        "Plan: deep mode; packs streaming, accessibility; bounded resets and replays can take several minutes.\n" +
+        "Plan: deep mode; packs streaming, accessibility; startup preparation observation-only; bounded resets and replays can take several minutes.\n" +
         "Result: COMPLETED\n" +
         "Packs 6/6 completed\n" +
         "Actions 42/900\n" +
@@ -223,6 +223,10 @@ describe("TVDoctor CLI", () => {
     [["test", "https://example.test", "--pack", "unknown"], "unknown test pack: unknown"],
     [["test", "https://example.test", "--mode", "turbo"], "unknown test mode: turbo"],
     [["test", "https://example.test", "--pack", "all", "--pack", "streaming"], "--pack all cannot be combined with another pack"],
+    [["test", "https://example.test", "--startup-actions", "POWER"], "--startup-actions accepts only known remote keys"],
+    [["test", "https://example.test", "--startup-actions", "SELECT,SELECT"], "--startup-actions must not contain duplicate remote keys"],
+    [["test", "https://example.test", "--max-duration-ms", "0"], "--max-duration-ms must be a positive safe integer no greater than 2147483647"],
+    [["test", "https://example.test", "--max-duration-ms", "99999999999"], "--max-duration-ms must be a positive safe integer no greater than 2147483647"],
     [["test", "https://example.test", "--unknown"], "unknown test option: --unknown"],
   ] as const)("rejects invalid test arguments %j", async (arguments_, message) => {
     await expect(captureRun(arguments_)).resolves.toEqual({
@@ -362,7 +366,7 @@ describe("TVDoctor CLI", () => {
     expect(receivedTarget).toBe(secretTarget);
     expect(stdout).toBe(
       "Auditing https://example.test/watch...\n" +
-      "Plan: standard mode; packs all; bounded resets and replays can take several minutes.\n",
+      "Plan: standard mode; packs all; startup preparation observation-only; bounded resets and replays can take several minutes.\n",
     );
     expect(stderr).toContain("https://example.test/watch");
     expect(`${stdout}${stderr}`).not.toMatch(/top-secret|password|#account|Call log/iu);
@@ -403,6 +407,26 @@ describe("TVDoctor CLI", () => {
       "https://example.test/watch",
       "http://example.test/replay",
     ]);
+  });
+
+  it("passes the cooperative shutdown signal to replay", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const context: CliContext = {
+      environment: SUPPORTED_ENVIRONMENT,
+      signal: controller.signal,
+      io: { writeStdout: ignoreOutput, writeStderr: ignoreOutput },
+      operations: {
+        async replayIssue(request) {
+          receivedSignal = request.signal;
+          return { status: "inconclusive", details: [] };
+        },
+      },
+    };
+
+    await expect(runCli(["replay", "TVDOCTOR-NAV-TEST"], context))
+      .resolves.toBe(EXIT_CODES.replayInconclusive);
+    expect(receivedSignal).toBe(controller.signal);
   });
 
   it("reports a missing browser as an actionable doctor failure", async () => {

@@ -1,5 +1,6 @@
 import {
   availableObservation,
+  REMOTE_KEYS,
   type ActionResult,
   type Capability,
   type RemoteKey,
@@ -14,6 +15,7 @@ import {
   EXPLORATION_BUDGET_PROFILES,
   explore,
   pressAndObserve,
+  prepareStartup,
 } from "../src/index.js";
 
 function node(
@@ -266,6 +268,65 @@ describe("M8 explorer hardening", () => {
     });
   });
 
+  it("does not report queue exhaustion when tolerated exploration actions remain unobserved", async () => {
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input"]);
+      },
+      async press(key) {
+        unobservedCount += 1;
+        return {
+          key,
+          outcome: "inconclusive",
+          message: "observation lost",
+          timing: { inputSentAtMs: unobservedCount },
+        };
+      },
+      async snapshot() {
+        return carouselSnapshot(0, false, 4);
+      },
+      async reset() {
+        return undefined;
+      },
+    };
+    let unobservedCount = 0;
+    const observedActionCounts: number[] = [];
+    const result = await explore(driver, {
+      allowUnsettledActions: true,
+      onProgress: (progress) => observedActionCounts.push(progress.physicalActions),
+      budgets: { maxActions: 10, maxStates: 5, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: (() => {
+        let now = 0;
+        return () => now += 10;
+      })(),
+    });
+
+    expect(result.termination).toMatchObject({ reason: "settling-exhausted", complete: false });
+    expect(result.statistics.unsettledActions).toBe(REMOTE_KEYS.length);
+    expect(observedActionCounts).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("keeps a configured repeated-group representative in the expanded graph", async () => {
+    const result = await explore(new CarouselDriver(8), {
+      profile: "quick",
+      actions: ["RIGHT"],
+      budgets: EXPLORATION_BUDGET_PROFILES.quick,
+      frontierStrategy: "priority",
+      repetitionCompression: {
+        enabled: true,
+        maxRepresentativesPerGroup: 1,
+        maxExpandedRepresentativesPerGroup: 1,
+      },
+      monotonicNow: () => 0,
+    });
+
+    const rootId = result.graph.focus.states[0]?.id;
+    expect(result.termination.complete).toBe(true);
+    expect(result.statistics.deferredStates).toBeGreaterThan(0);
+    expect(rootId).toBeDefined();
+    expect(result.graph.actions.some((action) => action.fromFocusStateId === rootId)).toBe(true);
+  });
+
   it("rejects unsafe hardening configuration before driver work", async () => {
     const driver = new CarouselDriver(4);
     await expect(explore(driver, {
@@ -310,5 +371,152 @@ describe("M8 explorer hardening", () => {
       },
       monotonicNow: () => 0,
     })).resolves.toMatchObject({ termination: { reason: "settling-exhausted" } });
+  });
+});
+
+function startupControl(
+  stableId: string,
+  name: string,
+  focused: boolean,
+  children: readonly UiNodeSnapshot[] = [],
+): UiNodeSnapshot {
+  return {
+    stableId,
+    role: stableId === "consent-dialog" ? "dialog" : "button",
+    name,
+    text: name,
+    bounds: { x: 10, y: 10, width: 100, height: 40 },
+    visible: true,
+    enabled: true,
+    focusable: stableId !== "consent-dialog",
+    focused,
+    modal: stableId === "consent-dialog",
+    selectionState: null,
+    valueNow: null,
+    children,
+  };
+}
+
+function startupSnapshot(focusedId: string | null): StateSnapshot {
+  const reject = startupControl("reject-consent", "Reject nonessential", focusedId === "reject-consent");
+  const accept = startupControl("accept-consent", "Accept", focusedId === "accept-consent");
+  const dialog = startupControl("consent-dialog", "Privacy choice", focusedId === "consent-dialog", [reject, accept]);
+  void dialog;
+  return {
+    capturedAt: "2026-08-25T12:00:00.000Z",
+    location: availableObservation("https://example.test/"),
+    focusedElement: availableObservation(focusedId === null ? null : {
+      stableId: focusedId,
+      role: "button",
+      name: focusedId,
+      bounds: { x: 10, y: 10, width: 100, height: 40 },
+    }),
+    uiTree: availableObservation([dialog]),
+  };
+}
+
+class StartupConsentDriver implements TVDoctorDriver {
+  readonly pressed: string[] = [];
+  resetCount = 0;
+  choice: "accepted" | "rejected" | null = null;
+  focus = "reject-consent";
+
+  async capabilities() {
+    return new Set<Capability>(["remote-input", "ui-tree"]);
+  }
+
+  async reset() {
+    this.resetCount += 1;
+    this.focus = this.choice === null ? "reject-consent" : "catalogue-home";
+  }
+
+  async press(key: RemoteKey) {
+    this.pressed.push(key);
+    if (this.choice === null && key === "RIGHT") this.focus = "accept-consent";
+    if (this.choice === null && key === "SELECT") {
+      this.choice = this.focus === "accept-consent" ? "accepted" : "rejected";
+      this.focus = "catalogue-home";
+    }
+    return { key, outcome: "applied" as const, timing: { inputSentAtMs: this.pressed.length } };
+  }
+
+  async snapshot() {
+    if (this.choice !== null) {
+      return {
+        ...startupSnapshot("catalogue-home"),
+        uiTree: availableObservation([startupControl("catalogue", "Catalogue", false)]),
+        focusedElement: availableObservation({
+          stableId: "catalogue-home",
+          role: "button",
+          name: "catalogue-home",
+          bounds: { x: 10, y: 10, width: 100, height: 40 },
+        }),
+      };
+    }
+    return startupSnapshot(this.focus);
+  }
+}
+
+describe("startup preparation", () => {
+  const stability = {
+    maxSnapshots: 3,
+    requiredStableSnapshots: 2,
+    pollIntervalMs: 0,
+    timeoutMs: 1_000,
+  };
+
+  it("records a consent wall without changing state under observation-only policy", async () => {
+    const driver = new StartupConsentDriver();
+    const result = await prepareStartup(driver, {
+      policy: { kind: "observe" },
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe("setup-blocker");
+    expect(result.blockers[0]).toMatchObject({ kind: "consent-wall" });
+    expect(result.controls.map((control) => control.stableId)).toEqual([
+      "reject-consent",
+      "accept-consent",
+    ]);
+    expect(driver.pressed).toEqual([]);
+    expect(driver.choice).toBeNull();
+  });
+
+  it("executes an explicit policy and verifies fresh resets before exploration", async () => {
+    const driver = new StartupConsentDriver();
+    const result = await prepareStartup(driver, {
+      policy: { kind: "remote-sequence", actions: ["RIGHT", "SELECT"] },
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe("ready");
+    expect(driver.choice).toBe("accepted");
+    expect(driver.pressed).toEqual(["RIGHT", "SELECT"]);
+    expect(driver.resetCount).toBeGreaterThanOrEqual(3);
+    await expect(result.restoreToPreparedState?.()).resolves.toBeTruthy();
+  });
+
+  it("fails closed when startup never reaches canonical stability", async () => {
+    let generation = 0;
+    const driver: TVDoctorDriver = {
+      capabilities: async () => new Set(["remote-input", "ui-tree"]),
+      reset: async () => undefined,
+      press: async (key) => ({ key, outcome: "applied", timing: { inputSentAtMs: 1 } }),
+      snapshot: async () => {
+        generation += 1;
+        return startupSnapshot(`unstable-${String(generation)}`);
+      },
+    };
+    const result = await prepareStartup(driver, {
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe("unstable");
   });
 });

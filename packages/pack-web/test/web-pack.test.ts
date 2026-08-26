@@ -27,8 +27,32 @@ import {
   type WebFocusVisualSample,
 } from "../src/index.js";
 import { WebPackSession } from "../src/internal.js";
+import { punctuateReason } from "../src/issues.js";
 
 type FakeScreen = "app-settings" | "details" | "home" | "player-settings" | "search";
+
+describe("unavailable-reproduction reason punctuation", () => {
+  test("preserves a supplied period", () => {
+    expect(punctuateReason("The proof requires isolated evidence.")).toBe("The proof requires isolated evidence.");
+  });
+
+  test("adds a period when terminal punctuation is absent", () => {
+    expect(punctuateReason("  The proof requires isolated evidence  ")).toBe("The proof requires isolated evidence.");
+  });
+
+  test.each([
+    ["The proof requires isolated evidence!", "The proof requires isolated evidence!"],
+    ["The proof requires isolated evidence?", "The proof requires isolated evidence?"],
+  ])("preserves terminal punctuation in %s", (reason, expected) => {
+    expect(punctuateReason(reason)).toBe(expected);
+  });
+
+  test("reserves space for added punctuation at the protocol string limit", () => {
+    const result = punctuateReason("x".repeat(65_536));
+    expect(result).toHaveLength(65_536);
+    expect(result.endsWith(".")).toBe(true);
+  });
+});
 
 interface NodeOptions {
   readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };

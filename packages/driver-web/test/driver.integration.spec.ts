@@ -1,11 +1,13 @@
 import { readFile, stat } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import type { Observation } from "@tvdoctor/protocol";
+import type { Page } from "playwright";
 import {
   PlaywrightWebDriver,
   WEB_DRIVER_CAPABILITIES,
   type WebDomNodeSnapshot,
 } from "../src/index.js";
+import { waitForInitialPageSettle } from "../src/settling.js";
 
 function availableValue<T>(observation: Observation<T>): T {
   expect(observation.status).toBe("available");
@@ -29,6 +31,54 @@ function requireBaseURL(baseURL: string | undefined): string {
 async function focusedId(driver: PlaywrightWebDriver): Promise<string | undefined> {
   return availableValue((await driver.snapshot()).focusedElement)?.stableId;
 }
+
+test("initial settling observes animation-frame work without a fixed pre-settle sleep", async () => {
+  const calls: string[] = [];
+  let evaluation = 0;
+  const page = {
+    async evaluate() {
+      evaluation += 1;
+      if (evaluation === 1) {
+        calls.push("baseline");
+        return {
+          capturedAtEpochMs: 1,
+          focusKey: "",
+          focusVersion: 0,
+          location: "app://fixture",
+          mutationVersion: 0,
+          screen: "",
+        };
+      }
+      if (evaluation === 2) {
+        calls.push("animation-frames");
+        return undefined;
+      }
+      calls.push("result");
+      return {
+        firstResponseAtMs: 2,
+        focusChanged: true,
+        focusSettledAtMs: 122,
+        screenSettledAtMs: 122,
+        timedOut: false,
+        boundedByAmbientChurn: false,
+      };
+    },
+    async waitForFunction() {
+      calls.push("event-driven-wait");
+    },
+    async waitForTimeout() {
+      throw new Error("Initial settling must not use a fixed pre-settle sleep.");
+    },
+  } as unknown as Page;
+
+  await expect(waitForInitialPageSettle(page, {
+    noResponseGraceMs: 250,
+    quietWindowMs: 120,
+    timeoutMs: 4_000,
+    ambientChurnEscape: true,
+  })).resolves.toMatchObject({ focusChanged: true, timedOut: false });
+  expect(calls).toEqual(["baseline", "animation-frames", "event-driven-wait", "result"]);
+});
 
 test("reports an exact, deliberately limited capability set", async () => {
   const driver = new PlaywrightWebDriver();

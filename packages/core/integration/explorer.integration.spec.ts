@@ -83,7 +83,13 @@ test("bounded exploration terminates, emits separate graphs, and repeats consist
   ]);
 
   for (const result of [first, second]) {
-    expect(result.termination).toEqual({ reason: "max-actions", complete: false });
+    expect(result.termination).toMatchObject({
+      reason: "max-actions",
+      complete: false,
+      remainingFrontierEntries: 9,
+      remainingCandidateActions: 54,
+      detail: "Bounded-incomplete: 9 frontier entries remain after max-actions.",
+    });
     expect(result.statistics).toMatchObject({
       physicalActions: BUDGETS.maxActions,
     });

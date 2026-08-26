@@ -1,4 +1,5 @@
 export * from "./action-settling.js";
+export * from "./errors.js";
 export { NAVIGATION_UI_TREE_LIMITS } from "./bounded-ui-tree.js";
 export * from "./explorer.js";
 export {
@@ -13,3 +14,4 @@ export * from "./navigation-diagnostics.js";
 export * from "./replay.js";
 export * from "./sequence-minimizer.js";
 export * from "./semantic-issue-id.js";
+export * from "./startup.js";

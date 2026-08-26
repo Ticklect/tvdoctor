@@ -40,6 +40,16 @@ export interface AndroidTvDriverOptions {
   readonly settlePollIntervalMs?: number;
   readonly settleStableSamples?: number;
   readonly noResponseGraceMs?: number;
+  /**
+   * How long the last settled hierarchy may be reused as the next action's
+   * pre-input baseline. Zero disables reuse and always captures fresh.
+   */
+  readonly baselineReuseMs?: number;
+  /**
+   * Quiet window between screen-stability samples used to confirm a changed
+   * UI without a second full hierarchy capture.
+   */
+  readonly stabilityProbeMs?: number;
   readonly executor?: AdbCommandExecutor;
 }
 
@@ -58,6 +68,7 @@ export interface AndroidDeviceMetadata {
   readonly release: string | null;
   readonly buildFingerprint: string | null;
   readonly characteristics: readonly string[];
+  readonly supportedAbis: readonly string[];
   readonly displayWidth: number | null;
   readonly displayHeight: number | null;
   readonly displayDensityDpi: number | null;

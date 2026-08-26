@@ -176,6 +176,28 @@ function fakeDriver(configuration: FakeDriverConfiguration): FakeDriverHarness {
 }
 
 describe("deterministic replay", () => {
+  it("stops before touching the driver when replay is already interrupted", async () => {
+    const controller = new AbortController();
+    let capabilityCalls = 0;
+    const harness = fakeDriver({
+      capabilities: async () => {
+        capabilityCalls += 1;
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      snapshot: () => snapshot("hero-watch"),
+    });
+    controller.abort();
+
+    const result = await executeReplay(harness.driver, compiled(issue()), {
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe("inconclusive");
+    expect(result.reason).toMatchObject({ code: "interrupted", phase: "preflight" });
+    expect(capabilityCalls).toBe(0);
+    expect(harness.pressed).toHaveLength(0);
+  });
+
   it("compiles the original exact path into setup and assertion phases and captures evidence", async () => {
     const original = [
       { key: "DOWN", repeat: 2 },

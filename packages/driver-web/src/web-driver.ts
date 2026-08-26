@@ -33,6 +33,7 @@ import {
 } from "./settling.js";
 import type {
   PlaywrightWebDriverOptions,
+  WebDriverPerformanceProfile,
   WebLogEntry,
   WebNetworkEntry,
   WebNetworkSnapshot,
@@ -191,6 +192,22 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #pendingRequestsRetained = new Set<Request>();
   #pendingRequestsDropped = 0;
   #page: Page | null = null;
+  readonly #performanceProfile = {
+    resetCount: 0,
+    resetMs: 0,
+    pressCount: 0,
+    pressMs: 0,
+    snapshotCount: 0,
+    snapshotMs: 0,
+    observation: {
+      browserEvaluationMs: 0,
+      domEnumerationMs: 0,
+      semanticAnalysisMs: 0,
+      auxiliaryObservationMs: 0,
+      transportAndSanitisationMs: 0,
+      browserRoundTripAndQueueingMs: 0,
+    },
+  };
   #requestsFailed = 0;
   #requestsInFlight = 0;
   #requestsStarted = 0;
@@ -203,6 +220,13 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
   async capabilities(): Promise<ReadonlySet<Capability>> {
     return new Set(WEB_DRIVER_CAPABILITIES);
+  }
+
+  getPerformanceProfile(): WebDriverPerformanceProfile {
+    return {
+      ...this.#performanceProfile,
+      observation: { ...this.#performanceProfile.observation },
+    };
   }
 
   async launch(app: AppReference): Promise<void> {
@@ -266,6 +290,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   }
 
   async press(key: RemoteKey): Promise<ActionResult> {
+    this.#performanceProfile.pressCount += 1;
+    const profileStartedAt = performance.now();
+    try {
     const inputSentAtMs = Date.now();
     const page = this.#activePage();
     if (page === null) {
@@ -303,9 +330,15 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
         message: sanitiseObservedText(errorMessage(error)),
       };
     }
+    } finally {
+      this.#performanceProfile.pressMs += Math.max(0, performance.now() - profileStartedAt);
+    }
   }
 
   async snapshot(): Promise<WebStateSnapshot> {
+    this.#performanceProfile.snapshotCount += 1;
+    const profileStartedAt = performance.now();
+    try {
     const capturedAt = new Date().toISOString();
     const page = this.#activePage();
     if (page === null) {
@@ -330,6 +363,12 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
         maxScannedNodeCount: this.#options.maxUiScanNodes,
         maxTextChars: this.#options.maxUiTextChars,
       });
+      this.#performanceProfile.observation.browserEvaluationMs += observation.timings.browserEvaluationMs;
+      this.#performanceProfile.observation.domEnumerationMs += observation.timings.domEnumerationMs;
+      this.#performanceProfile.observation.semanticAnalysisMs += observation.timings.semanticAnalysisMs;
+      this.#performanceProfile.observation.auxiliaryObservationMs += observation.timings.auxiliaryObservationMs;
+      this.#performanceProfile.observation.transportAndSanitisationMs += observation.timings.transportAndSanitisationMs;
+      this.#performanceProfile.observation.browserRoundTripAndQueueingMs += observation.timings.browserRoundTripAndQueueingMs;
       return {
         capturedAt,
         location,
@@ -354,6 +393,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
         network: availableObservation(this.getNetworkSnapshot()),
         performance: unavailableObservation(reason),
       };
+    }
+    } finally {
+      this.#performanceProfile.snapshotMs += Math.max(0, performance.now() - profileStartedAt);
     }
   }
 
@@ -386,6 +428,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   }
 
   async reset(strategy: ResetStrategy): Promise<void> {
+    this.#performanceProfile.resetCount += 1;
+    const profileStartedAt = performance.now();
+    try {
     const page = this.#requirePage();
     const launchUri = this.#currentApp?.launchUri;
     if (launchUri === undefined) {
@@ -407,6 +452,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       await page.goto(launchUri, { waitUntil: "domcontentloaded" });
     }
     await waitForInitialPageSettle(page, this.#options.settle);
+    } finally {
+      this.#performanceProfile.resetMs += Math.max(0, performance.now() - profileStartedAt);
+    }
   }
 
   async getLogs(): Promise<readonly WebLogEntry[]> {

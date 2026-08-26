@@ -3,15 +3,20 @@ import { Buffer } from "node:buffer";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
+  createStartupBlockerFinding,
   compileIssueReplay,
   diagnoseNavigation,
   explore,
   type ExplorationProfile,
   type ExplorationResult,
   type NavigationDiagnosticFinding,
+  prepareStartup,
+  type StartupPreparationResult,
+  type StartupControlCandidate,
 } from "@tvdoctor/core";
 import {
   PlaywrightWebDriver,
+  type WebDriverPerformanceProfile,
   type WebLogEntry,
 } from "@tvdoctor/driver-web";
 import {
@@ -139,6 +144,7 @@ const WEB_BUDGETS: Readonly<Record<ExplorationProfile, WebPackBudgets>> = {
 
 export interface AuditRunProducts {
   readonly navigation: ExplorationResult | null;
+  readonly navigationStartup?: StartupPreparationResult | null | undefined;
   readonly navigationFindings: readonly NavigationDiagnosticFinding[];
   readonly streaming: StreamingPackResult | null;
   readonly web: WebPackResult | null;
@@ -758,10 +764,18 @@ export async function captureIssuesWithinBudget(
   createDriver: () => PlaywrightWebDriver,
   capture: IssueCapturer = captureIssue,
   now: () => number = Date.now,
+  signal?: AbortSignal,
 ): Promise<readonly CapturedIssue[]> {
   const startedAtMs = now();
   const captured: CapturedIssue[] = [];
   for (const [index, issue] of issues.entries()) {
+    if (signal?.aborted === true) {
+      captured.push(skippedEvidenceIssue(
+        issue,
+        "Fresh evidence was not recaptured because the scan was interrupted.",
+      ));
+      continue;
+    }
     if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
       captured.push(skippedEvidenceIssue(
         issue,
@@ -781,7 +795,7 @@ export async function captureIssuesWithinBudget(
   return captured;
 }
 
-function packCoverage(products: AuditRunProducts, packs: ReadonlySet<string>): readonly {
+export function packCoverage(products: AuditRunProducts, packs: ReadonlySet<string>): readonly {
   readonly pack: string;
   readonly status: "completed" | "partial" | "skipped";
 }[] {
@@ -792,10 +806,15 @@ function packCoverage(products: AuditRunProducts, packs: ReadonlySet<string>): r
   if (packs.has("streaming")) {
     result.push({ pack: "streaming", status: products.streaming?.status === "complete" ? "completed" : "partial" });
   }
-  for (const stage of products.web?.stages ?? []) {
+  for (const pack of ["search", "settings", "accessibility", "layout", "performance", "crashes"] as const) {
+    if (!packs.has(pack)) continue;
+    const expectedStage = WEB_STAGE_BY_PACK[pack];
+    const stage = products.web?.stages.find((candidate) => candidate.stage === expectedStage);
     result.push({
-      pack: stage.stage === "crash" ? "crashes" : stage.stage,
-      status: stage.status === "passed" || stage.status === "failed" ? "completed" : "partial",
+      pack,
+      status: stage !== undefined && (stage.status === "passed" || stage.status === "failed")
+        ? "completed"
+        : "partial",
     });
   }
   return result;
@@ -830,8 +849,25 @@ export function partialRunDetails(
   evidenceFailureCount: number,
 ): readonly string[] {
   const details: string[] = [];
+  const startup = products.navigationStartup;
+  if (startup !== undefined && startup !== null && startup.status !== "ready") {
+    if (startup.status === "setup-blocker") {
+      const blocker = startup.blockers[0];
+      details.push(`Startup setup blocker: ${blocker?.kind ?? "unknown"}; caller preparation policy was observation-only.`);
+    } else {
+      details.push(`Startup preparation did not reach a reproducible state (${startup.status}).`);
+    }
+  }
   if (selectedPacks.has("navigation") && products.navigation?.termination.complete === false) {
-    details.push(`Partial reason: navigation stopped at ${products.navigation.termination.reason}.`);
+    if (products.navigation.termination.reason === "max-duration") {
+      details.push(`BOUNDED-INCOMPLETE: navigation reached its ${String(products.navigation.budgets.maxDurationMs / 1_000)}-second safety ceiling with ${String(products.navigation.termination.remainingFrontierEntries ?? 0)} frontier entries and about ${String(products.navigation.termination.remainingCandidateActions ?? 0)} candidate actions remaining.`);
+    } else if (products.navigation.termination.reason === "prepared-state-diverged") {
+      details.push("Startup preparation state could not be reproduced during replay reconstruction.");
+    } else if (products.navigation.termination.reason === "interrupted") {
+      details.push("The scan was interrupted; completed navigation coverage was retained.");
+    } else {
+      details.push(`Partial reason: navigation stopped at ${products.navigation.termination.reason}.`);
+    }
   }
   if (selectedPacks.has("streaming") && products.streaming?.status !== "complete") {
     details.push(`Partial reason: streaming stopped at ${products.streaming?.termination.reason ?? "unavailable"}: ${products.streaming?.termination.detail ?? "No streaming result was produced."}`);
@@ -868,6 +904,151 @@ export async function reserveAuditOutput(outputPath: string): Promise<ArtifactSt
   return await createArtifactStore(absoluteOutput);
 }
 
+async function writeFailedRunReport(
+  store: ArtifactStore,
+  request: TestCommandRequest,
+  startedAt: Date,
+  error: unknown,
+): Promise<TestCommandResult> {
+  const reason = sanitiseUntrustedText(error instanceof Error ? error.message : String(error), 1_000);
+  const summary = /page\.goto|net::|ERR_(?:CONNECTION|NAME|TIMED)|ECONNREFUSED|ENOTFOUND/iu.test(reason)
+    ? "The website could not be reached. Check the address and network connection."
+    : /executable.*doesn.t exist|browser.*(?:not found|missing)|playwright.*install/iu.test(reason)
+      ? "Chromium is unavailable for web testing."
+      : /EACCES|EPERM|ENOENT/iu.test(reason)
+        ? "TVDoctor could not access a required file or folder."
+        : "TVDoctor could not complete this scan because the browser session failed.";
+  await store.writeBundleFile(
+    "failure-debug.json",
+    `${stableJson({ schemaVersion: 1, reason })}\n`,
+  );
+  const completedAt = new Date();
+  const report = buildTVDoctorReportV1({
+    run: {
+      id: `failed-${startedAt.getTime().toString(36)}`,
+      tvdoctorVersion: CLI_VERSION,
+      mode: request.mode,
+      status: "failed",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+    },
+    target: {
+      name: new URL(request.target).hostname,
+      platform: "web",
+      location: request.target,
+      environment: { browser: "chromium", failure: summary },
+    },
+    coverage: {
+      screenStatesDiscovered: 0,
+      focusStatesDiscovered: 0,
+      transitionsTested: 0,
+      actionsSent: 0,
+      capabilitiesObserved: [],
+      packs: [...selectedPacks(request)].map((pack) => ({ pack, status: "skipped" as const })),
+      budget: {
+        maxActions: null,
+        maxStates: null,
+        maxDepth: null,
+        maxDurationMs: null,
+        maxRepetitiveItems: null,
+        exhausted: [],
+      },
+    },
+    issues: [],
+    artifacts: [],
+    replays: [],
+  });
+  const bundle = await writeReportBundle(store, report);
+  return {
+    status: "failed",
+    issueCount: 0,
+    highestSeverity: null,
+    reportPath: bundle.reportJson.absolutePath,
+    details: [
+      "The scan could not complete.",
+      summary,
+      "Technical detail was retained in failure-debug.json.",
+      `Report: ${bundle.reportHtml.absolutePath}`,
+    ],
+  };
+}
+
+async function writeSetupNotStartedReport(
+  store: ArtifactStore,
+  request: TestCommandRequest,
+  startedAt: Date,
+  startup: StartupPreparationResult,
+  findings: readonly NavigationDiagnosticFinding[],
+): Promise<TestCommandResult> {
+  const blocker = startup.blockers[0];
+  const labels: Readonly<Record<string, string>> = {
+    "consent-wall": "cookie consent screen",
+    onboarding: "onboarding screen",
+    login: "login screen",
+    "region-selection": "region selection screen",
+    "age-gate": "age gate",
+    "system-setup": "setup screen",
+  };
+  const label = blocker === undefined ? "startup setup screen" : labels[blocker.kind] ?? blocker.kind;
+  const completedAt = new Date();
+  const issues = findings.map((finding) => finding.issue);
+  const report = buildTVDoctorReportV1({
+    run: {
+      id: `setup-${startedAt.getTime().toString(36)}`,
+      tvdoctorVersion: CLI_VERSION,
+      mode: request.mode,
+      status: startup.status === "setup-blocker" ? "partial" : "failed",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+    },
+    target: {
+      name: new URL(request.target).hostname,
+      platform: "web",
+      location: request.target,
+      environment: { browser: "chromium", outcome: "scan-not-started" },
+    },
+    coverage: {
+      screenStatesDiscovered: 0,
+      focusStatesDiscovered: 0,
+      transitionsTested: 0,
+      actionsSent: 0,
+      capabilitiesObserved: [],
+      packs: [...selectedPacks(request)].map((pack) => ({
+        pack,
+        status: pack === "navigation" ? "partial" as const : "skipped" as const,
+      })),
+      budget: {
+        maxActions: null,
+        maxStates: null,
+        maxDepth: null,
+        maxDurationMs: null,
+        maxRepetitiveItems: null,
+        exhausted: [],
+      },
+    },
+    issues,
+    artifacts: [],
+    replays: [],
+  });
+  const bundle = await writeReportBundle(store, report);
+  const changedNothing = startup.status === "setup-blocker";
+  return {
+    status: startup.status === "setup-blocker" ? "partial" : "failed",
+    issueCount: issues.length,
+    highestSeverity: highestSeverity(issues),
+    reportPath: bundle.reportJson.absolutePath,
+    details: [
+      `The scan was not started because TVDoctor found a ${label}.`,
+      changedNothing
+        ? "No consent or persistent state was changed."
+        : "TVDoctor could not safely complete the selected setup choice.",
+      `Report: ${bundle.reportHtml.absolutePath}`,
+    ],
+  };
+}
+
 export async function writeAuditAuxiliaryArtifacts(
   store: ArtifactStore,
   ledgerValue: JsonValue,
@@ -899,6 +1080,36 @@ export async function writeAuditAuxiliaryArtifacts(
   ];
 }
 
+function preferredStartupControl(
+  decision: "reject" | "accept",
+  blockerKind: string,
+  controls: readonly StartupControlCandidate[],
+): StartupControlCandidate | null {
+  const normalise = (value: string | null | undefined): string =>
+    value?.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase() ?? "";
+  const rejectWords = decision === "reject"
+    ? /\b(?:reject|deny|decline|essential|necessary|manage|options|preferences)\b/u
+    : /\b(?:accept(?: all)?|agree|allow|continue|got it|ok(?:ay)?)\b/u;
+  const candidates = [...controls].sort((left, right) => {
+    const leftFocused = left.focused === true ? 0 : 1;
+    const rightFocused = right.focused === true ? 0 : 1;
+    return leftFocused - rightFocused;
+  });
+  return candidates.find((control) => rejectWords.test(normalise(control.name))) ?? null;
+}
+
+function startupActivationSequence(
+  controls: readonly StartupControlCandidate[],
+  target: StartupControlCandidate,
+): readonly RemoteKey[] {
+  const focusedIndex = controls.findIndex((control) => control.focused === true);
+  const targetIndex = controls.indexOf(target);
+  if (targetIndex < 0) return [];
+  if (focusedIndex < 0 || focusedIndex === targetIndex) return ["SELECT"];
+  const distance = (targetIndex - focusedIndex + controls.length) % controls.length;
+  return [...Array.from({ length: distance }, () => "TAB" as RemoteKey), "SELECT"];
+}
+
 async function runAudit(
   request: TestCommandRequest,
   createDriver: () => PlaywrightWebDriver,
@@ -912,33 +1123,137 @@ async function runAudit(
   let capabilities: ReadonlySet<Capability>;
   let navigation: ExplorationResult | null = null;
   let navigationFindings: readonly NavigationDiagnosticFinding[] = [];
+  let navigationStartup: StartupPreparationResult | null = null;
+  let startupFindings: readonly NavigationDiagnosticFinding[] = [];
+  let startupPreparationMs = 0;
+  let navigationDriverPerformance: WebDriverPerformanceProfile | null = null;
+  let navigationExplorationMs = 0;
+  let navigationDiagnosticsMs = 0;
   let streaming: StreamingPackResult | null = null;
   let web: WebPackResult | null = null;
+  let failureCloseHandled = false;
   try {
     await driver.launch({ id: "cli-web-audit", launchUri: request.target });
     capabilities = await driver.capabilities();
     if (packs.has("navigation")) {
+      const preparationStartedAt = performance.now();
+      navigationStartup = await prepareStartup(driver, {
+        policy: request.startupActions === undefined
+          ? { kind: "observe" }
+          : { kind: "remote-sequence", actions: request.startupActions as RemoteKey[] },
+        resetStrategy: "reload",
+        stability: request.mode === "quick"
+          ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
+          : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
+      });
+      startupPreparationMs = Math.max(0, performance.now() - preparationStartedAt);
+      if (
+        request.startupDecision !== undefined
+        && navigationStartup.status === "setup-blocker"
+        && navigationStartup.blockers[0] !== undefined
+      ) {
+        const blocker = navigationStartup.blockers[0];
+        if (blocker === undefined) throw new TypeError("Startup blocker disappeared before preparation.");
+        const control = preferredStartupControl(
+          request.startupDecision,
+          blocker.kind,
+          navigationStartup.controls,
+        );
+        const actions = control === null ? [] : startupActivationSequence(
+          navigationStartup.controls,
+          control,
+        );
+        navigationStartup = await prepareStartup(driver, {
+          policy: { kind: "remote-sequence", actions },
+          resetStrategy: "reload",
+          stability: request.mode === "quick"
+            ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
+            : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
+        });
+      }
+    }
+    if (packs.has("navigation")
+      && navigationStartup !== null
+      && navigationStartup.representativeSnapshot !== undefined
+      && navigationStartup.blockers.length > 0) {
+      const startupBlocker = navigationStartup.blockers[0];
+      if (startupBlocker === undefined) throw new TypeError("Startup blocker evidence disappeared.");
+      startupFindings = [{
+        classification: "deterministic",
+        issue: createStartupBlockerFinding(
+          startupBlocker,
+          navigationStartup.representativeSnapshot,
+          navigationStartup.resetStrategy,
+          navigationStartup.status === "ready",
+          navigationStartup.policy.kind === "remote-sequence"
+            ? navigationStartup.policy.actions
+            : [],
+        ).issue,
+        source: {
+          kind: "screen-analysis",
+          screenStateId: "startup-blocker",
+          focusStateId: null,
+          element: startupBlocker.element,
+          actionAttemptId: null,
+          relatedActionAttemptId: null,
+          actionSequence: [],
+          locallyComplete: null,
+        },
+        target: {
+          screenStateId: "startup-blocker",
+          focusStateId: null,
+          element: startupBlocker.element,
+          expectedElement: null,
+          observedElement: startupBlocker.focusedElement,
+        },
+      }];
+    }
+    if (packs.has("navigation") && navigationStartup?.status === "ready" && navigationStartup.restoreToPreparedState !== undefined) {
+      const explorationStartedAt = performance.now();
       navigation = await explore(createSafeExplorationDriver(driver), {
         profile: request.mode,
         resetStrategy: "reload",
-      settling: {
+        restoreInitialSnapshot: navigationStartup.restoreToPreparedState,
+        ...(request.maxDurationMs === undefined ? {} : { budgets: { maxDurationMs: request.maxDurationMs } }),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        settling: {
         strategy: "stable-snapshot",
         maxSnapshots: 3,
         pollIntervalMs: 20,
         requiredStableSnapshots: 2,
         },
       });
-      navigationFindings = diagnoseNavigation(navigation).findings
-        .filter((finding) => !specialisedReachabilityScreen(finding, navigation as ExplorationResult));
+      navigationExplorationMs = Math.max(0, performance.now() - explorationStartedAt);
+      navigationDriverPerformance = driver.getPerformanceProfile();
+      const diagnosticsStartedAt = performance.now();
+      navigationFindings = [
+        ...startupFindings,
+        ...diagnoseNavigation(navigation).findings.filter((finding) => (
+          !specialisedReachabilityScreen(finding, navigation as ExplorationResult)
+        )),
+      ];
+      navigationDiagnosticsMs = Math.max(0, performance.now() - diagnosticsStartedAt);
     }
-    if (needStreamingJourney) {
+    if (packs.has("navigation") && navigationStartup?.status !== "ready") {
+      navigationFindings = startupFindings;
+      if (navigationStartup !== null) {
+        return await writeSetupNotStartedReport(
+          store,
+          request,
+          startedAt,
+          navigationStartup,
+          navigationFindings,
+        );
+      }
+    }
+    if (request.signal?.aborted !== true && needStreamingJourney) {
       streaming = await runStreamingPack(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
         resetStrategy: "reload",
         pointerProbe: createStreamingAuditPointerProbe(request.target, createDriver),
       });
     }
-    if (webStages.length > 0) {
+    if (request.signal?.aborted !== true && webStages.length > 0) {
       const playerSettingsSequence = streamingSettingsSequence(streaming);
       web = await runWebPack(driver, {
         stages: webStages,
@@ -952,32 +1267,67 @@ async function runAudit(
         hooks: createWebAuditHooks({ target: request.target, driver, createDriver }),
       });
     }
+  } catch (error) {
+    await driver.close().catch(() => undefined);
+    failureCloseHandled = true;
+    return await writeFailedRunReport(store, request, startedAt, error);
   } finally {
-    await driver.close();
+    if (!failureCloseHandled) {
+      await driver.close().catch((error: unknown) => {
+        if (request.signal?.aborted !== true) throw error;
+      });
+    }
   }
 
-  const products: AuditRunProducts = { navigation, navigationFindings, streaming, web };
+  const products: AuditRunProducts = {
+    navigation,
+    navigationStartup,
+    navigationFindings,
+    streaming,
+    web,
+  };
   const rawIssues = [
     ...navigationFindings.map((finding) => finding.issue),
     ...(packs.has("streaming") ? streaming?.issues ?? [] : []),
     ...(web?.issues ?? []),
   ];
-  const uniqueIds = new Set(rawIssues.map((issue) => issue.id));
-  if (uniqueIds.size !== rawIssues.length) throw new TypeError("Audit packs produced duplicate semantic issue IDs.");
-
+  const uniqueIssues = rawIssues.filter((issue, index) =>
+    rawIssues.findIndex((candidate) => candidate.id === issue.id) === index
+  );
+  const evidenceStartedAt = performance.now();
   const captured = await captureIssuesWithinBudget(
     store,
     request.target,
     products,
-    rawIssues,
+    uniqueIssues,
     createDriver,
+    captureIssue,
+    Date.now,
+    request.signal,
   );
+  const evidenceGenerationMs = Math.max(0, performance.now() - evidenceStartedAt);
   const inventory = navigationInventory(navigation, web);
   const ledgerValue = asJson({
     schemaVersion: 1,
     target: request.target,
     mode: request.mode,
     selectedPacks: [...packs],
+    startupPreparation: navigationStartup === null ? null : {
+      status: navigationStartup.status,
+      policy: navigationStartup.policy.kind,
+      actions: navigationStartup.policy.kind === "remote-sequence" ? [...navigationStartup.policy.actions] : [],
+      identityHash: navigationStartup.identityHash,
+      blockers: navigationStartup.blockers,
+      controls: navigationStartup.controls,
+      steps: navigationStartup.steps,
+    },
+    timings: {
+      navigationExplorationMs,
+      startupPreparationMs,
+      navigationDiagnosticsMs,
+      evidenceGenerationMs,
+    },
+    navigationDriverPerformance,
     navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
     navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
     streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
@@ -986,7 +1336,9 @@ async function runAudit(
   const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
   const evidenceFailed = captured.some((entry) => entry.failed);
   const coverage = packCoverage(products, packs);
-  const runPartial = evidenceFailed || coverage.some((entry) => entry.status !== "completed");
+  const runPartial = request.signal?.aborted === true
+    || evidenceFailed
+    || coverage.some((entry) => entry.status !== "completed");
   const completedAt = new Date();
   const report = buildTVDoctorReportV1({
     run: {
@@ -1064,6 +1416,7 @@ export function createNodeAuditOperation(
   dependencies: NodeAuditDependencies = {},
 ): (request: TestCommandRequest) => Promise<TestCommandResult> {
   const createDriver = dependencies.createDriver ?? (() => new PlaywrightWebDriver({
+    browserLaunchOptions: { handleSIGINT: false },
     settle: { ambientChurnEscape: true },
   }));
   return async (request) => runAudit(request, createDriver);

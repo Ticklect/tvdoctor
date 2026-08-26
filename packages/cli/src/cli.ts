@@ -13,7 +13,17 @@ import {
   safeDisplayUrl,
   sanitizeTerminalText,
 } from "./terminal.js";
+import { defaultOutputDirectory } from "./product-output.js";
+import type { StartTerminal } from "./interactive.js";
+import { runGuidedStart } from "./start.js";
+import type {
+  AndroidPreflightResult,
+  AndroidScanResult,
+  AndroidScanOptions,
+  ApkMetadata,
+} from "./android-product.js";
 import { CLI_VERSION } from "./version.js";
+import { REMOTE_KEYS, type RemoteKey } from "@tvdoctor/protocol";
 
 export const EXIT_CODES = {
   success: 0,
@@ -48,6 +58,10 @@ export interface TestCommandRequest {
   readonly mode: TestRunMode;
   readonly outputPath: string;
   readonly searchQuery: string;
+  readonly startupActions?: readonly RemoteKey[];
+  readonly startupDecision?: "reject" | "accept";
+  readonly maxDurationMs?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface TestCommandResult {
@@ -62,6 +76,7 @@ export interface ReplayCommandRequest {
   readonly issueId: string;
   readonly reportPath: string;
   readonly targetOverride?: string;
+  readonly signal?: AbortSignal;
 }
 
 export type ReplayCommandStatus =
@@ -78,6 +93,17 @@ export interface ReplayCommandResult {
 export interface CliOperations {
   replayIssue(request: ReplayCommandRequest): Promise<ReplayCommandResult>;
   testTarget?(request: TestCommandRequest): Promise<TestCommandResult>;
+  detectWebsiteStartup?(target: string): Promise<WebsiteStartupDetection>;
+  androidPreflight?(): Promise<AndroidPreflightResult>;
+  inspectApk?(path: string): Promise<ApkMetadata>;
+  scanAndroidApk?(request: AndroidScanOptions): Promise<AndroidScanResult>;
+}
+
+export interface WebsiteStartupDetection {
+  readonly status: "ready" | "blocked" | "unavailable";
+  readonly blockerKind?: string;
+  readonly textSample?: string;
+  readonly detail: string;
 }
 
 export interface CliIO {
@@ -90,6 +116,13 @@ export interface CliContext {
   readonly io: CliIO;
   readonly operations?: CliOperations;
   readonly runtimeProbe?: () => Promise<RuntimeProbeResult>;
+  readonly startTerminal?: StartTerminal;
+  readonly signal?: AbortSignal;
+  readonly terminalProgress?: {
+    readonly isInteractive: boolean;
+    update(text: string): void;
+    finish(): void;
+  };
 }
 
 export interface RuntimeProbeResult {
@@ -99,7 +132,9 @@ export interface RuntimeProbeResult {
 export const HELP_TEXT = `TVDoctor — automated QA for TV apps
 
 Usage:
+  tvdoctor start
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
+  tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
   tvdoctor version
@@ -108,6 +143,7 @@ Usage:
   tvdoctor --help
 
 Commands:
+  start     Open the guided product flow.
   test      Run a bounded local audit and write a report bundle.
   doctor    Diagnose the installed runtime and browser environment.
   replay    Re-run one deterministic issue from a V1 report.
@@ -129,9 +165,14 @@ Options:
   --pack NAME    all, navigation, streaming, search, settings, accessibility,
                  layout, performance, or crashes. Repeat to select multiple packs.
                  Defaults to all.
-  --mode MODE    quick, standard, or deep. Defaults to standard.
-  --output PATH  Report bundle directory. Defaults to tvdoctor-report.
-  --query TEXT   Non-sensitive search query. Defaults to N.`;
+  --mode MODE    quick or deep. The advanced standard alias remains accepted.
+  --output PATH  Report bundle directory. Defaults under Tests with a readable name.
+  --query TEXT   Non-sensitive search query. Defaults to N.
+  --startup-actions KEY[,KEY...]
+                 Explicit caller-selected remote keys used only to prepare a
+                 detected startup setup screen. Defaults to observation-only.
+  --max-duration-ms N
+                 Navigation safety-ceiling override for advanced/CI runs.`;
 
 export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
@@ -146,6 +187,7 @@ defaults to tvdoctor-report/report.json. --target overrides the recorded web URL
 const PORTABLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const TEST_PACK_SET: ReadonlySet<string> = new Set(TEST_PACK_NAMES);
 const TEST_RUN_MODES: ReadonlySet<string> = new Set(["quick", "standard", "deep"]);
+const REMOTE_KEY_SET: ReadonlySet<string> = new Set(REMOTE_KEYS);
 
 function writeLine(
   write: (text: string) => void,
@@ -262,7 +304,7 @@ function parseReplayArguments(
     : { issueId, reportPath, targetOverride };
 }
 
-function safeTarget(value: string): string | null {
+export function safeTarget(value: string): string | null {
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -286,13 +328,15 @@ function parseTestArguments(
   let target: string | undefined;
   const packs: TestPackName[] = [];
   let mode: TestRunMode = "standard";
-  let outputPath = "tvdoctor-report";
+  let explicitOutputPath: string | undefined;
   let searchQuery = "N";
+  let startupActions: RemoteKey[] | undefined;
+  let maxDurationMs: number | undefined;
 
   for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
     const argument = argumentsAfterCommand[index];
     if (argument === undefined) continue;
-    if (["--pack", "--mode", "--output", "--query"].includes(argument)) {
+    if (["--pack", "--mode", "--output", "--query", "--startup-actions", "--max-duration-ms"].includes(argument)) {
       const value = argumentsAfterCommand[index + 1];
       if (value === undefined || value.startsWith("--")) return `${argument} requires a value`;
       if (argument === "--pack") {
@@ -303,7 +347,19 @@ function parseTestArguments(
         mode = value as TestRunMode;
       } else if (argument === "--output") {
         if (value.trim().length === 0 || value.length > 1_024) return "--output requires a bounded non-empty path";
-        outputPath = value;
+        explicitOutputPath = value;
+      } else if (argument === "--startup-actions") {
+        const requested = value.split(",").map((key) => key.trim()).filter((key) => key.length > 0);
+        if (requested.length === 0) return "--startup-actions requires at least one remote key";
+        if (requested.some((key) => !REMOTE_KEY_SET.has(key))) return "--startup-actions accepts only known remote keys";
+        if (new Set(requested).size !== requested.length) return "--startup-actions must not contain duplicate remote keys";
+        startupActions = requested as RemoteKey[];
+      } else if (argument === "--max-duration-ms") {
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+          return "--max-duration-ms must be a positive safe integer no greater than 2147483647";
+        }
+        maxDurationMs = parsed;
       } else {
         const safe = sanitizeTerminalText(value, { maximumLength: 64 });
         if (safe.length === 0 || safe !== value.trim()) {
@@ -324,7 +380,15 @@ function parseTestArguments(
   if (parsedTarget === null) return "test target must be an absolute HTTP(S) URL without credentials";
   const selected = packs.length === 0 ? ["all" as const] : [...new Set(packs)];
   if (selected.includes("all") && selected.length > 1) return "--pack all cannot be combined with another pack";
-  return { target: parsedTarget, packs: selected, mode, outputPath, searchQuery };
+  return {
+    target: parsedTarget,
+    packs: selected,
+    mode,
+    outputPath: explicitOutputPath ?? defaultOutputDirectory({ target: parsedTarget, mode }),
+    searchQuery,
+    ...(startupActions === undefined ? {} : { startupActions }),
+    ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
+  };
 }
 
 async function runTest(
@@ -345,25 +409,31 @@ async function runTest(
   writeLine(context.io.writeStdout, `Auditing ${safeDisplayUrl(request.target)}...`);
   writeLine(
     context.io.writeStdout,
-    `Plan: ${request.mode} mode; packs ${request.packs.join(", ")}; bounded resets and replays can take several minutes.`,
+    `Plan: ${request.mode} mode; packs ${request.packs.join(", ")}; startup preparation ${
+      request.startupActions === undefined ? "observation-only" : "explicit remote sequence"
+    }; bounded resets and replays can take several minutes.`,
   );
   let result: TestCommandResult;
   const progressStartedAt = Date.now();
+  const interactive = context.terminalProgress?.isInteractive === true;
   const progressTimer = setInterval(() => {
     const elapsedSeconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1_000));
-    writeLine(
-      context.io.writeStdout,
-      `Progress: audit still running (${String(elapsedSeconds)}s elapsed); action, state, and duration budgets remain enforced.`,
-    );
-  }, 30_000);
+    const message = `${safeDisplayUrl(request.target)} | ${request.mode} scan | elapsed ${elapsedSeconds}s`;
+    if (interactive) context.terminalProgress?.update(message);
+    else writeLine(context.io.writeStdout, `Progress: ${message}; budgets remain enforced.`);
+  }, interactive ? 1_000 : 30_000);
   progressTimer.unref();
   try {
-    result = await context.operations.testTarget(request);
+    result = await context.operations.testTarget({
+      ...request,
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
+    });
   } catch (error) {
     writeLine(context.io.writeStderr, `Audit failed: ${classifyCliError(error, "audit")}`);
     return EXIT_CODES.executionError;
   } finally {
     clearInterval(progressTimer);
+    if (interactive) context.terminalProgress?.finish();
   }
   const statusLabel = result.status === "completed"
     ? "COMPLETED"
@@ -419,7 +489,10 @@ async function runReplay(
   writeLine(context.io.writeStdout, `Replaying ${request.issueId}...`);
   let result: ReplayCommandResult;
   try {
-    result = await context.operations.replayIssue(request);
+    result = await context.operations.replayIssue({
+      ...request,
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
+    });
   } catch (error) {
     writeLine(context.io.writeStderr, `Replay failed: ${classifyCliError(error, "replay")}`);
     return EXIT_CODES.replayError;
@@ -491,6 +564,16 @@ async function runDoctor(
     : EXIT_CODES.environmentFailure;
 }
 
+async function runStart(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  if (argumentsAfterCommand.length > 0) {
+    return usageError(context, "start does not accept arguments; use tvdoctor test for scripted runs.");
+  }
+  return await runGuidedStart(context);
+}
+
 export async function runCli(
   arguments_: readonly string[],
   context: CliContext,
@@ -545,6 +628,10 @@ export async function runCli(
 
   if (command === "doctor") {
     return await runDoctor(argumentsAfterCommand, context);
+  }
+
+  if (command === "start") {
+    return await runStart(argumentsAfterCommand, context);
   }
 
   if (command === "test") {

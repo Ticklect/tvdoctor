@@ -73,6 +73,19 @@ export interface WebObservationTimings {
   readonly browserRoundTripAndQueueingMs: number;
 }
 
+/** Cumulative, process-local driver timings for profiling an audit run. */
+export interface WebDriverPerformanceProfile {
+  readonly resetCount: number;
+  readonly resetMs: number;
+  readonly pressCount: number;
+  /** Includes dispatch plus the driver's DOM/focus settling boundary. */
+  readonly pressMs: number;
+  readonly snapshotCount: number;
+  /** End-to-end page observation wall time. */
+  readonly snapshotMs: number;
+  readonly observation: WebObservationTimings;
+}
+
 export interface WebViewportSnapshot {
   readonly width: number;
   readonly height: number;

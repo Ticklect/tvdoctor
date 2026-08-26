@@ -8,6 +8,7 @@ import type {
   RemoteKey,
   TVDoctorIssue,
 } from "@tvdoctor/protocol";
+import { PROTOCOL_VALIDATION_LIMITS } from "@tvdoctor/protocol";
 import { normaliseWebSemanticText } from "./semantics.js";
 import type {
   ViewportRectangle,
@@ -15,8 +16,24 @@ import type {
   WebFocusVisibilityProbeResult,
 } from "./types.js";
 
+export function punctuateReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0) {
+    throw new TypeError("An unavailable-reproduction reason must not be empty.");
+  }
+
+  const suppliedTerminator = /[.!?]$/u.test(trimmed) ? trimmed.slice(-1) : ".";
+  const content = suppliedTerminator === "." && !trimmed.endsWith(".")
+    ? trimmed
+    : trimmed.slice(0, -1).trimEnd();
+  const boundedContent = content
+    .slice(0, PROTOCOL_VALIDATION_LIMITS.maxStringLength - 1)
+    .trimEnd();
+  return `${boundedContent}${suppliedTerminator}`;
+}
+
 function unavailableReproduction(reason: string): TVDoctorIssue["reproduction"] {
-  return { status: "unavailable", reason };
+  return { status: "unavailable", reason: punctuateReason(reason) };
 }
 
 function semanticTarget(element: WebElementDescriptor): {

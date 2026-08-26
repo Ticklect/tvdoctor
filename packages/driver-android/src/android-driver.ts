@@ -1,10 +1,10 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import {
   availableObservation,
   unavailableObservation,
   type ActionResult,
-  type ActionTiming,
   type AppReference,
   type Capability,
   type FocusTarget,
@@ -33,6 +33,11 @@ const COMPONENT_CLASS_PATTERN = /^\.?[A-Za-z][A-Za-z0-9_.$]*$/u;
 const SERIAL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const MAX_TIMER_MS = 2_147_483_647;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const WEDGE_FAILURE_MS = 250;
+const WEDGE_FAILURE_LIMIT = 4;
+const SCREEN_PROBE_FALLBACK_LIMIT = 1;
+const MAX_PROFILE_CAPTURES = 16;
+let hierarchyCaptureSequence = 0;
 
 const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
   UP: "KEYCODE_DPAD_UP",
@@ -64,6 +69,8 @@ interface NormalisedOptions {
   readonly maxLogEntries: number;
   readonly maxScreenshotBytes: number;
   readonly noResponseGraceMs: number;
+  readonly baselineReuseMs: number;
+  readonly stabilityProbeMs: number;
   readonly serial: string | undefined;
   readonly settlePollIntervalMs: number;
   readonly settleStableSamples: number;
@@ -153,6 +160,10 @@ function parsePositiveInteger(value: string | undefined): number | null {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+function sha256Prefix(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function pngDimensions(bytes: Uint8Array): { readonly width: number; readonly height: number } {
@@ -283,11 +294,13 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
     maxHierarchyNodes: positiveInteger(options.maxHierarchyNodes, 4_096, "maxHierarchyNodes"),
     maxLogEntries: positiveInteger(options.maxLogEntries, 500, "maxLogEntries"),
     maxScreenshotBytes: positiveInteger(options.maxScreenshotBytes, 32 * 1024 * 1024, "maxScreenshotBytes"),
-    noResponseGraceMs: nonNegativeInteger(options.noResponseGraceMs, 250, "noResponseGraceMs"),
+    noResponseGraceMs: nonNegativeInteger(options.noResponseGraceMs, 100, "noResponseGraceMs"),
+    baselineReuseMs: nonNegativeInteger(options.baselineReuseMs, 30_000, "baselineReuseMs"),
+    stabilityProbeMs: positiveInteger(options.stabilityProbeMs, 150, "stabilityProbeMs"),
     serial: options.serial === undefined ? undefined : validateSerial(options.serial),
     settlePollIntervalMs: positiveInteger(options.settlePollIntervalMs, 100, "settlePollIntervalMs"),
     settleStableSamples: positiveInteger(options.settleStableSamples, 2, "settleStableSamples"),
-    settleTimeoutMs: positiveInteger(options.settleTimeoutMs, 3_000, "settleTimeoutMs"),
+    settleTimeoutMs: positiveInteger(options.settleTimeoutMs, 10_000, "settleTimeoutMs"),
   };
 }
 
@@ -296,10 +309,19 @@ export class AndroidTvDriver implements TVDoctorDriver {
   #closed = false;
   #currentApp: CurrentApp | null = null;
   #deviceMetadata: AndroidDeviceMetadata | null = null;
-  #hierarchySequence = 0;
   #launchPid: number | null = null;
   #launchStartedAtMs = 0;
   #resolvedSerial: string | null = null;
+  #operationQueue: Promise<unknown> = Promise.resolve();
+  #settledBaseline: {
+    readonly hierarchy: ParsedAndroidHierarchy;
+    readonly capturedAtMs: number;
+  } | null = null;
+  #cachedVersionInfo: {
+    readonly packageName: string;
+    readonly versionName: string | null;
+    readonly versionCode: number | null;
+  } | null = null;
 
   constructor(options: AndroidTvDriverOptions = {}) {
     this.#options = normaliseOptions(options);
@@ -357,6 +379,12 @@ export class AndroidTvDriver implements TVDoctorDriver {
 
   async launch(app: AppReference): Promise<void> {
     this.#ensureOpen();
+    return await this.#enqueue(async () => {
+      await this.#launch(app);
+    });
+  }
+
+  async #launch(app: AppReference): Promise<void> {
     const reference = app as AndroidAppReference;
     const packageName = validatePackageName(reference.id);
     const component = reference.launchUri === undefined
@@ -380,7 +408,22 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
     this.#currentApp = { packageName, component };
     this.#launchPid = await this.#waitForPid(packageName, 8_000);
-    await this.#waitForStableHierarchy(this.#options.settleTimeoutMs).catch(() => undefined);
+    this.#settledBaseline = null;
+    const hierarchy = await this.#waitForStableHierarchy(this.#options.settleTimeoutMs)
+      .catch(() => null);
+    if (hierarchy !== null) {
+      this.#settledBaseline = { hierarchy, capturedAtMs: performance.now() };
+    }
+  }
+
+  /**
+   * Serialises device-touching operations so captures from concurrent calls
+   * cannot observe interleaved states.
+   */
+  async #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#operationQueue.then(operation, operation);
+    this.#operationQueue = run.catch(() => undefined);
+    return run;
   }
 
   async forceStop(packageName = this.#currentApp?.packageName): Promise<void> {
@@ -391,136 +434,332 @@ export class AndroidTvDriver implements TVDoctorDriver {
 
   async reset(strategy: ResetStrategy): Promise<void> {
     this.#ensureOpen();
-    const current = this.#currentApp;
-    if (current === null) throw new Error("No Android app has been launched.");
-    if (strategy === "clear-data") {
-      const output = await this.#deviceText(["shell", "pm", "clear", current.packageName]);
-      if (!/(?:^|\s)Success(?:\s|$)/u.test(output)) {
-        throw new Error(`ADB did not confirm app-data clearing: ${cleanText(output)}`);
+    return await this.#enqueue(async () => {
+      const current = this.#currentApp;
+      if (current === null) throw new Error("No Android app has been launched.");
+      if (strategy === "clear-data") {
+        const output = await this.#deviceText(["shell", "pm", "clear", current.packageName]);
+        if (!/(?:^|\s)Success(?:\s|$)/u.test(output)) {
+          throw new Error(`ADB did not confirm app-data clearing: ${cleanText(output)}`);
+        }
       }
-    }
-    await this.launch({
-      id: current.packageName,
-      ...(current.component === null ? {} : { launchUri: current.component }),
+      this.#settledBaseline = null;
+      await this.#launch({
+        id: current.packageName,
+        ...(current.component === null ? {} : { launchUri: current.component }),
+      });
     });
   }
 
   async press(key: RemoteKey): Promise<ActionResult> {
     this.#ensureOpen();
-    const inputSentAtMs = Date.now();
-    let baseline: ParsedAndroidHierarchy | null = null;
-    try {
-      baseline = await this.#captureHierarchy();
-    } catch {
-      // Input delivery can still be truthful even when pre-action observation is unavailable.
+    return await this.#enqueue(() => this.#press(key));
+  }
+
+  async #press(key: RemoteKey): Promise<ActionResult> {
+    const profileCaptureDurations: number[] = [];
+    let pollCount = 0;
+    let wedgeSuspected = false;
+    let instantFailures = 0;
+
+    // 1. Establish the compared pre-input state. Fail closed before sending
+    // input when neither the settled cache nor a fresh capture is available.
+    let baselineSource: "fresh" | "cached" | "unavailable" = "unavailable";
+    let baseline!: ParsedAndroidHierarchy;
+    const cached = this.#settledBaseline;
+    if (
+      cached !== null
+      && performance.now() - cached.capturedAtMs <= this.#options.baselineReuseMs
+    ) {
+      baselineSource = "cached";
+      baseline = cached.hierarchy;
+    } else {
+      let captureError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const started = performance.now();
+          baseline = await this.#captureHierarchy(this.#options.hierarchyTimeoutMs);
+          profileCaptureDurations.push(performance.now() - started);
+          baselineSource = "fresh";
+          captureError = null;
+          break;
+        } catch (error) {
+          captureError = error;
+          await delay(250 * (attempt + 1));
+        }
+      }
+      if (captureError !== null) {
+        return {
+          key,
+          outcome: "failed",
+          timing: {
+            inputSentAtMs: Date.now(),
+            profile: {
+              baselineSource,
+              captureCount: profileCaptureDurations.length,
+            },
+          },
+          message:
+            "Android UI observation remained unavailable before input; input was not sent.",
+        };
+      }
     }
+
+    // 2. Deliver the key event.
+    const inputSentAtMs = Date.now();
+    const inputStarted = performance.now();
     try {
       await this.#deviceText(["shell", "input", "keyevent", KEY_CODES[key]]);
     } catch (error) {
+      this.#settledBaseline = null;
       return {
         key,
         outcome: "failed",
-        timing: { inputSentAtMs },
+        timing: {
+          inputSentAtMs,
+          profile: {
+            baselineSource,
+            captureCount: profileCaptureDurations.length,
+            captureDurationsMs: [...profileCaptureDurations],
+            inputDispatchMs: performance.now() - inputStarted,
+          },
+        },
         message: cleanText(error instanceof Error ? error.message : String(error)),
       };
     }
-
-    if (baseline === null) {
-      return {
-        key,
-        outcome: "applied",
-        timing: { inputSentAtMs },
-        message: "Input was delivered, but pre-action hierarchy observation was unavailable.",
-      };
-    }
+    const inputDispatchMs = performance.now() - inputStarted;
 
     const baselineSignature = baseline.settleSignature;
     const baselineFocus = focusedIdentity(baseline);
     const deadline = performance.now() + this.#options.settleTimeoutMs;
-    let previousSignature: string | null = null;
-    let stableSamples = 0;
     let firstResponseAtMs: number | undefined;
     let focusChanged = false;
-    let lastError: unknown;
-    while (performance.now() < deadline) {
+    let screenSettledAtMs: number | undefined;
+    let settledHierarchy: ParsedAndroidHierarchy | null = null;
+    let unchangedAfterInputSamples = 0;
+    let probeFailures = 0;
+    let failureMessage: string | null = null;
+
+    while (performance.now() < deadline && failureMessage === null) {
+      pollCount += 1;
+      const remainingMs = deadline - performance.now();
+      const graceRemainingMs = Math.max(
+        0,
+        this.#options.noResponseGraceMs - (Date.now() - inputSentAtMs),
+      );
+      await delay(Math.min(
+        Math.max(graceRemainingMs, this.#options.settlePollIntervalMs),
+        Math.max(1, remainingMs),
+      ));
+
+      let hierarchy: ParsedAndroidHierarchy;
+      const captureStarted = performance.now();
       try {
-        const hierarchy = await this.#captureHierarchy(
+        hierarchy = await this.#captureHierarchy(
           Math.max(1, Math.min(this.#options.hierarchyTimeoutMs, deadline - performance.now())),
         );
-        const nowEpochMs = Date.now();
-        const changed = hierarchy.settleSignature !== baselineSignature;
-        if (changed && firstResponseAtMs === undefined) firstResponseAtMs = nowEpochMs;
-        focusChanged ||= focusedIdentity(hierarchy) !== baselineFocus;
-        stableSamples = hierarchy.settleSignature === previousSignature ? stableSamples + 1 : 1;
-        previousSignature = hierarchy.settleSignature;
-        const graceElapsed = nowEpochMs - inputSentAtMs >= this.#options.noResponseGraceMs;
-        if (stableSamples >= this.#options.settleStableSamples && (changed || graceElapsed)) {
-          const timing: ActionTiming = {
-            inputSentAtMs,
-            ...(firstResponseAtMs === undefined ? {} : { firstResponseAtMs }),
-            ...(focusChanged ? { focusSettledAtMs: nowEpochMs } : {}),
-            screenSettledAtMs: nowEpochMs,
-          };
-          return { key, outcome: "applied", timing };
-        }
+        profileCaptureDurations.push(performance.now() - captureStarted);
+        instantFailures = 0;
       } catch (error) {
-        lastError = error;
+        const durationMs = performance.now() - captureStarted;
+        if (durationMs < WEDGE_FAILURE_MS) {
+          instantFailures += 1;
+          if (instantFailures >= WEDGE_FAILURE_LIMIT) wedgeSuspected = true;
+        }
+        if (wedgeSuspected || performance.now() >= deadline) {
+          failureMessage = wedgeSuspected
+            ? "UIAutomator observations began failing instantly; device observation looks wedged."
+            : `Settling observation failed: ${cleanText(error instanceof Error ? error.message : String(error))}`;
+          break;
+        }
+        await delay(250);
+        continue;
       }
-      await delay(Math.min(
-        this.#options.settlePollIntervalMs,
-        Math.max(1, deadline - performance.now()),
-      ));
+
+      const changed = hierarchy.settleSignature !== baselineSignature;
+      if (changed && firstResponseAtMs === undefined) firstResponseAtMs = Date.now();
+      focusChanged ||= focusedIdentity(hierarchy) !== baselineFocus;
+
+      if (!changed) {
+        unchangedAfterInputSamples += 1;
+        if (unchangedAfterInputSamples >= this.#options.settleStableSamples) {
+          // Canonical no-op: multiple post-input observations match the
+          // pre-input state, so a delayed response is not still arriving.
+          screenSettledAtMs = Date.now();
+          settledHierarchy = hierarchy;
+          break;
+        }
+        continue;
+      }
+      unchangedAfterInputSamples = 0;
+
+      // The UI responded. Confirm quiescence with two screen samples
+      // separated by a measured quiet window instead of paying for another
+      // full hierarchy capture while animations finish.
+      let stable: boolean;
+      try {
+        await delay(Math.min(
+          this.#options.stabilityProbeMs,
+          Math.max(1, deadline - performance.now()),
+        ));
+        const firstStarted = performance.now();
+        const firstProbe = sha256Prefix((await this.#screenCapture(
+          Math.max(1, Math.min(this.#options.commandTimeoutMs, deadline - performance.now())),
+        )).png);
+        profileCaptureDurations.push(performance.now() - firstStarted);
+        await delay(Math.min(
+          this.#options.stabilityProbeMs,
+          Math.max(1, deadline - performance.now()),
+        ));
+        const secondStarted = performance.now();
+        const secondProbe = sha256Prefix((await this.#screenCapture(
+          Math.max(1, Math.min(this.#options.commandTimeoutMs, deadline - performance.now())),
+        )).png);
+        profileCaptureDurations.push(performance.now() - secondStarted);
+        stable = firstProbe === secondProbe;
+      } catch {
+        stable = false;
+      }
+
+      if (stable) {
+        try {
+          const started = performance.now();
+          settledHierarchy = await this.#captureHierarchy(
+            Math.max(1, Math.min(this.#options.hierarchyTimeoutMs, deadline - performance.now())),
+          );
+          profileCaptureDurations.push(performance.now() - started);
+          screenSettledAtMs = Date.now();
+          break;
+        } catch {
+          settledHierarchy = null;
+        }
+      }
+      probeFailures += 1;
+      if (probeFailures >= SCREEN_PROBE_FALLBACK_LIMIT
+        && performance.now() < deadline) {
+        // The screen keeps changing (e.g. a shimmer animation). Fall back to a
+        // second hierarchy capture: two consecutive equal trees prove the
+        // semantic state is stable even when pixels keep animating.
+        try {
+          const started = performance.now();
+          const confirmation = await this.#captureHierarchy(
+            Math.max(1, Math.min(this.#options.hierarchyTimeoutMs, deadline - performance.now())),
+          );
+          profileCaptureDurations.push(performance.now() - started);
+          instantFailures = 0;
+          if (confirmation.settleSignature === hierarchy.settleSignature) {
+            screenSettledAtMs = Date.now();
+            settledHierarchy = confirmation;
+            break;
+          }
+        } catch {
+          // Continue polling; the outer timeout handles exhaustion.
+        }
+      }
+      if (performance.now() >= deadline) break;
     }
+
+    if (failureMessage !== null || settledHierarchy === null || screenSettledAtMs === undefined) {
+      this.#settledBaseline = null;
+      return {
+        key,
+        outcome: "inconclusive",
+        timing: {
+          inputSentAtMs,
+          ...(firstResponseAtMs === undefined ? {} : { firstResponseAtMs }),
+          profile: {
+            baselineSource,
+            captureCount: profileCaptureDurations.length,
+            captureDurationsMs: [...profileCaptureDurations].slice(0, MAX_PROFILE_CAPTURES),
+            inputDispatchMs,
+            pollCount,
+            wedgeSuspected,
+          },
+        },
+        message: failureMessage
+          ?? "Input was delivered, but the Android UI never reached a confirmed settle within the configured budget.",
+      };
+    }
+
+    this.#settledBaseline = {
+      hierarchy: settledHierarchy,
+      capturedAtMs: performance.now(),
+    };
+
+    const snapshot = await this.#buildStateSnapshot(settledHierarchy);
     return {
       key,
       outcome: "applied",
       timing: {
         inputSentAtMs,
         ...(firstResponseAtMs === undefined ? {} : { firstResponseAtMs }),
-        ...(focusChanged ? { focusSettledAtMs: Date.now() } : {}),
-        screenSettledAtMs: Date.now(),
+        ...(focusChanged ? { focusSettledAtMs: screenSettledAtMs } : {}),
+        screenSettledAtMs,
+        profile: {
+          baselineSource,
+          captureCount: profileCaptureDurations.length,
+          captureDurationsMs: [...profileCaptureDurations].slice(0, MAX_PROFILE_CAPTURES),
+          inputDispatchMs,
+          pollCount,
+          wedgeSuspected,
+        },
       },
-      message: lastError === undefined
-        ? "Input was delivered, but the Android UI did not reach the configured stability threshold."
-        : `Input was delivered, but settling observation failed: ${cleanText(lastError instanceof Error ? lastError.message : String(lastError))}`,
+      postActionSnapshot: snapshot,
     };
   }
 
   async snapshot(): Promise<AndroidStateSnapshot> {
     this.#ensureOpen();
+    return await this.#enqueue(async () => {
+      let hierarchy: ParsedAndroidHierarchy | null;
+      try {
+        hierarchy = await this.#captureHierarchy();
+      } catch {
+        hierarchy = null;
+      }
+      const snapshot = await this.#buildStateSnapshot(hierarchy);
+      if (hierarchy !== null) {
+        this.#settledBaseline = { hierarchy, capturedAtMs: performance.now() };
+      }
+      return snapshot;
+    });
+  }
+
+  async #buildStateSnapshot(
+    hierarchy: ParsedAndroidHierarchy | null,
+  ): Promise<AndroidStateSnapshot> {
     const capturedAt = new Date().toISOString();
-    let hierarchy: ParsedAndroidHierarchy | null = null;
-    let hierarchyFailure: string | null = null;
-    try {
-      hierarchy = await this.#captureHierarchy();
-    } catch (error) {
-      hierarchyFailure = `UIAutomator observation failed: ${cleanText(error instanceof Error ? error.message : String(error))}`;
-    }
-
-    let location: string | null = null;
-    let locationFailure: string | null = null;
-    try {
-      location = currentActivity(await this.#deviceText(["shell", "dumpsys", "activity", "activities"]));
-      if (location === null) locationFailure = "Android resumed activity was not observable.";
-    } catch (error) {
-      locationFailure = `Android activity observation failed: ${cleanText(error instanceof Error ? error.message : String(error))}`;
-    }
-
-    let device: AndroidDeviceMetadata | null = null;
-    let deviceFailure: string | null = null;
-    try {
-      device = await this.getDeviceMetadata();
-    } catch (error) {
-      deviceFailure = `Android device metadata unavailable: ${cleanText(error instanceof Error ? error.message : String(error))}`;
-    }
-
-    let app: AndroidAppMetadata | null = null;
-    let appFailure: string | null = null;
-    try {
-      app = await this.getAppMetadata();
-    } catch (error) {
-      appFailure = `Android app metadata unavailable: ${cleanText(error instanceof Error ? error.message : String(error))}`;
-    }
+    const hierarchyFailure = hierarchy === null
+      ? "UIAutomator observation failed."
+      : null;
+    const [locationResult, deviceResult, appResult] = await Promise.all([
+      this.#deviceText(["shell", "dumpsys", "activity", "activities"])
+        .then((output) => ({ value: currentActivity(output), failure: null as string | null }))
+        .catch((error: unknown) => ({
+          value: null,
+          failure: `Android activity observation failed: ${cleanText(error instanceof Error ? error.message : String(error))}`,
+        })),
+      this.getDeviceMetadata()
+        .then((metadata) => ({ value: metadata, failure: null as string | null }))
+        .catch((error: unknown) => ({
+          value: null,
+          failure: `Android device metadata unavailable: ${cleanText(error instanceof Error ? error.message : String(error))}`,
+        })),
+      this.getAppMetadata()
+        .then((metadata) => ({ value: metadata, failure: null as string | null }))
+        .catch((error: unknown) => ({
+          value: null,
+          failure: `Android app metadata unavailable: ${cleanText(error instanceof Error ? error.message : String(error))}`,
+        })),
+    ]);
+    const location = locationResult.value;
+    const locationFailure = locationResult.failure ?? (location === null
+      ? "Android resumed activity was not observable."
+      : null);
+    const device = deviceResult.value;
+    const deviceFailure = deviceResult.failure;
+    const app = appResult.value;
+    const appFailure = appResult.failure;
 
     const focusObservation = hierarchy === null
       ? unavailableObservation(hierarchyFailure ?? "UIAutomator hierarchy unavailable.")
@@ -554,16 +793,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
       throw new TypeError("Android screenshots require a .png artifact path.");
     }
     const absolutePath = resolve(artifactPath);
-    const result = await this.#deviceCommand(
-      ["exec-out", "screencap", "-p"],
-      {
-        timeoutMs: this.#options.commandTimeoutMs,
-        maxOutputBytes: this.#options.maxScreenshotBytes,
-      },
-    );
-    const dimensions = pngDimensions(result.stdout);
+    const result = await this.#screenCapture();
+    const dimensions = pngDimensions(result.png);
     await mkdir(dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, result.stdout);
+    await writeFile(absolutePath, result.png);
     return {
       path: absolutePath,
       mediaType: "image/png",
@@ -595,6 +828,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const properties = parseProperties(propertiesOutput);
     const size = lastDisplayPair(sizeOutput, "size");
     const density = lastDisplayPair(densityOutput, "density");
+    const supportedAbis = (properties.get("ro.product.cpu.abilist") ?? "")
+      .split(",")
+      .map((value) => cleanText(value, 64))
+      .filter((value) => value.length > 0);
     const characteristics = (properties.get("ro.build.characteristics") ?? "")
       .split(",")
       .map((value) => cleanText(value, 128))
@@ -609,10 +846,21 @@ export class AndroidTvDriver implements TVDoctorDriver {
       release: optionalCleanText(properties.get("ro.build.version.release")),
       buildFingerprint: optionalCleanText(properties.get("ro.build.fingerprint")),
       characteristics,
+      supportedAbis,
       displayWidth: size?.[0] ?? null,
       displayHeight: size?.[1] ?? null,
       displayDensityDpi: density?.[0] ?? null,
       isTelevision: characteristics.length === 0 ? null : characteristics.includes("tv"),
+    };
+    const semanticFingerprint = [
+      properties.get("ro.product.model"),
+      properties.get("ro.product.name"),
+      properties.get("ro.build.fingerprint"),
+    ].filter((value): value is string => value !== undefined).join(" ").toLowerCase();
+    const inferredTelevision = /\b(?:atv|android[_ ]?tv|leanback)\b/u.test(semanticFingerprint);
+    this.#deviceMetadata = {
+      ...this.#deviceMetadata,
+      isTelevision: characteristics.includes("tv") || inferredTelevision,
     };
     return this.#deviceMetadata;
   }
@@ -621,6 +869,19 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#ensureOpen();
     const current = this.#currentApp;
     if (current === null) throw new Error("No Android app has been launched.");
+    const cached = this.#cachedVersionInfo;
+    if (cached !== null && cached.packageName === current.packageName) {
+      const pid = parsePositiveInteger(cleanText(
+        await this.#deviceText(["shell", "pidof", "-s", current.packageName]).catch(() => ""),
+      ));
+      return {
+        packageName: current.packageName,
+        component: current.component,
+        pid,
+        versionName: cached.versionName,
+        versionCode: cached.versionCode,
+      };
+    }
     const [pidOutput, packageOutput] = await Promise.all([
       this.#deviceText(["shell", "pidof", "-s", current.packageName]).catch(() => ""),
       this.#deviceText(["shell", "dumpsys", "package", current.packageName]),
@@ -628,6 +889,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const pid = parsePositiveInteger(cleanText(pidOutput));
     const versionName = /\bversionName=([^\s]+)/u.exec(packageOutput)?.[1];
     const versionCode = /\bversionCode=(\d+)/u.exec(packageOutput)?.[1];
+    this.#cachedVersionInfo = {
+      packageName: current.packageName,
+      versionName: optionalCleanText(versionName),
+      versionCode: parsePositiveInteger(versionCode),
+    };
     return {
       packageName: current.packageName,
       component: current.component,
@@ -641,6 +907,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#closed = true;
     this.#currentApp = null;
     this.#launchPid = null;
+    this.#settledBaseline = null;
+    this.#cachedVersionInfo = null;
   }
 
   async #serial(): Promise<string> {
@@ -677,16 +945,13 @@ export class AndroidTvDriver implements TVDoctorDriver {
   }
 
   async #captureHierarchy(timeoutMs = this.#options.hierarchyTimeoutMs): Promise<ParsedAndroidHierarchy> {
-    this.#hierarchySequence += 1;
-    const remotePath = `/data/local/tmp/tvdoctor-hierarchy-${String(process.pid)}-${String(this.#hierarchySequence)}.xml`;
+    hierarchyCaptureSequence += 1;
+    const remotePath = `/data/local/tmp/tvdoctor-hierarchy-${String(process.pid)}-${String(hierarchyCaptureSequence)}.xml`;
     const timeout = Math.max(1, Math.floor(timeoutMs));
+    const script = `rm -f ${remotePath}; uiautomator dump --compressed ${remotePath} >/dev/null 2>&1; dump_rc=$?; if [ $dump_rc -ne 0 ]; then exit $dump_rc; fi; cat ${remotePath}`;
     try {
-      await this.#deviceText(
-        ["shell", "uiautomator", "dump", "--compressed", remotePath],
-        { timeoutMs: timeout, maxOutputBytes: 64 * 1024 },
-      );
       const result = await this.#deviceCommand(
-        ["exec-out", "cat", remotePath],
+        ["shell", script],
         { timeoutMs: timeout, maxOutputBytes: this.#options.maxHierarchyBytes },
       );
       return parseUiAutomatorHierarchy(result.stdout, {
@@ -695,11 +960,23 @@ export class AndroidTvDriver implements TVDoctorDriver {
         maxDepth: this.#options.maxHierarchyDepth,
       });
     } finally {
-      await this.#deviceText(
+      await this.#deviceCommand(
         ["shell", "rm", "-f", remotePath],
-        { timeoutMs: Math.min(timeout, 5_000), maxOutputBytes: 64 * 1024 },
+        { timeoutMs: Math.min(1_000, this.#options.commandTimeoutMs), maxOutputBytes: 1_024 },
       ).catch(() => undefined);
     }
+  }
+
+  async #screenCapture(timeoutMs = this.#options.commandTimeoutMs): Promise<{ readonly png: Uint8Array }> {
+    const result = await this.#deviceCommand(
+      ["exec-out", "screencap", "-p"],
+      {
+        timeoutMs: Math.max(1, Math.floor(timeoutMs)),
+        maxOutputBytes: this.#options.maxScreenshotBytes,
+      },
+    );
+    pngDimensions(result.stdout);
+    return { png: result.stdout };
   }
 
   async #waitForStableHierarchy(timeoutMs: number): Promise<ParsedAndroidHierarchy> {
@@ -714,8 +991,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (stableSamples >= this.#options.settleStableSamples) return latest;
       await delay(Math.min(this.#options.settlePollIntervalMs, Math.max(1, deadline - performance.now())));
     }
-    if (latest !== null) return latest;
-    throw new Error("Android hierarchy did not become observable before the settle deadline.");
+    if (latest === null) {
+      throw new Error("Android hierarchy did not become observable before the settle deadline.");
+    }
+    throw new Error("Android hierarchy did not become stable before the settle deadline.");
   }
 
   async #waitForPid(packageName: string, timeoutMs: number): Promise<number | null> {

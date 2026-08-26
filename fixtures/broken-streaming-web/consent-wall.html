@@ -17,6 +17,10 @@
         <button data-tv-id="catalogue-home">Home</button>
         <button data-tv-id="catalogue-library">Library</button>
       </nav>
+      <p id="prepared-state" data-tv-id="prepared-state">Prepared state: unresolved</p>
+      <p data-tv-id="dynamic-note" role="status" aria-live="polite">
+        Dynamic evidence changes, but navigation identity must remain stable.
+      </p>
     </main>
     <dialog id="consent" role="dialog" aria-modal="true" aria-labelledby="consent-title" data-tv-id="consent-dialog">
       <h2 id="consent-title">Privacy choice</h2>
@@ -27,8 +31,16 @@
     <iframe title="Catalogue frame" src="/iframe-child.html"></iframe>
     <script type="module">
       const consent = document.getElementById("consent");
-      const accepted = sessionStorage.getItem("tvdoctor-fixture-consent") === "true";
-      if (!accepted) consent.showModal();
+      const choice = sessionStorage.getItem("tvdoctor-fixture-consent");
+      const accepted = choice === "accepted" || choice === "rejected";
+      if (accepted) {
+        document.body.dataset.screen = `catalogue-${choice}`;
+        document.getElementById("prepared-state").textContent =
+          `Prepared state: ${choice}`;
+        document.querySelector('[data-tv-id="catalogue-home"]').focus();
+      } else {
+        consent.showModal();
+      }
 
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || !consent.open) return;
@@ -39,8 +51,16 @@
         const target = event.target instanceof Element ? event.target.closest("button") : null;
         const action = target?.getAttribute("data-tv-id");
         if (action !== "accept-consent" && action !== "reject-consent") return;
-        sessionStorage.setItem("tvdoctor-fixture-consent", "true");
+        sessionStorage.setItem(
+          "tvdoctor-fixture-consent",
+          action === "accept-consent" ? "accepted" : "rejected",
+        );
         consent.close();
+        document.body.dataset.screen = action === "accept-consent"
+          ? "catalogue-accepted"
+          : "catalogue-rejected";
+        document.querySelector('[data-tv-id="prepared-state"]').textContent =
+          `Prepared state: ${action === "accept-consent" ? "accepted" : "rejected"}`;
         document.querySelector('[data-tv-id="catalogue-home"]').focus();
       });
     </script>

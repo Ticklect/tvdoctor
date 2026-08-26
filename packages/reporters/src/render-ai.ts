@@ -1,6 +1,14 @@
 import type { TVDoctorIssue, TVDoctorReportV1 } from "@tvdoctor/protocol";
 import { markdownDataBlock } from "./security.js";
-import { artifactsForIssue, formatRemoteSequence, replayCommand, replayTargetOverrideRequired, validReport } from "./render-helpers.js";
+import {
+  artifactsForIssue,
+  formatRemoteSequence,
+  hasDeterministicCliReplay,
+  findingActionability,
+  replayCommand,
+  replayTargetOverrideRequired,
+  validReport,
+} from "./render-helpers.js";
 
 interface AiTaskContext {
   readonly artifacts: string;
@@ -31,11 +39,41 @@ function taskContext(report: TVDoctorReportV1, issue: TVDoctorIssue): AiTaskCont
 }
 
 function hasPortableDeterministicReplay(report: TVDoctorReportV1, issue: TVDoctorIssue): boolean {
-  return issue.confidence === "deterministic"
-    && issue.reproduction.status === "available"
-    && issue.reproduction.confidence === "deterministic"
-    && issue.evidence.some((evidence) => evidence.kind === "deterministic-failure")
-    && report.replays.some((replay) => replay.issueId === issue.id);
+  return hasDeterministicCliReplay(report, issue)
+    && issue.evidence.some((evidence) => evidence.kind === "deterministic-failure");
+}
+
+function issueTaskAnchor(issueId: string): string {
+  const encodedId = Array.from(issueId, (character) => (
+    character.codePointAt(0)?.toString(16).padStart(2, "0") ?? "00"
+  )).join("-");
+  return `tvdoctor-task-${encodedId}`;
+}
+
+function aiReportIndex(report: TVDoctorReportV1): string {
+  const fixNow = report.issues.filter((issue) => hasPortableDeterministicReplay(report, issue)).length;
+  const setupOrInfo = report.issues.filter((issue) => findingActionability(issue) === "SETUP / INFO").length;
+  const cliReplayable = report.issues.filter((issue) => hasDeterministicCliReplay(report, issue)).length;
+  const issueLinks = report.issues.map((issue) => {
+    const classification = hasPortableDeterministicReplay(report, issue)
+      ? "FIX NOW"
+      : findingActionability(issue) === "SETUP / INFO" ? "SETUP / INFO" : "REVIEW";
+    const replayLabel = hasDeterministicCliReplay(report, issue) ? " — deterministic CLI-REPLAYABLE" : "";
+    return `- [${classification} — ${issue.id}](#${issueTaskAnchor(issue.id)})${replayLabel}`;
+  }).join("\n");
+  return `## Finding Index
+
+${String(report.issues.length)} ${report.issues.length === 1 ? "finding" : "findings"}
+
+- ${String(fixNow)} FIX NOW
+- ${String(report.issues.length - fixNow - setupOrInfo)} REVIEW
+- ${String(setupOrInfo)} SETUP / INFO
+- ${String(cliReplayable)} deterministic CLI-REPLAYABLE
+
+### Issue Tasks
+
+${issueLinks || "No issue tasks were generated."}
+`;
 }
 
 function aiFixTask(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
@@ -51,7 +89,9 @@ function aiFixTask(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
   const minimizedCandidate = issue.reproduction.minimizedSequence === null
     ? "No minimized candidate was recorded."
     : `A minimized candidate was recorded but is not executed by the M5 replay command:\n\n    ${formatRemoteSequence(issue.reproduction.minimizedSequence)}`;
-  return `# TVDoctor Fix Task — ${issue.id}
+  return `<a id="${issueTaskAnchor(issue.id)}"></a>
+
+# TVDoctor Fix Task — ${issue.id}
 
 ## Objective
 
@@ -158,7 +198,12 @@ function aiReviewTask(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
   const reproduction = issue.reproduction.status === "available"
     ? `A ${issue.reproduction.confidence} original sequence was recorded as observation data, but it is not presented as a validation command:\n\n    ${formatRemoteSequence(issue.reproduction.originalSequence)}${issue.reproduction.minimizedSequence === null ? "" : `\n\nA minimized candidate was also recorded but is not executed by the M5 replay command:\n\n    ${formatRemoteSequence(issue.reproduction.minimizedSequence)}`}`
     : `No reproduction is available. Recorded reason:\n\n${markdownDataBlock(issue.reproduction.reason)}`;
-  return `# TVDoctor Review Task — ${issue.id}
+  const cliReplayStatement = hasDeterministicCliReplay(report, issue)
+    ? "A deterministic CLI replay is embedded, but this task remains review-only because complete deterministic-failure evidence was not supplied. No validation command is asserted here."
+    : "Deterministic replay is required before the CLI can run this finding. No replay command is supplied for best-effort or otherwise non-deterministic reproductions.";
+  return `<a id="${issueTaskAnchor(issue.id)}"></a>
+
+# TVDoctor Review Task — ${issue.id}
 
 ## Review Objective
 
@@ -184,7 +229,7 @@ ${markdownDataBlock(issue.expected)}
 
 ${reproduction}
 
-No \`tvdoctor replay\` command is supplied because this finding is not both deterministic and backed by an embedded portable replay.
+${cliReplayStatement}
 
 ## Runtime Evidence
 
@@ -240,10 +285,11 @@ Only deterministic findings with deterministic-failure evidence and an embedded 
 
 Source-aware file correlation was not available for this run; no source filenames are asserted.
 `;
+  const index = aiReportIndex(valid);
   if (valid.issues.length === 0) {
-    return `${preamble}\nNo tasks were generated for the observed coverage. This is not a claim of exhaustive testing.\n`;
+    return `${preamble}\n${index}\nNo tasks were generated for the observed coverage. This is not a claim of exhaustive testing.\n`;
   }
-  return `${preamble}\n${valid.issues.map((issue) => (
+  return `${preamble}\n${index}\n${valid.issues.map((issue) => (
     hasPortableDeterministicReplay(valid, issue)
       ? aiFixTask(valid, issue)
       : aiReviewTask(valid, issue)

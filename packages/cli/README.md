@@ -15,14 +15,21 @@ npx playwright install chromium
 
 ## First audit
 
-Check the local runtime, then audit an absolute HTTP(S) target:
+Check the local runtime, then launch the guided flow or audit an absolute
+HTTP(S) target directly:
 
 ```sh
 npx tvdoctor doctor
+npx tvdoctor start
 npx tvdoctor test http://127.0.0.1:3000 --mode standard --output tvdoctor-report
 ```
 
-`test` supports `quick`, `standard`, and `deep` modes. Use repeated `--pack`
+`start` guides an interactive website or Android TV scan. Android TV support is
+experimental and requires a connected, authorized ADB device plus an APK or
+installed package. Use `test` for non-interactive web and CI runs.
+
+`test` supports `quick` and `deep` modes; `standard` remains an advanced alias.
+Use repeated `--pack`
 options to select `navigation`, `streaming`, `search`, `settings`,
 `accessibility`, `layout`, `performance`, or `crashes`; the default is `all`.
 Run `npx tvdoctor test --help` for the complete option reference.
@@ -55,4 +62,3 @@ original defect reproduced; use the reported classification and fresh evidence.
 
 Run `npx tvdoctor --help` for all commands. TVDoctor stores reports locally and
 does not require an AI service, API key, cloud account, or telemetry service.
-

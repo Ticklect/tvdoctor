@@ -26,6 +26,11 @@ export interface SettleResult {
   readonly boundedByAmbientChurn: boolean;
 }
 
+interface SettleWaitOptions {
+  /** Initial page work has no input-caused branch, so new continuous churn is ambient. */
+  readonly includePostBaselineAmbientChurn?: boolean;
+}
+
 export async function installSettleTracker(page: Page): Promise<void> {
   await page.addInitScript(() => {
     type EventKind = "focus" | "mutation";
@@ -157,9 +162,10 @@ export async function waitForPageSettle(
   page: Page,
   baseline: SettleBaseline,
   configuration: SettleConfiguration,
+  options: SettleWaitOptions = {},
 ): Promise<SettleResult> {
   const readResult = async (timedOut: boolean): Promise<SettleResult> => page.evaluate(
-    ({ actionBaseline, didTimeOut, quietWindowMs }) => {
+    ({ actionBaseline, didTimeOut, settleConfiguration, waitOptions }) => {
       interface TrackerEvent {
         readonly atEpochMs: number;
         readonly kind: "focus" | "mutation";
@@ -191,6 +197,13 @@ export async function waitForPageSettle(
       const responseEvents = tracker?.events.filter(
         (event) => event.atEpochMs >= actionBaseline.capturedAtEpochMs,
       ) ?? [];
+      const postBaselineMutations = responseEvents.filter((event) => event.kind === "mutation");
+      const lastPostBaselineMutationAtMs = postBaselineMutations.at(-1)?.atEpochMs
+        ?? Number.NEGATIVE_INFINITY;
+      const postBaselineAmbientChurn = waitOptions.includePostBaselineAmbientChurn === true
+        && postBaselineMutations.length >= 4
+        && Date.now() - actionBaseline.capturedAtEpochMs >= settleConfiguration.noResponseGraceMs
+        && Date.now() - lastPostBaselineMutationAtMs <= 250;
       const firstResponse = responseEvents[0]?.atEpochMs
         ?? (focusKey !== actionBaseline.focusKey
           || window.location.href !== actionBaseline.location
@@ -202,23 +215,26 @@ export async function waitForPageSettle(
         firstResponseAtMs: firstResponse,
         focusChanged,
         focusSettledAtMs: focusChanged
-          ? (focusEvent?.atEpochMs ?? tracker?.lastFocusAtEpochMs ?? Date.now()) + quietWindowMs
+          ? (focusEvent?.atEpochMs ?? tracker?.lastFocusAtEpochMs ?? Date.now())
+            + settleConfiguration.quietWindowMs
           : null,
         screenSettledAtMs: Date.now(),
         timedOut: didTimeOut,
-        boundedByAmbientChurn: ambientChurn,
+        boundedByAmbientChurn: settleConfiguration.ambientChurnEscape
+          && (ambientChurn || postBaselineAmbientChurn),
       };
     },
     {
       actionBaseline: baseline,
       didTimeOut: timedOut,
-      quietWindowMs: configuration.quietWindowMs,
+      settleConfiguration: configuration,
+      waitOptions: options,
     },
   );
 
   try {
     await page.waitForFunction(
-      ({ actionBaseline, settleConfiguration }) => {
+      ({ actionBaseline, settleConfiguration, waitOptions }) => {
         interface TrackerWindow extends Window {
           __tvdoctorSettleTracker?: {
             events: {
@@ -255,6 +271,14 @@ export async function waitForPageSettle(
         // Canonical snapshots and replay remain the correctness gate.
         const ambientChurn = preActionMutations.length >= 4
           && actionBaseline.capturedAtEpochMs - lastPreActionMutationAtMs <= 250;
+        const postBaselineMutations = (tracker?.events ?? []).filter((event) => (
+          event.kind === "mutation" && event.atEpochMs >= actionBaseline.capturedAtEpochMs
+        ));
+        const lastPostBaselineMutationAtMs = postBaselineMutations.at(-1)?.atEpochMs
+          ?? Number.NEGATIVE_INFINITY;
+        const postBaselineAmbientChurn = waitOptions.includePostBaselineAmbientChurn === true
+          && postBaselineMutations.length >= 4
+          && now - lastPostBaselineMutationAtMs <= 250;
         const ambientChurnBoundReached = now - actionBaseline.capturedAtEpochMs
           >= settleConfiguration.noResponseGraceMs;
         const lastMeaningfulChange = Math.max(
@@ -281,21 +305,21 @@ export async function waitForPageSettle(
         return document.readyState !== "loading"
           && !busy
           && ((quiet && !finiteAnimationRunning && (responded || noResponseIsStable))
-            || (ambientChurn && settleConfiguration.ambientChurnEscape && ambientChurnBoundReached));
+            || ((ambientChurn || postBaselineAmbientChurn)
+              && settleConfiguration.ambientChurnEscape
+              && ambientChurnBoundReached));
       },
       {
         actionBaseline: baseline,
         settleConfiguration: configuration,
+        waitOptions: options,
       },
       {
         polling: 25,
         timeout: configuration.timeoutMs,
       },
     );
-    return {
-      ...await readResult(false),
-      boundedByAmbientChurn: true,
-    };
+    return readResult(false);
   } catch {
     return readResult(true);
   }
@@ -305,18 +329,14 @@ export async function waitForInitialPageSettle(
   page: Page,
   configuration: SettleConfiguration,
 ): Promise<SettleResult> {
-  // App boot code commonly schedules initial focus in requestAnimationFrame.
-  // Observe two frames before taking the baseline so an otherwise quiet page
-  // cannot be declared settled between DOMContentLoaded and that focus work.
+  // Capture the event baseline before animation-frame boot work. The regular
+  // quiet-window logic can then observe and settle that work without imposing
+  // an unconditional sleep on every deterministic reset.
+  const baseline = await readSettleBaseline(page);
   await page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
-  // Sample long-lived churn before taking the initial baseline so launch/reset
-  // can distinguish an already-continuous source from one caused by input.
-  await page.waitForTimeout(250);
-  const baseline = await readSettleBaseline(page);
-  return waitForPageSettle(page, baseline, {
-    ...configuration,
-    noResponseGraceMs: 0,
+  return waitForPageSettle(page, baseline, configuration, {
+    includePostBaselineAmbientChurn: true,
   });
 }

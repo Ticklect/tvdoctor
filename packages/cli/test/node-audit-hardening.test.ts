@@ -23,6 +23,7 @@ import {
   exhaustedBudgets,
   freshEvidenceDriftReason,
   partialRunDetails,
+  packCoverage,
   targetRequiresReplayOverride,
   writeAuditAuxiliaryArtifacts,
   type AuditRunProducts,
@@ -34,6 +35,14 @@ const PRODUCTS: AuditRunProducts = {
   streaming: null,
   web: null,
 };
+
+it("retains every selected web pack as partial when interruption skips its stage", () => {
+  expect(packCoverage(PRODUCTS, new Set(["layout", "performance", "crashes"]))).toEqual([
+    { pack: "layout", status: "partial" },
+    { pack: "performance", status: "partial" },
+    { pack: "crashes", status: "partial" },
+  ]);
+});
 
 function issue(id = "TVDOCTOR-NAV-HARDENING000000000000000001"): TVDoctorIssue {
   return {
@@ -87,6 +96,39 @@ async function allFiles(root: string, relative = ""): Promise<readonly string[]>
 }
 
 describe("Node audit release hardening", () => {
+  it("writes a failed-run bundle when launch fails and keeps technical detail out of user copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-launch-failure-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => {
+            throw new Error("page.goto: SECRET_CANARY failed");
+          },
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["all"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.reportPath).not.toBeNull();
+      expect(result.details.join(" ")).toContain("The scan could not complete.");
+      expect(JSON.stringify(result)).not.toContain("SECRET_CANARY");
+      expect(await readFile(join(root, "bundle", "report.json"), "utf8")).not.toContain("SECRET_CANARY");
+      expect(await readFile(join(root, "bundle", "report.html"), "utf8")).toContain("Scan could not complete");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not attribute an unrequested streaming dependency budget to selected web coverage", () => {
     const products: AuditRunProducts = {
       ...PRODUCTS,
@@ -142,6 +184,40 @@ describe("Node audit release hardening", () => {
     expect(targetRequiresReplayOverride("https://example.test/app?route=player")).toBe(true);
     expect(targetRequiresReplayOverride("https://example.test/app#captions")).toBe(true);
     expect(targetRequiresReplayOverride("https://example.test/app")).toBe(false);
+  });
+
+  it("distinguishes a duration safety bound from an actionable interruption", () => {
+    const products: AuditRunProducts = {
+      ...PRODUCTS,
+      navigation: {
+        termination: {
+          reason: "max-duration",
+          complete: false,
+          remainingFrontierEntries: 3,
+          remainingCandidateActions: 18,
+          detail: "Bounded-incomplete: 3 frontier entries remain after max-duration.",
+        },
+        budgets: { maxActions: 10_000, maxStates: 1_000, maxDepth: 32, maxDurationMs: 1_800_000 },
+      } as AuditRunProducts["navigation"],
+    };
+
+    expect(partialRunDetails(products, new Set(["navigation"]), 0)).toEqual([
+      "BOUNDED-INCOMPLETE: navigation reached its 1800-second safety ceiling with 3 frontier entries and about 18 candidate actions remaining.",
+    ]);
+  });
+
+  it("reports an observed startup blocker without calling it replay divergence", () => {
+    const products: AuditRunProducts = {
+      ...PRODUCTS,
+      navigationStartup: {
+        status: "setup-blocker",
+        blockers: [{ kind: "consent-wall" }],
+      } as unknown as AuditRunProducts["navigationStartup"],
+    };
+
+    expect(partialRunDetails(products, new Set(["navigation"]), 0)).toEqual([
+      "Startup setup blocker: consent-wall; caller preparation policy was observation-only.",
+    ]);
   });
 
   it("detects injected fresh-evidence identity drift", () => {

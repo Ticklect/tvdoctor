@@ -2,13 +2,34 @@ import type { Capability } from "./capability.js";
 import type { Observation } from "./observation.js";
 import type { RemoteKey } from "./remote-key.js";
 
-export type ActionOutcome = "applied" | "unsupported" | "failed";
+/**
+ * `inconclusive` marks input that was delivered while settling evidence stayed
+ * unavailable, so callers must not attribute a transition or a no-op to it.
+ */
+export type ActionOutcome = "applied" | "unsupported" | "failed" | "inconclusive";
+
+/** Bounded, always-safe profiling counters attached to every driver action. */
+export interface ActionProfile {
+  /** Where the compared pre-input state came from. */
+  readonly baselineSource: "fresh" | "cached" | "unavailable";
+  /** Number of heavyweight observations taken for this action. */
+  readonly captureCount: number;
+  /** Per-observation durations in ms; implementations may cap the list size. */
+  readonly captureDurationsMs?: readonly number[];
+  /** Input dispatch duration in ms when measured. */
+  readonly inputDispatchMs?: number;
+  /** Settling poll iterations performed. */
+  readonly pollCount?: number;
+  /** True when observations started failing instantly (device wedge signature). */
+  readonly wedgeSuspected?: boolean;
+}
 
 export interface ActionTiming {
   readonly inputSentAtMs: number;
   readonly firstResponseAtMs?: number;
   readonly focusSettledAtMs?: number;
   readonly screenSettledAtMs?: number;
+  readonly profile?: ActionProfile;
 }
 
 export interface ActionResult {
@@ -16,6 +37,12 @@ export interface ActionResult {
   readonly outcome: ActionOutcome;
   readonly timing: ActionTiming;
   readonly message?: string;
+  /**
+   * Canonical observation captured at the settle boundary for `applied`
+   * actions. Optional: drivers that cannot safely produce one omit it, and
+   * callers must fall back to `snapshot()`.
+   */
+  readonly postActionSnapshot?: StateSnapshot;
 }
 
 export interface ElementBounds {

@@ -5,6 +5,7 @@ export {
   REPLAY_HELP_TEXT,
   TEST_HELP_TEXT,
   TEST_PACK_NAMES,
+  safeTarget,
   runCli,
   type CliContext,
   type CliIO,
@@ -44,3 +45,14 @@ export {
   createNodeCliOperations,
   type NodeReplayDependencies,
 } from "./node-replay.js";
+export { defaultOutputDirectory } from "./product-output.js";
+export {
+  androidPreflight,
+  checkApkCompatibility,
+  inspectApk,
+  scanAndroidApk,
+  type AndroidPreflightDevice,
+  type AndroidPreflightResult,
+  type ApkCompatibility,
+  type ApkMetadata,
+} from "./android-product.js";

@@ -27,6 +27,8 @@ export interface ActionSettlingOptions {
    * exact canonical state identities produced by the core fingerprinter.
    */
   readonly equivalent?: (previous: StateSnapshot, current: StateSnapshot) => boolean;
+  /** Experimental Android surfaces may report transient input-observation loss. */
+  readonly allowUnsettledActions?: boolean;
 }
 
 export interface NormalisedActionSettlingOptions {
@@ -56,6 +58,8 @@ export interface SettledActionObservation {
   readonly snapshot: StateSnapshot;
   /** Snapshot work is explicit so callers can benchmark stronger settling. */
   readonly snapshotsCaptured: number;
+  /** True when the driver's own settled observation satisfied this request. */
+  readonly reusedDriverObservation: boolean;
   /** False only when stable-snapshot exhausted its bounded polling allowance. */
   readonly settled: boolean;
 }
@@ -147,13 +151,57 @@ export async function pressAndObserve(
 ): Promise<SettledActionObservation> {
   const settling = normaliseActionSettlingOptions(options);
   const actionResult = await driver.press(key);
-  let snapshot = await driver.snapshot();
-  let snapshotsCaptured = 1;
-  if (settling.strategy === "driver") {
-    return { actionResult, snapshot, snapshotsCaptured, settled: true };
+
+  if (actionResult.outcome === "failed" || actionResult.outcome === "inconclusive") {
+    if (actionResult.outcome !== "inconclusive" || options.allowUnsettledActions !== true) {
+      throw new Error(
+        `Driver could not settle ${key} input: ${actionResult.message ?? actionResult.outcome}`,
+        { cause: actionResult },
+      );
+    }
   }
 
+  if (actionResult.outcome === "inconclusive") {
+    const snapshot = actionResult.postActionSnapshot ?? await driver.snapshot();
+    return {
+      actionResult,
+      snapshot,
+      snapshotsCaptured: actionResult.postActionSnapshot === undefined ? 1 : 0,
+      reusedDriverObservation: actionResult.postActionSnapshot !== undefined,
+      settled: false,
+    };
+  }
+
+  let snapshot: StateSnapshot;
+  let snapshotsCaptured = 0;
+  let reusedDriverObservation = false;
+  if (settling.strategy === "driver") {
+    if (actionResult.postActionSnapshot !== undefined) {
+      snapshot = actionResult.postActionSnapshot;
+      reusedDriverObservation = true;
+    } else {
+      snapshot = await driver.snapshot();
+      snapshotsCaptured = 1;
+    }
+    return {
+      actionResult,
+      snapshot,
+      snapshotsCaptured,
+      reusedDriverObservation,
+      settled: true,
+    };
+  }
+
+  // Stable-snapshot mode seeds its equivalence chain from the driver's settled
+  // observation when present, then keeps polling canonical snapshots.
   let stableSnapshots = 1;
+  if (actionResult.postActionSnapshot !== undefined) {
+    snapshot = actionResult.postActionSnapshot;
+    reusedDriverObservation = true;
+  } else {
+    snapshot = await driver.snapshot();
+    snapshotsCaptured = 1;
+  }
   while (snapshotsCaptured < settling.maxSnapshots
     && stableSnapshots < settling.requiredStableSnapshots) {
     await settling.wait(settling.pollIntervalMs);
@@ -168,6 +216,7 @@ export async function pressAndObserve(
     actionResult,
     snapshot,
     snapshotsCaptured,
+    reusedDriverObservation,
     settled: stableSnapshots >= settling.requiredStableSnapshots,
   };
 }

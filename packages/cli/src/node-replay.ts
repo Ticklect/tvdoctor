@@ -1,6 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { compileReplay, executeReplay } from "@tvdoctor/core";
+import {
+  compileReplay,
+  executeReplay,
+  prepareStartup,
+} from "@tvdoctor/core";
 import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
 import {
   PROTOCOL_VALIDATION_LIMITS,
@@ -16,12 +20,57 @@ import type {
   CliOperations,
   ReplayCommandRequest,
   ReplayCommandResult,
+  WebsiteStartupDetection,
 } from "./cli.js";
 import {
   REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
   REPLAY_TARGET_OVERRIDE_REQUIRED,
   createNodeAuditOperation,
 } from "./node-audit.js";
+import {
+  androidPreflight,
+  inspectApk,
+  scanAndroidApk,
+} from "./android-product.js";
+
+async function detectWebsiteStartup(target: string): Promise<WebsiteStartupDetection> {
+  const driver = new PlaywrightWebDriver();
+  try {
+    await driver.launch({ id: "tvdoctor-startup-check", launchUri: target });
+    const preparation = await prepareStartup(driver, {
+      policy: { kind: "observe" },
+      resetStrategy: "reload",
+      stability: { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 },
+    });
+    if (preparation.status === "ready") {
+      return { status: "ready", detail: "The website reached a stable starting state." };
+    }
+    if (preparation.status === "setup-blocker") {
+      const blocker = preparation.blockers[0];
+      return {
+        status: "blocked",
+        ...(blocker === undefined ? {} : {
+          blockerKind: blocker.kind,
+          textSample: blocker.textSample,
+        }),
+        detail: preparation.steps.at(-1)?.detail ?? "A startup setup screen was detected.",
+      };
+    }
+    return {
+      status: "unavailable",
+      detail: preparation.status === "unstable"
+        ? "The website did not reach a stable starting state."
+        : "TVDoctor could not safely inspect the startup screen.",
+    };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      detail: error instanceof Error ? error.message : "Startup inspection failed.",
+    };
+  } finally {
+    await driver.close().catch(() => undefined);
+  }
+}
 
 function terminalText(value: string, maximumLength = 500): string {
   let printable = "";
@@ -168,7 +217,9 @@ async function replayIssue(
       id: `cli-${issue.id}`,
       launchUri: targetUrl(report.target.location, request.targetOverride),
     });
-    const result = await executeReplay(driver, plan);
+    const result = await executeReplay(driver, plan, {
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
     const expectedSetupActions = plan.setup.steps.reduce(
       (total, step) => total + step.repeat,
       0,
@@ -211,6 +262,10 @@ export function createNodeCliOperations(
         ? {}
         : { createDriver: dependencies.createAuditDriver }),
     }),
+    detectWebsiteStartup,
+    androidPreflight: () => androidPreflight(),
+    inspectApk,
+    scanAndroidApk,
     async replayIssue(request) {
       return await replayIssue(request, createDriver);
     },

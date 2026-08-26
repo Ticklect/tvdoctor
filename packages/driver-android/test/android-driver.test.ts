@@ -30,6 +30,8 @@ function png(width: number, height: number): Uint8Array {
 class FakeAdbExecutor implements AdbCommandExecutor {
   readonly calls: string[][] = [];
   focus: "first" | "third" = "first";
+  /** Screen bytes returned for `exec-out screencap -p`. */
+  screen: Uint8Array = png(1920, 1080);
   devices = "List of devices attached\nemulator-5554\tdevice product:sdk_tv model:sdk_tv device:generic transport_id:1\n";
 
   hierarchy(): string {
@@ -59,9 +61,15 @@ class FakeAdbExecutor implements AdbCommandExecutor {
     }
     if (joined === "shell wm size") return result("Physical size: 1920x1080\n");
     if (joined === "shell wm density") return result("Physical density: 320\n");
-    if (joined.startsWith("shell uiautomator dump --compressed ")) return result("UI hierarchy dumped\n");
-    if (command[0] === "exec-out" && command[1] === "cat") return result(this.hierarchy());
-    if (joined.startsWith("shell rm -f ")) return result();
+    if (joined.includes("uiautomator dump --compressed ")) {
+      const remotePath = joined.match(/uiautomator dump --compressed (\/data\/local\/tmp\/[^ ;]+)/u)?.[1] ?? "";
+      const catMarker = `cat ${remotePath}`;
+      if (!joined.includes(catMarker)) {
+        throw new Error(`Legacy multi-invocation hierarchy capture rejected: ${joined}`);
+      }
+      return result(this.hierarchy());
+    }
+    if (joined.startsWith("shell rm -f /data/local/tmp/tvdoctor-hierarchy-")) return result();
     if (joined === "shell dumpsys activity activities") {
       return result("mResumedActivity: ActivityRecord{123 u0 org.tvdoctor.fixture/.MainActivity t5}\n");
     }
@@ -254,6 +262,254 @@ describe("AndroidTvDriver", () => {
     expect(snapshot.focusedElement).toEqual({
       status: "unavailable",
       reason: "UIAutomator hierarchy reported multiple focused nodes.",
+    });
+  });
+
+  it("reuses the settled baseline and refreshes it during reset", async () => {
+    const fake = new FakeAdbExecutor();
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      settleTimeoutMs: 1_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+
+    const first = await driver.press("RIGHT");
+    expect(first.outcome).toBe("applied");
+    const dumpCallsAfterFirst = fake.calls.filter((call) =>
+      call.slice(2).join(" ").includes("uiautomator dump --compressed"),
+    ).length;
+    expect(first.timing.profile).toMatchObject({ baselineSource: "cached" });
+    expect(first.postActionSnapshot).toBeDefined();
+
+    const second = await driver.press("LEFT");
+    expect(second.outcome).toBe("applied");
+    expect(second.timing.profile).toMatchObject({ baselineSource: "cached" });
+    const dumpCallsAfterSecond = fake.calls.filter((call) =>
+      call.slice(2).join(" ").includes("uiautomator dump --compressed"),
+    ).length;
+    // LEFT is a canonical no-op in the fixture, so two post-input samples
+    // must agree before the driver can rule out a delayed response.
+    expect(dumpCallsAfterSecond - dumpCallsAfterFirst).toBe(2);
+    expect(second.postActionSnapshot).toBeDefined();
+
+    await driver.reset("relaunch");
+    const third = await driver.press("RIGHT");
+    expect(third.timing.profile).toMatchObject({ baselineSource: "cached" });
+  });
+
+  it("uses unique hierarchy files, preserves dump status, and cleans each capture", async () => {
+    const fake = new FakeAdbExecutor();
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      settlePollIntervalMs: 1,
+      settleTimeoutMs: 1_000,
+    });
+
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+    await driver.snapshot();
+
+    const dumpCalls = fake.calls
+      .map((call) => call.slice(2).join(" "))
+      .filter((call) => call.includes("uiautomator dump --compressed"));
+    const paths = dumpCalls.map((call) => (
+      call.match(/uiautomator dump --compressed (\/data\/local\/tmp\/[^ ;]+)/u)?.[1]
+    ));
+    expect(paths.every((path) => path !== undefined)).toBe(true);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(dumpCalls.every((call) => call.includes("dump_rc=$?"))).toBe(true);
+    for (const path of paths) {
+      expect(fake.calls.some((call) => call.slice(2).join(" ") === `shell rm -f ${path}`)).toBe(true);
+    }
+  });
+
+  it("does not certify a delayed response as a no-op", async () => {
+    const fake = new FakeAdbExecutor();
+    const originalExecute = fake.execute.bind(fake);
+    let inputSent = false;
+    let postInputCaptures = 0;
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined === "shell input keyevent KEYCODE_DPAD_DOWN") inputSent = true;
+      if (inputSent && joined.includes("uiautomator dump --compressed")) {
+        postInputCaptures += 1;
+        if (postInputCaptures >= 2) fake.focus = "third";
+      }
+      return await originalExecute(arguments_, options);
+    };
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      stabilityProbeMs: 1,
+      settleTimeoutMs: 1_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+
+    const action = await driver.press("DOWN");
+
+    expect(action.outcome).toBe("applied");
+    expect(postInputCaptures).toBeGreaterThanOrEqual(3);
+    expect(action.postActionSnapshot?.focusedElement).toMatchObject({
+      status: "available",
+      value: { stableId: "org.tvdoctor.fixture:id/third" },
+    });
+  });
+
+  it("returns inconclusive and stops polling when captures wedge instantly", async () => {
+    const fake = new FakeAdbExecutor();
+    let captureFailures = 0;
+    const originalExecute = fake.execute.bind(fake);
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined.includes("uiautomator dump --compressed") && captureFailures >= 2) {
+        captureFailures += 1;
+        throw new Error("uiautomator wedged");
+      }
+      if (joined.includes("uiautomator dump --compressed")) captureFailures += 0;
+      return await originalExecute(arguments_, options);
+    };
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      settleTimeoutMs: 1_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+    const warmup = await driver.press("RIGHT"); // succeeds; settles and caches baseline (focus now third)
+    expect(warmup.outcome).toBe("applied");
+    const callsBefore = fake.calls.length;
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined.includes("uiautomator dump --compressed")) {
+        captureFailures += 1;
+        throw new Error("uiautomator wedged");
+      }
+      return await originalExecute(arguments_, options);
+    };
+    // The next press reuses the cached baseline, sends LEFT, then every dump fails.
+    const action = await driver.press("LEFT");
+    expect(action.outcome).toBe("inconclusive");
+    expect(action.message).toContain("wedged");
+    expect(action.timing.profile?.wedgeSuspected).toBe(true);
+    expect(fake.calls.length - callsBefore).toBeLessThan(12);
+    expect(captureFailures).toBeGreaterThanOrEqual(2);
+  });
+
+  it("fails closed before sending input when pre-action observation is unavailable", async () => {
+    const fake = new FakeAdbExecutor();
+    const originalExecute = fake.execute.bind(fake);
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined.includes("uiautomator dump --compressed")) throw new Error("dump unavailable");
+      return await originalExecute(arguments_, options);
+    };
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      settleTimeoutMs: 500,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+    const inputBefore = fake.calls.filter((call) => call.slice(2).join(" ").startsWith("shell input")).length;
+    const action = await driver.press("DOWN");
+    expect(action.outcome).toBe("failed");
+    expect(action.message).toContain("input was not sent");
+    const inputAfter = fake.calls.filter((call) => call.slice(2).join(" ").startsWith("shell input")).length;
+    expect(inputAfter).toBe(inputBefore);
+  });
+
+  it("keeps polling through a transient hierarchy difference before settling on change", async () => {
+    const fake = new FakeAdbExecutor();
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      stabilityProbeMs: 1,
+      settleTimeoutMs: 2_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+    const dumpsBefore = fake.calls.filter((call) => (
+      call.slice(2).join(" ").includes("uiautomator dump --compressed")
+    )).length;
+    const action = await driver.press("RIGHT");
+    const dumpsAfter = fake.calls.filter((call) => (
+      call.slice(2).join(" ").includes("uiautomator dump --compressed")
+    )).length;
+    expect(action.outcome).toBe("applied");
+    expect(dumpsAfter - dumpsBefore).toBe(2);
+    expect(action.timing.focusSettledAtMs).toBeTypeOf("number");
+    expect(action.postActionSnapshot?.focusedElement).toMatchObject({
+      status: "available",
+      value: { stableId: "org.tvdoctor.fixture:id/third" },
+    });
+    expect(action.timing.profile?.captureCount).toBeGreaterThan(0);
+  });
+
+  it("bounds screen probes by the remaining settle deadline", async () => {
+    const fake = new FakeAdbExecutor();
+    const originalExecute = fake.execute.bind(fake);
+    const screenshotTimeouts: number[] = [];
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined === "exec-out screencap -p" && options?.timeoutMs !== undefined) {
+        screenshotTimeouts.push(options.timeoutMs);
+      }
+      return await originalExecute(arguments_, options);
+    };
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      stabilityProbeMs: 1,
+      settleTimeoutMs: 100,
+      commandTimeoutMs: 15_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+
+    const action = await driver.press("RIGHT");
+
+    expect(action.outcome).toBe("applied");
+    expect(screenshotTimeouts).toHaveLength(2);
+    expect(screenshotTimeouts.every((timeout) => timeout > 0 && timeout <= 100)).toBe(true);
+  });
+
+  it("falls back to stable semantic hierarchy after one changing screen probe", async () => {
+    const fake = new FakeAdbExecutor();
+    const originalExecute = fake.execute.bind(fake);
+    let screenCaptures = 0;
+    fake.execute = async (arguments_, options) => {
+      const joined = [...arguments_].slice(2).join(" ");
+      if (joined === "exec-out screencap -p") {
+        screenCaptures += 1;
+        return result(png(1_920, 1_080 + screenCaptures));
+      }
+      return await originalExecute(arguments_, options);
+    };
+    const driver = new AndroidTvDriver({
+      executor: fake,
+      serial: "emulator-5554",
+      noResponseGraceMs: 0,
+      settlePollIntervalMs: 1,
+      stabilityProbeMs: 1,
+      settleTimeoutMs: 1_000,
+    });
+    await driver.launch({ id: "org.tvdoctor.fixture", launchUri: ".MainActivity" });
+
+    const action = await driver.press("RIGHT");
+
+    expect(action.outcome).toBe("applied");
+    expect(screenCaptures).toBe(2);
+    expect(action.timing.profile?.captureCount).toBe(4);
+    expect(action.postActionSnapshot?.focusedElement).toMatchObject({
+      status: "available",
+      value: { stableId: "org.tvdoctor.fixture:id/third" },
     });
   });
 });

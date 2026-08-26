@@ -175,9 +175,9 @@ describe("canonical report construction and rendering", () => {
       ai: sha256(renderAiCoderReport(report)),
     }).toEqual({
       json: "e9d77eeebb61760b7a9d42eb291586189295bfd07201cddbf79e357696aca2b1",
-      html: "0ff373c953cf1ec8389f511e5c1547bb53dc9d3748030c49e5b40901795a3646",
-      markdown: "da656d7a5464ec4849d70a7a6a962f21418f1afa57df03f87c94f555508846ca",
-      ai: "436b357ad80c8a9aecb75301015ea4f4021b1abb4771b47e4adbac79d04e2a6a",
+      html: "bd66942cb6ea0caadbf33c4f8b44d21c35752f2a697958261c512d1c4ffaa632",
+      markdown: "96cef62e78b0a2adcd1a9133c0ced8d3de9b4379e05522a508f860b379d11df7",
+      ai: "4fed90657910e9a6de4562a4f246966c6af576802e3fb15b171df0cee02783a1",
     });
   });
 
@@ -495,7 +495,7 @@ describe("canonical report construction and rendering", () => {
     expect(html).toContain("duration budget exhausted");
     expect(html).toContain("grid-template-columns:minmax(0,1fr)");
     expect(markdown).toContain("INCONCLUSIVE — PARTIAL RUN");
-    expect(markdown).toContain("navigation: partial; duration budget exhausted");
+    expect(markdown).toContain("Navigation exploration duration budget exhausted: 120 seconds.");
   });
 
   it("requires an explicit original target in every replay-capable renderer after route redaction", () => {
@@ -516,7 +516,7 @@ describe("canonical report construction and rendering", () => {
       renderReportMarkdown(report),
       renderAiCoderReport(report),
     ]) {
-      expect(output).toContain(`tvdoctor replay ${ISSUE_ID} --target`);
+      expect(output).toContain(`tvdoctor replay ${ISSUE_ID} --report report.json --target`);
       expect(output).toMatch(/ORIGINAL_URL|ORIGINAL_URL&gt;/u);
       expect(output).toContain("original authorised URL");
     }

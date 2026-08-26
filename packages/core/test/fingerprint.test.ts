@@ -250,6 +250,38 @@ describe("state fingerprinting", () => {
     expect(fingerprintSnapshot(base).screen.value).toBe(fingerprintSnapshot(withStatus).screen.value);
   });
 
+  it("ignores explicitly invisible template state but preserves observable alternatives", () => {
+    const base = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+    }));
+    const withHiddenTemplate = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: {
+        ...control("hidden-template", "Template", false, 500),
+        visible: false,
+      },
+    }));
+    const withHiddenDisabled = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: {
+        ...control("visible-disabled", "Template", false, 500),
+        enabled: false,
+      },
+    }));
+
+    expect(withHiddenTemplate.screen.value).toBe(base.screen.value);
+    expect(withHiddenDisabled.screen.value).not.toBe(base.screen.value);
+  });
+
   it("exposes low confidence instead of inventing unavailable signals", () => {
     const result = fingerprintSnapshot({
       capturedAt: "2026-08-20T12:00:00.000Z",

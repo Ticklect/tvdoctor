@@ -206,6 +206,35 @@ async function deterministicRun(): Promise<ExplorationResult> {
 }
 
 describe("bounded deterministic explorer", () => {
+  it("stops before touching the driver when exploration is already interrupted", async () => {
+    const controller = new AbortController();
+    let capabilityCalls = 0;
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        capabilityCalls += 1;
+        throw new Error("capabilities must not run after abort");
+      },
+      async press(key) {
+        return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+      },
+      async snapshot() {
+        return stateSnapshot(MACHINE_STATES["homeNav"] as MachineState);
+      },
+    };
+    controller.abort();
+
+    const result = await explore(driver, {
+      actions: ["RIGHT"],
+      signal: controller.signal,
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination).toEqual({ reason: "interrupted", complete: false });
+    expect(capabilityCalls).toBe(0);
+    expect(result.statistics.physicalActions).toBe(0);
+    expect(result.graph.actions).toHaveLength(0);
+  });
+
   it("emits separate screen/focus graphs with BFS paths and exact action evidence", async () => {
     const result = await deterministicRun();
 
@@ -247,9 +276,27 @@ describe("bounded deterministic explorer", () => {
       physicalActions: 12,
       explorationActions: 8,
       replayActions: 4,
+      resetCount: 9,
+      replayRestorations: 8,
       visitedStates: 3,
       screenStates: 2,
       focusStates: 3,
+      pendingStates: 0,
+      averagePathDepth: 1,
+      maximumPathDepth: 2,
+      averageReplayLength: 0.5,
+      maximumReplayLength: 1,
+      timings: {
+        resetMs: 0,
+        pathReplayMs: 0,
+        driverPressMs: 0,
+        actionDispatchMs: 0,
+        focusSettlingMs: 0,
+        screenSettlingMs: 0,
+        snapshotCaptureMs: 0,
+        semanticNormalizationMs: 0,
+        graphBookkeepingMs: 0,
+      },
     });
   });
 
@@ -283,6 +330,74 @@ describe("bounded deterministic explorer", () => {
       visitedStates: 3,
     });
     expect(result.graph.actions).toHaveLength(12);
+  });
+
+  it("completes Deep exploration immediately when the frontier is exhausted", async () => {
+    const result = await explore(
+      new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS),
+      {
+        profile: "deep",
+        actions: ["RIGHT"],
+        monotonicNow: () => 0,
+      },
+    );
+
+    expect(result.budgets.maxDurationMs).toBe(1_800_000);
+    expect(result.termination).toEqual({ reason: "queue-exhausted", complete: true });
+    expect(result.statistics.elapsedMs).toBe(0);
+  });
+
+  it("continues Deep exploration past the previous 600-second boundary", async () => {
+    let now = 599_500;
+    const result = await explore(new CounterDriver(() => {
+      now += 10_001;
+      return now;
+    }), {
+      profile: "deep",
+      actions: ["RIGHT"],
+      budgets: { maxActions: 1_000, maxStates: 20, maxDepth: 12, maxDurationMs: 2_000_000 },
+      monotonicNow: () => now,
+    });
+
+    expect(result.statistics.elapsedMs).toBeGreaterThan(600_000);
+    expect(result.termination).toEqual({ reason: "queue-exhausted", complete: true });
+  });
+
+  it("reports remaining frontier work when an unbounded dynamic site reaches a safety bound", async () => {
+    let generation = 0;
+    let focus = "root";
+    let depth = 0;
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset(strategy) {
+        void strategy;
+        focus = "root";
+        depth = 0;
+      },
+      async snapshot() {
+        return stateSnapshot({ screen: "feed", focus });
+      },
+      async press(key) {
+        depth += 1;
+        generation += 1;
+        focus = `generated-${String(depth)}`;
+        void key;
+        return { key, outcome: "applied", timing: { inputSentAtMs: generation } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["DOWN", "RIGHT"],
+      budgets: { maxActions: 20, maxStates: 3, maxDepth: 10, maxDurationMs: 700_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.reason).toBe("max-states");
+    expect(result.termination.complete).toBe(false);
+    expect(result.termination.remainingFrontierEntries ?? 0).toBe(0);
+    expect(result.termination.remainingCandidateActions ?? 0).toBe(0);
   });
 
   it.each([
@@ -337,7 +452,7 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => now,
     });
 
-    expect(result.termination).toEqual({ reason: "max-duration", complete: false });
+    expect(result.termination).toMatchObject({ reason: "max-duration", complete: false });
     expect(result.statistics).toMatchObject({
       physicalActions: 1,
       explorationActions: 1,
@@ -371,7 +486,7 @@ describe("bounded deterministic explorer", () => {
       budgets: { maxActions: 10, maxStates: 10, maxDepth: 2, maxDurationMs: 25 },
     });
 
-    expect(result.termination).toEqual({ reason: "max-duration", complete: false });
+    expect(result.termination).toMatchObject({ reason: "max-duration", complete: false });
     expect(result.statistics.physicalActions).toBe(1);
     expect(performance.now() - startedAt).toBeLessThan(250);
   });
@@ -388,6 +503,55 @@ describe("bounded deterministic explorer", () => {
       name: "hero-watch",
       bounds: { x: 100, y: 100, width: 200, height: 72 },
     }));
+  });
+
+  it("reuses the driver post-action observation instead of re-snapshotting", async () => {
+    const snapshot = stateSnapshot(MACHINE_STATES["homeNav"] as MachineState);
+    let snapshotCalls = 0;
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async press(key) {
+        return { key, outcome: "applied", timing: { inputSentAtMs: 1 }, postActionSnapshot: snapshot };
+      },
+      async snapshot() {
+        snapshotCalls += 1;
+        return snapshot;
+      },
+    };
+
+    const driverStrategy = await pressAndObserve(driver, "RIGHT");
+    expect(driverStrategy.reusedDriverObservation).toBe(true);
+    expect(driverStrategy.snapshotsCaptured).toBe(0);
+    expect(snapshotCalls).toBe(0);
+
+    snapshotCalls = 0;
+    const stable = await pressAndObserve(driver, "RIGHT", { strategy: "stable-snapshot" });
+    expect(stable.reusedDriverObservation).toBe(true);
+    expect(stable.settled).toBe(true);
+    expect(stable.snapshotsCaptured).toBeGreaterThanOrEqual(1);
+  });
+
+  it("rejects inconclusive settling instead of attributing a transition", async () => {
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input"]);
+      },
+      async press(key) {
+        return {
+          key,
+          outcome: "inconclusive",
+          timing: { inputSentAtMs: 1 },
+          message: "observation unavailable",
+        };
+      },
+      async snapshot() {
+        throw new Error("snapshot must not be called after inconclusive actions");
+      },
+    };
+
+    await expect(pressAndObserve(driver, "RIGHT")).rejects.toThrow("observation unavailable");
   });
 
   it("ends explicitly when remote input or deterministic restoration is unavailable", async () => {
@@ -447,6 +611,143 @@ describe("bounded deterministic explorer", () => {
     expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
     expect(result.statistics).toMatchObject({ physicalActions: 0, visitedStates: 1 });
     expect(result.graph.actions).toHaveLength(0);
+  });
+
+  it("validates every shared replay prefix instead of accepting a divergent path that reconverges", async () => {
+    type StateName = "root" | "mid" | "wrong" | "target";
+    let state: StateName = "root";
+    let resetCount = 0;
+    const pressed: string[] = [];
+    const snapshots: Readonly<Record<StateName, StateSnapshot>> = {
+      root: stateSnapshot(MACHINE_STATES["homeNav"] as MachineState),
+      mid: stateSnapshot(MACHINE_STATES["homeWatch"] as MachineState),
+      wrong: stateSnapshot({ screen: "details", focus: "details-back" }),
+      target: stateSnapshot(MACHINE_STATES["detailsPlay"] as MachineState),
+    };
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset(strategy) {
+        void strategy;
+        resetCount += 1;
+        state = "root";
+      },
+      async snapshot() {
+        return snapshots[state];
+      },
+      async press(key) {
+        pressed.push(`${String(resetCount)}:${state}:${key}`);
+        if (state === "root" && key === "RIGHT") {
+          // The first restorations reproduce the proven prefix. Once the target
+          // is queued, corrupt only that intermediate checkpoint; SELECT would
+          // reconverge to the same final target if the prefix were not checked.
+          state = resetCount >= 6 ? "wrong" : "mid";
+        } else if ((state === "mid" || state === "wrong") && key === "SELECT") {
+          state = "target";
+        }
+        return { key, outcome: "applied", timing: { inputSentAtMs: pressed.length } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "SELECT"],
+      budgets: { maxActions: 100, maxStates: 10, maxDepth: 4, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
+    expect(pressed).toContain("6:root:RIGHT");
+    expect(pressed).not.toContain("6:wrong:SELECT");
+    expect(result.statistics.pendingStates).toBeGreaterThanOrEqual(0);
+  });
+
+  it("resets branch-local mutation before exploring a sibling action", async () => {
+    let dirty = false;
+    let focus = "root";
+    const branchStarts: string[] = [];
+    const snapshot = (): StateSnapshot => stateSnapshot({
+      screen: focus === "contaminated" ? "details" : "home",
+      focus: focus === "root" ? "home-nav" : focus === "clean" ? "hero-watch" : "details-back",
+    });
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset(strategy) {
+        void strategy;
+        dirty = false;
+        focus = "root";
+      },
+      async snapshot() {
+        return snapshot();
+      },
+      async press(key) {
+        branchStarts.push(`${key}:${dirty ? "dirty" : "clean"}`);
+        if (key === "SELECT") {
+          // Deliberately invisible in the immediate semantic snapshot.
+          dirty = true;
+        } else if (key === "RIGHT") {
+          focus = dirty ? "contaminated" : "clean";
+        }
+        return { key, outcome: "applied", timing: { inputSentAtMs: branchStarts.length } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["SELECT", "RIGHT"],
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 1, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(branchStarts.slice(0, 2)).toEqual(["SELECT:clean", "RIGHT:clean"]);
+    expect(result.graph.focus.states.some((candidate) => (
+      candidate.representativeSnapshot.focusedElement.status === "available"
+      && candidate.representativeSnapshot.focusedElement.value?.stableId === "hero-watch"
+    ))).toBe(true);
+    expect(result.graph.focus.states.some((candidate) => (
+      candidate.representativeSnapshot.focusedElement.status === "available"
+      && candidate.representativeSnapshot.focusedElement.value?.stableId === "details-back"
+    ))).toBe(false);
+  });
+
+  it("keeps visually similar states separate when their navigation locations differ", async () => {
+    let current: "root" | "alpha" | "beta" = "root";
+    const snapshotFor = (): StateSnapshot => current === "root"
+      ? stateSnapshot(MACHINE_STATES["homeNav"] as MachineState)
+      : stateSnapshot({ screen: current, focus: "details-play" });
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset(strategy) {
+        void strategy;
+        current = "root";
+      },
+      async snapshot() {
+        return snapshotFor();
+      },
+      async press(key) {
+        if (current === "root" && key === "LEFT") current = "alpha";
+        if (current === "root" && key === "RIGHT") current = "beta";
+        return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["LEFT", "RIGHT"],
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 1, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.graph.screens.states).toHaveLength(3);
+    expect(result.graph.focus.states).toHaveLength(3);
+    expect(result.graph.screens.states.map((state) => state.representativeSnapshot.location))
+      .toEqual([
+        availableObservation("app://home"),
+        availableObservation("app://alpha"),
+        availableObservation("app://beta"),
+      ]);
   });
 
   it.each([

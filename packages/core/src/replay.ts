@@ -170,6 +170,7 @@ export interface ReplayEvidenceHooks {
 
 export interface ReplayExecutionOptions {
   readonly budgets?: Partial<ReplayExecutionBudgets>;
+  readonly signal?: AbortSignal;
   /** Overrides driver.reset for environments with a stronger restoration hook. */
   readonly restore?: (context: ReplayRestoreContext) => void | Promise<void>;
   readonly evidence?: ReplayEvidenceHooks;
@@ -193,6 +194,7 @@ export const REPLAY_EXECUTION_REASON_CODES = [
   "remote-input-unavailable",
   "reset-unavailable",
   "input-unavailable",
+  "input-unobserved",
   "checkpoint-drift",
   "observation-unavailable",
   "assertion-drift",
@@ -208,6 +210,7 @@ export const REPLAY_EXECUTION_REASON_CODES = [
   "snapshot-error",
   "evaluation-error",
   "evidence-error",
+  "interrupted",
 ] as const;
 
 export type ReplayExecutionReasonCode =
@@ -1140,6 +1143,15 @@ export async function executeReplay(
     actionsPressed,
     evidence,
   });
+  const interruptionResult = (
+    phase: ReplayExecutionPhase,
+  ): ReplayExecutionResult | null => options.signal?.aborted === true
+    ? executionResult(
+      context(),
+      "inconclusive",
+      reason("interrupted", "Replay was interrupted after the current operation.", phase),
+    )
+    : null;
 
   const maxActions = options.budgets?.maxActions ?? DEFAULT_REPLAY_BUDGETS.maxActions;
   const maxDurationMs = options.budgets?.maxDurationMs
@@ -1167,6 +1179,8 @@ export async function executeReplay(
     );
   }
   plan = planValidation.plan;
+  const preflightInterruption = interruptionResult("preflight");
+  if (preflightInterruption !== null) return preflightInterruption;
   if (plan.totalActions > maxActions) {
     return executionResult(
       context(),
@@ -1194,6 +1208,8 @@ export async function executeReplay(
       reason("driver-error", safeErrorMessage(error), "capabilities"),
     );
   }
+  const capabilitiesInterruption = interruptionResult("capabilities");
+  if (capabilitiesInterruption !== null) return capabilitiesInterruption;
   if (!capabilities.has("remote-input")) {
     return executionResult(
       context(),
@@ -1206,6 +1222,8 @@ export async function executeReplay(
     );
   }
 
+  const resetInterruption = interruptionResult("reset");
+  if (resetInterruption !== null) return resetInterruption;
   try {
     if (options.restore !== undefined) {
       const restoreContext = cloneForHook<ReplayRestoreContext>({
@@ -1234,11 +1252,15 @@ export async function executeReplay(
       reason("reset-error", safeErrorMessage(error), "reset"),
     );
   }
+  const afterResetInterruption = interruptionResult("reset");
+  if (afterResetInterruption !== null) return afterResetInterruption;
 
   const press = async (
     key: RemoteKey,
     phase: "setup" | "assertion",
   ): Promise<ReplayExecutionResult | ActionResult> => {
+    const beforeInputInterruption = interruptionResult(phase);
+    if (beforeInputInterruption !== null) return beforeInputInterruption;
     if (actionsPressed >= maxActions) {
       return executionResult(
         context(),
@@ -1258,6 +1280,8 @@ export async function executeReplay(
         reason("input-error", safeErrorMessage(error), phase),
       );
     }
+    const afterInputInterruption = interruptionResult(phase);
+    if (afterInputInterruption !== null) return afterInputInterruption;
     if (actionResult.key !== key) {
       return executionResult(
         context(),
@@ -1283,6 +1307,17 @@ export async function executeReplay(
         reason("input-failed", actionResult.message ?? `${key} failed.`, phase),
       );
     }
+    if (actionResult.outcome === "inconclusive") {
+      return executionResult(
+        context(),
+        "inconclusive",
+        reason(
+          "input-unobserved",
+          actionResult.message ?? `${key} could not be observed after delivery.`,
+          phase,
+        ),
+      );
+    }
     return actionResult;
   };
 
@@ -1294,6 +1329,8 @@ export async function executeReplay(
     }
   }
 
+  const checkpointInterruption = interruptionResult("checkpoint");
+  if (checkpointInterruption !== null) return checkpointInterruption;
   try {
     evidence.beforeSnapshot = await withinDeadline(deadline, () => driver.snapshot());
   } catch (error) {
@@ -1304,6 +1341,8 @@ export async function executeReplay(
       reason("snapshot-error", safeErrorMessage(error), "checkpoint"),
     );
   }
+  const afterCheckpointInterruption = interruptionResult("checkpoint");
+  if (afterCheckpointInterruption !== null) return afterCheckpointInterruption;
 
   let checkpoint: PredicateEvaluation;
   try {
@@ -1338,6 +1377,8 @@ export async function executeReplay(
   }
 
   if (options.evidence?.captureBefore !== undefined) {
+    const beforeEvidenceInterruption = interruptionResult("before-evidence");
+    if (beforeEvidenceInterruption !== null) return beforeEvidenceInterruption;
     try {
       const hookContext = cloneForHook<ReplayBeforeEvidenceContext>({
         plan,
@@ -1353,12 +1394,16 @@ export async function executeReplay(
         reason("evidence-error", safeErrorMessage(error), "before-evidence"),
       );
     }
+    const afterBeforeEvidenceInterruption = interruptionResult("before-evidence");
+    if (afterBeforeEvidenceInterruption !== null) return afterBeforeEvidenceInterruption;
   }
 
   const assertionResult = await press(plan.assertion.action, "assertion");
   if ("status" in assertionResult) return assertionResult;
   evidence.assertionActionResult = assertionResult;
 
+  const afterSnapshotInterruption = interruptionResult("after-snapshot");
+  if (afterSnapshotInterruption !== null) return afterSnapshotInterruption;
   try {
     evidence.afterSnapshot = await withinDeadline(deadline, () => driver.snapshot());
   } catch (error) {
@@ -1369,6 +1414,8 @@ export async function executeReplay(
       reason("snapshot-error", safeErrorMessage(error), "after-snapshot"),
     );
   }
+  const capturedAfterInterruption = interruptionResult("after-snapshot");
+  if (capturedAfterInterruption !== null) return capturedAfterInterruption;
 
   if (options.evidence?.captureAfter !== undefined) {
     const beforeSnapshot = evidence.beforeSnapshot;
@@ -1381,6 +1428,8 @@ export async function executeReplay(
       );
     }
     try {
+      const afterEvidenceInterruption = interruptionResult("after-evidence");
+      if (afterEvidenceInterruption !== null) return afterEvidenceInterruption;
       const hookContext = cloneForHook<ReplayAfterEvidenceContext>({
         plan,
         snapshot: afterSnapshot,
@@ -1398,6 +1447,8 @@ export async function executeReplay(
         reason("evidence-error", safeErrorMessage(error), "after-evidence"),
       );
     }
+    const capturedEvidenceInterruption = interruptionResult("after-evidence");
+    if (capturedEvidenceInterruption !== null) return capturedEvidenceInterruption;
   }
 
   try {

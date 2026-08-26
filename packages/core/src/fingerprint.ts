@@ -143,6 +143,12 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
 
     const stableIdentifier = normaliseStableIdentifier(node.stableId);
     const role = normaliseRole(node.role);
+    // Hidden DOM is frequently template/sprite/cache state rather than the
+    // observable navigation surface. It is excluded only when the driver
+    // explicitly reports it as invisible; unknown visibility remains.
+    if (node.visible === false) {
+      return "";
+    }
     // Live regions and progress/timer nodes are evidence, not screen identity.
     // They commonly appear after the first key press or update every second.
     if (VOLATILE_ROLES.has(role)) {
@@ -157,9 +163,11 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
 
     const children = node.children.map((child) => visit(child, depth + 1)).join("");
     // The focused flag is intentionally absent: it belongs to FocusState.
+    // Viewport visibility is incidental: scrolling a carousel changes which
+    // cards are visible without changing their navigation identity.
     // Absolute bounds are deliberately a confidence signal, not identity:
     // focus transforms and scrollIntoView change them without changing screen.
-    return `(${stableIdentifier}|${role}|${observedBoolean(node.visible)}|${observedBoolean(node.enabled)}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`;
+    return `(${stableIdentifier}|${role}|${observedBoolean(node.enabled)}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`;
   };
 
   const signature = `${nodes.map((node) => visit(node, 0)).join("")}${truncated ? "!truncated" : ""}`;

@@ -272,11 +272,34 @@ async function captureTargetedProbe(
       physicalActions,
       explorationActions,
       replayActions: physicalActions - explorationActions,
+      resetCount: explorationActions + 1,
+      replayRestorations: explorationActions,
       visitedStates: focusStates.length,
       screenStates: screens.length,
       focusStates: focusStates.length,
       maximumQueueSize: 0,
+      pendingStates: 0,
       elapsedMs: performance.now() - startedAt,
+      averagePathDepth: focusStates.length === 0
+        ? 0
+        : focusStates.reduce((total, state) => total + state.firstSeenDepth, 0)
+          / focusStates.length,
+      maximumPathDepth: Math.max(...focusStates.map((state) => state.firstSeenDepth), 0),
+      averageReplayLength: explorationActions === 0
+        ? 0
+        : (physicalActions - explorationActions) / explorationActions,
+      maximumReplayLength: Math.max(...focusStates.map((state) => state.firstSeenDepth), 0),
+      timings: {
+        resetMs: 0,
+        pathReplayMs: 0,
+        driverPressMs: 0,
+        actionDispatchMs: 0,
+        focusSettlingMs: 0,
+        screenSettlingMs: 0,
+        snapshotCaptureMs: 0,
+        semanticNormalizationMs: 0,
+        graphBookkeepingMs: 0,
+      },
     },
   };
 }

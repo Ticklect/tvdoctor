@@ -212,7 +212,8 @@ function settleSignature(roots: readonly AndroidUiNodeSnapshot[]): string {
     values.push([
       node.stableId ?? "",
       node.role ?? "",
-      node.stableId === null && node.focused === true ? node.name ?? "" : "",
+      node.name ?? "",
+      node.text ?? "",
       node.focused === null ? "?" : String(node.focused),
       node.enabled === null ? "?" : String(node.enabled),
       node.selectionState ?? "",

@@ -74,6 +74,18 @@ On Linux CI, Playwright may need system dependencies:
 npx playwright install chromium --with-deps
 ```
 
+Start TVDoctor in an interactive terminal:
+
+```sh
+npm run tvdoctor -- start
+```
+
+`start` guides website and experimental Android TV testing, asks before changing
+a consent or setup screen, writes normal bundles under `Tests\`, and offers to
+open the report. Android scans stop the tested app afterward but never shut down
+an emulator unless you explicitly ask for that in a separate workflow; the APK is
+intentionally retained. For automation, use `test` directly.
+
 Start the deliberately broken local target in one terminal:
 
 ```sh
@@ -111,6 +123,7 @@ Until publication is verified, use the source-checkout commands above.
 
 ```text
 tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
+tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
 tvdoctor doctor
 tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
 tvdoctor version
@@ -122,9 +135,11 @@ tvdoctor --help
 | Option | Values and behaviour |
 | --- | --- |
 | `--pack NAME` | `navigation`, `streaming`, `search`, `settings`, `accessibility`, `layout`, `performance`, or `crashes`. Repeat to select several. Omit it (or use `all` alone) to run every pack. |
-| `--mode MODE` | `quick`, `standard` (default), or `deep`. Modes select predefined bounded action/state/depth/time profiles; the report records the effective combined budgets. |
-| `--output PATH` | New report-bundle directory. Defaults to `tvdoctor-report`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
+| `--mode MODE` | `quick` or `deep`; the advanced `standard` alias remains accepted for existing scripts. Modes select predefined bounded action/state/depth/time profiles; the report records the effective combined budgets. |
+| `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
 | `--query TEXT` | Printable, non-sensitive search text, at most 64 characters. Defaults to `N`. It may be entered into the target and retained as evidence. |
+| `--startup-actions KEY[,KEY...]` | Explicit caller-selected remote keys used only after TVDoctor detects a focused setup wall. Observation-only is the default; TVDoctor never chooses consent. |
+| `--max-duration-ms N` | Advanced navigation safety-ceiling override for CI or exhaustive runs. |
 
 `doctor` checks the declared Node runtime, host, installed Playwright Chromium,
 and whether the audit host is available. Run it before a long audit.
@@ -149,12 +164,15 @@ a known seeded-fixture result. In particular, never translate code 3 into pass.
 A complete audit exhausted no required coverage boundary. It can still exit 1
 because confirmed findings are the product output.
 
-A partial audit records which pack or stage could not complete and exits 3. Common
-causes include duration/action/state limits, target disappearance, missing
-capabilities, unstable reset/replay, or interrupted evidence capture. Open the
-bundle, read **Run status**, **Pack coverage**, and unavailable-evidence reasons,
-fix the stated cause, and rerun into a new output directory. A partial run with
-zero findings does not show that the target is clean.
+A partial audit records which pack or stage could not complete and exits 3.
+Common causes include a safety ceiling with queued work, target disappearance,
+missing capabilities, unstable reset/replay, interrupted evidence capture, or an
+unresolved startup setup blocker. A safety-ceiling result is bounded-incomplete,
+not an engine crash; its ledger records the remaining frontier and candidate
+actions. Open the bundle, read **Run status**, **Pack coverage**, and
+unavailable-evidence reasons, address the stated cause when applicable, and rerun
+into a new output directory. A partial run with zero findings does not show that
+the target is clean.
 
 Exit 4 means no trustworthy command result was produced. A partial bundle may
 still exist after a late failure; treat it as diagnostic material only.
