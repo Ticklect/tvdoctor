@@ -48,6 +48,14 @@ This table will be replaced with explicit release lines when v0.1 is published.
   initiate requests, show deceptive UI, or attempt browser exploits.
 - Android install, clear-data, force-stop, and input operations affect the
   selected device. Use a disposable emulator and an explicit serial.
+- The TVDoctor Android observer requires explicit accessibility access. It binds
+  only to device loopback, accepts a bounded operation allowlist over a framed
+  protocol, and authenticates each host run with a random token. The host exposes
+  it only through an ephemeral local ADB forward and validates the packaged APK
+  checksum before deployment.
+- Do not enable the observer on a device containing sensitive application state
+  unless that device is explicitly dedicated to authorized testing. Remove it
+  with `adb -s SERIAL uninstall org.tvdoctor.observer` when no longer needed.
 - Never run privileged physical-device or emulator jobs against untrusted pull
   request code.
 - Report redaction is defence in depth, not a guarantee. Inspect artifacts before
@@ -59,6 +67,8 @@ This table will be replaced with explicit release lines when v0.1 is published.
 
 - path traversal or output-directory escape;
 - command or argument injection in a platform driver;
+- observer authentication, framing, request-correlation, or operation-allowlist
+  bypass;
 - secrets surviving documented report redaction;
 - target-controlled active content executing from a generated report;
 - report/replay validation bypass that creates a false deterministic result;

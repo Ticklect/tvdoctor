@@ -11,7 +11,7 @@ The launcher surface contains two real Android `Button` controls:
 
 Exactly one defect is seeded. Selecting Focus Probe blocks descendant focus and
 clears the selected view while Safe Control remains visible, enabled, and
-focusable. A truthful UIAutomator snapshot should therefore expose an available
+focusable. A truthful Android accessibility snapshot should therefore expose an available
 `null` focused element after `SELECT`, allowing `remote.lost-focus` to be
 detected and replayed. The canonical seed is in `seeded-defects.json`.
 

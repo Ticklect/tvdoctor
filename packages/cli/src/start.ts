@@ -1,7 +1,7 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { basename, dirname, join } from "node:path";
-import type { CliContext, WebsiteStartupDetection } from "./cli.js";
+import type { CliContext, ReportActionHandlers, WebsiteStartupDetection } from "./cli.js";
 import { safeTarget } from "./cli.js";
 import { ProgressRenderer, type StartTerminal } from "./interactive.js";
 import { defaultOutputDirectory } from "./product-output.js";
@@ -44,42 +44,92 @@ function friendlyBlocker(kind: string): string {
   return labels[kind] ?? "startup setup screen";
 }
 
-function openWithSystem(path: string): void {
+async function launchDetached(command: string, arguments_: readonly string[]): Promise<boolean> {
+  return await new Promise((resolveLaunch) => {
+    const child = spawn(command, arguments_, { detached: true, stdio: "ignore" });
+    let settled = false;
+    const finish = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolveLaunch(result);
+    };
+    child.once("error", () => finish(false));
+    child.once("spawn", () => {
+      child.unref();
+      finish(true);
+    });
+  });
+}
+
+async function openWithSystem(path: string): Promise<boolean> {
   const command = process.platform === "win32"
     ? "cmd.exe"
     : process.platform === "darwin" ? "open" : "xdg-open";
   const arguments_ = process.platform === "win32"
     ? ["/c", "start", "", path]
     : [path];
-  const child = spawn(command, arguments_, { detached: true, stdio: "ignore" });
-  child.unref();
+  return await launchDetached(command, arguments_);
 }
 
-function showInFolder(path: string): void {
+async function showInFolder(path: string): Promise<boolean> {
   const command = process.platform === "win32"
     ? "explorer.exe"
     : process.platform === "darwin" ? "open" : "xdg-open";
   const arguments_ = process.platform === "win32"
     ? ["/select,", path]
     : process.platform === "darwin" ? ["-R", path] : [dirname(path)];
-  const child = spawn(command, arguments_, { detached: true, stdio: "ignore" });
-  child.unref();
+  return await launchDetached(command, arguments_);
 }
 
 async function copyToClipboard(value: string): Promise<boolean> {
   const command = process.platform === "win32"
-    ? "powershell.exe"
+    ? "clip.exe"
     : process.platform === "darwin" ? "pbcopy" : "wl-copy";
-  const arguments_ = process.platform === "win32"
-    ? ["-NoProfile", "-Command", "$input | Set-Clipboard"]
-    : [];
+  const arguments_: readonly string[] = [];
   const child = spawn(command, arguments_, { stdio: ["pipe", "ignore", "ignore"] });
   const completed = new Promise<boolean>((resolve) => {
     child.once("error", () => resolve(false));
     child.once("close", (code) => resolve(code === 0));
   });
-  child.stdin.end(value);
+  child.stdin.on("error", () => undefined);
+  child.stdin.end(value, "utf8");
   return await completed;
+}
+
+const systemReportActions: ReportActionHandlers = {
+  openReport: openWithSystem,
+  showFolder: showInFolder,
+  copyPath: copyToClipboard,
+};
+
+async function offerReportActions(
+  context: CliContext,
+  terminal: StartTerminal,
+  reportPath: string,
+): Promise<void> {
+  const action = await terminal.select("What would you like to do?", [
+    { label: "Open report" },
+    { label: "Show folder" },
+    { label: "Copy path" },
+    { label: "Exit" },
+  ]);
+  const actions = context.reportActions ?? systemReportActions;
+  if (action === null || action === 3) return;
+  if (action === 0) {
+    write(context, await actions.openReport(reportPath)
+      ? "TVDoctor sent the report to your default viewer."
+      : `TVDoctor could not open the report. Open it manually: ${reportPath}`);
+    return;
+  }
+  if (action === 1) {
+    write(context, await actions.showFolder(reportPath)
+      ? "TVDoctor opened the report folder."
+      : `TVDoctor could not open the report folder. Open it manually: ${dirname(reportPath)}`);
+    return;
+  }
+  write(context, await actions.copyPath(reportPath)
+    ? "Report path copied to the clipboard."
+    : `TVDoctor could not copy the path. Copy it manually: ${reportPath}`);
 }
 
 async function chooseStartupPolicy(
@@ -169,15 +219,7 @@ async function runWebsite(
     if (result.reportPath !== null) {
       const reportPath = join(dirname(result.reportPath), "report.html");
       write(context, `\nFindings: ${String(result.issueCount)}\nReport:\n${reportPath}`);
-      const action = await terminal.select("", [
-        { label: "Open report" },
-        { label: "Show folder" },
-        { label: "Copy path" },
-        { label: "Exit" },
-      ]);
-      if (action === 0) openWithSystem(reportPath);
-      else if (action === 1) showInFolder(reportPath);
-      else if (action === 2) await copyToClipboard(reportPath);
+      await offerReportActions(context, terminal, reportPath);
     }
     return result.status === "failed" ? 4 : result.status === "partial" ? 3 : 0;
   }
@@ -307,6 +349,7 @@ async function runAndroid(
       if (result.reportPath !== null) {
         const reportPath = join(dirname(result.reportPath), "report.html");
         write(context, `\nReport:\n${reportPath}`);
+        await offerReportActions(context, terminal, reportPath);
       }
       return result.status === "failed" ? 4 : result.status === "partial" ? 3 : 0;
     } catch (error) {

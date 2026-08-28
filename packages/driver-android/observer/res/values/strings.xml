@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Observes focus and window changes only while TVDoctor tests an Android TV app.</string>
+</resources>

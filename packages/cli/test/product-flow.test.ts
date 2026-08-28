@@ -154,6 +154,108 @@ describe("tvdoctor start", () => {
     expect(selections).toBe(2);
     expect(auditStarted).toBe(false);
   });
+
+  it("confirms a successful report action after a website scan", async () => {
+    let stdout = "";
+    let openedPath: string | null = null;
+    const selections = [0, 0, 0];
+    const terminal: StartTerminal = {
+      isInteractive: true,
+      prompt: async () => "https://example.test",
+      select: async () => selections.shift() ?? null,
+    };
+    const code = await runCli(["start"], {
+      ...contextWithTerminal(terminal),
+      io: {
+        writeStdout: (value) => { stdout += value; },
+        writeStderr: () => undefined,
+      },
+      reportActions: {
+        openReport: async (path) => {
+          openedPath = path;
+          return true;
+        },
+        showFolder: async () => false,
+        copyPath: async () => false,
+      },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        detectWebsiteStartup: async () => ({ status: "ready", detail: "Ready." }),
+        testTarget: async () => ({
+          status: "completed",
+          issueCount: 0,
+          highestSeverity: null,
+          reportPath: "D:/reports/report.json",
+          details: ["All reachable work was exhausted."],
+        }),
+      },
+    });
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(openedPath).toMatch(/[\\/]reports[\\/]report\.html$/u);
+    expect(stdout).toContain("sent the report to your default viewer");
+  });
+
+  it("offers the same report actions after an Android scan", async () => {
+    let copiedPath: string | null = null;
+    const selections = [1, 0, 0, 2];
+    const terminal: StartTerminal = {
+      isInteractive: true,
+      prompt: async () => "D:/apps/example.apk",
+      select: async () => selections.shift() ?? null,
+    };
+    const code = await runCli(["start"], {
+      ...contextWithTerminal(terminal),
+      reportActions: {
+        openReport: async () => false,
+        showFolder: async () => false,
+        copyPath: async (path) => {
+          copiedPath = path;
+          return true;
+        },
+      },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        androidPreflight: async () => ({
+          available: true,
+          adbPath: "adb",
+          message: "Found 1 online Android device.",
+          devices: [{
+            serial: "emulator-5554",
+            state: "device",
+            online: true,
+            model: "Android TV",
+            manufacturer: "Google",
+            apiLevel: 36,
+            supportedAbis: ["x86_64"],
+            isTelevision: true,
+            detail: null,
+          }],
+        }),
+        inspectApk: async (path) => ({
+          path,
+          packageName: "org.example.tv",
+          versionName: "1.0.0",
+          launchableActivities: [".MainActivity"],
+          leanbackActivity: ".MainActivity",
+          supportedAbis: ["x86_64"],
+          minSdk: 24,
+          targetSdk: 36,
+          label: "Example TV",
+        }),
+        scanAndroidApk: async () => ({
+          status: "completed",
+          issueCount: 0,
+          highestSeverity: null,
+          reportPath: "D:/reports/report.json",
+          details: ["All reachable work was exhausted."],
+        }),
+      },
+    });
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(copiedPath).toMatch(/[\\/]reports[\\/]report\.html$/u);
+  });
 });
 
 describe("Android startup policy", () => {

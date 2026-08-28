@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -33,7 +33,15 @@ function runNpx(arguments_, options) {
   return run(process.execPath, [npxCliPath, ...arguments_], options);
 }
 
+function runNpxWithStatuses(arguments_, statuses, options) {
+  return runWithStatuses(process.execPath, [npxCliPath, ...arguments_], statuses, options);
+}
+
 function run(command, arguments_, options = {}) {
+  return runWithStatuses(command, arguments_, [0], options);
+}
+
+function runWithStatuses(command, arguments_, statuses, options = {}) {
   const result = spawnSync(command, arguments_, {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
@@ -51,7 +59,7 @@ function run(command, arguments_, options = {}) {
   if (result.error !== undefined) {
     throw result.error;
   }
-  if (result.status !== 0) {
+  if (!statuses.includes(result.status)) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     throw new Error(`${command} ${arguments_.join(" ")} exited ${result.status}${detail === "" ? "" : `:\n${detail}`}`);
   }
@@ -95,6 +103,10 @@ function verifyPackResult(definition, manifest, packResult) {
   if (manifest.bin !== undefined) {
     for (const binPath of Object.values(manifest.bin)) required.add(normalisePackagePath(binPath));
   }
+  if (packageName === "@tvdoctor/driver-android") {
+    required.add("observer/tvdoctor-observer.apk");
+    required.add("observer/observer-manifest.json");
+  }
 
   const missing = [...required].filter((entry) => !entries.has(entry));
   if (missing.length > 0) {
@@ -105,7 +117,10 @@ function verifyPackResult(definition, manifest, packResult) {
     const allowed = entryPath === "package.json"
       || entryPath === "README.md"
       || entryPath === "LICENSE"
-      || entryPath.startsWith("dist/");
+      || entryPath.startsWith("dist/")
+      || (packageName === "@tvdoctor/driver-android"
+        && (entryPath === "observer/tvdoctor-observer.apk"
+          || entryPath === "observer/observer-manifest.json"));
     if (!allowed) {
       throw new Error(`${packageName} unexpectedly packs ${entryPath}.`);
     }
@@ -198,6 +213,16 @@ async function main() {
     });
     process.stdout.write(imports.stdout);
 
+    const observerVerification = run(process.execPath, ["--input-type=module", "--eval", `
+      const { resolveAndroidObserverAsset } = await import("@tvdoctor/driver-android");
+      const asset = await resolveAndroidObserverAsset();
+      if (asset.protocolVersion !== 2 || !/^[0-9a-f]{64}$/u.test(asset.sha256)) {
+        throw new Error("Installed observer asset verification failed");
+      }
+      process.stdout.write("installed observer asset checksum: PASS\\n");
+    `], { cwd: consumerDirectory });
+    process.stdout.write(observerVerification.stdout);
+
     const help = runNpx(["--no-install", "tvdoctor", "--help"], {
       cwd: consumerDirectory,
     });
@@ -220,11 +245,67 @@ async function main() {
       throw new Error("The installed CLI doctor output is incomplete.");
     }
 
-    process.stdout.write("installed CLI --help, --version, and doctor: PASS\n");
+    const testHelp = runNpx(["--no-install", "tvdoctor", "test", "--help"], { cwd: consumerDirectory });
+    if (!testHelp.stdout.includes("--apk PATH") || !testHelp.stdout.includes("--device SERIAL")) {
+      throw new Error("The installed CLI Android test help is incomplete.");
+    }
+    const replayHelp = runNpx(["--no-install", "tvdoctor", "replay", "--help"], { cwd: consumerDirectory });
+    if (!replayHelp.stdout.includes("--apk PATH") || !replayHelp.stdout.includes("--device SERIAL")) {
+      throw new Error("The installed CLI Android replay help is incomplete.");
+    }
+    const guidedStart = runNpxWithStatuses(["--no-install", "tvdoctor", "start"], [2], { cwd: consumerDirectory });
+    if (!guidedStart.stderr.includes("requires an interactive terminal")) {
+      throw new Error("The installed guided start surface did not fail safely without a TTY.");
+    }
+
+    const webUrl = process.env["TVDOCTOR_PACKAGE_SMOKE_WEB_URL"];
+    if (webUrl !== undefined) {
+      const webOutput = path.join(resolvedTemporaryRoot, "installed-web-report");
+      const web = runNpxWithStatuses([
+        "--no-install", "tvdoctor", "test", webUrl,
+        "--pack", "navigation", "--mode", "quick", "--max-duration-ms", "30000",
+        "--output", webOutput,
+      ], [0, 1, 3], { cwd: consumerDirectory, timeout: 3 * 60 * 1000 });
+      await statReport(path.join(webOutput, "report.json"), "installed website audit");
+      process.stdout.write(`installed website path: PASS (${web.stdout.match(/Result:\s+([^\r\n]+)/u)?.[1] ?? "report written"})\n`);
+    }
+
+    const androidApk = process.env["TVDOCTOR_PACKAGE_SMOKE_ANDROID_APK"];
+    const androidSerial = process.env["TVDOCTOR_PACKAGE_SMOKE_ANDROID_SERIAL"];
+    if ((androidApk === undefined) !== (androidSerial === undefined)) {
+      throw new Error("Set both TVDOCTOR_PACKAGE_SMOKE_ANDROID_APK and TVDOCTOR_PACKAGE_SMOKE_ANDROID_SERIAL.");
+    }
+    if (androidApk !== undefined && androidSerial !== undefined) {
+      const androidOutput = path.join(resolvedTemporaryRoot, "installed-android-report");
+      const android = runNpxWithStatuses([
+        "--no-install", "tvdoctor", "test", "--apk", path.resolve(repositoryRoot, androidApk),
+        "--device", androidSerial, "--mode", "quick", "--output", androidOutput,
+      ], [0, 1], { cwd: consumerDirectory, timeout: 5 * 60 * 1000 });
+      const reportPath = path.join(androidOutput, "report.json");
+      await statReport(reportPath, "installed Android audit");
+      const report = JSON.parse(await readFile(reportPath, "utf8"));
+      const issueId = report.issues?.[0]?.id;
+      if (typeof issueId !== "string") throw new Error("Installed Android audit did not produce its expected fixture issue.");
+      const replay = runNpxWithStatuses([
+        "--no-install", "tvdoctor", "replay", issueId, "--report", reportPath,
+        "--apk", path.resolve(repositoryRoot, androidApk), "--device", androidSerial,
+      ], [1], { cwd: consumerDirectory, timeout: 3 * 60 * 1000 });
+      if (!replay.stdout.includes("Replay classification REPRODUCED")) {
+        throw new Error("Installed Android replay did not reproduce its finding.");
+      }
+      process.stdout.write(`installed Android path and replay: PASS (${android.stdout.match(/Result:\s+([^\r\n]+)/u)?.[1] ?? "report written"})\n`);
+    }
+
+    process.stdout.write("installed CLI start, test, replay, --help, --version, and doctor: PASS\n");
     process.stdout.write("package smoke: PASS\n");
   } finally {
     await rm(resolvedTemporaryRoot, { recursive: true, force: true });
   }
+}
+
+async function statReport(reportPath, label) {
+  const metadata = await stat(reportPath);
+  if (!metadata.isFile() || metadata.size <= 0) throw new Error(`${label} did not write a report.`);
 }
 
 await main();

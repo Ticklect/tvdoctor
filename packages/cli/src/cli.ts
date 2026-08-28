@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   diagnoseEnvironment,
@@ -76,6 +76,9 @@ export interface ReplayCommandRequest {
   readonly issueId: string;
   readonly reportPath: string;
   readonly targetOverride?: string;
+  readonly apkPath?: string;
+  readonly deviceSerial?: string;
+  readonly adbPath?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -111,6 +114,17 @@ export interface CliIO {
   writeStderr(text: string): void;
 }
 
+/**
+ * OS integrations used by the report actions displayed at the end of a guided
+ * scan. They are injectable so a failed desktop integration is visible and the
+ * flow can be exercised without launching external applications in tests.
+ */
+export interface ReportActionHandlers {
+  openReport(path: string): Promise<boolean>;
+  showFolder(path: string): Promise<boolean>;
+  copyPath(path: string): Promise<boolean>;
+}
+
 export interface CliContext {
   readonly environment: RuntimeEnvironment;
   readonly io: CliIO;
@@ -123,6 +137,7 @@ export interface CliContext {
     update(text: string): void;
     finish(): void;
   };
+  readonly reportActions?: ReportActionHandlers;
 }
 
 export interface RuntimeProbeResult {
@@ -135,6 +150,7 @@ Usage:
   tvdoctor start
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
+  tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
   tvdoctor version
@@ -157,7 +173,9 @@ Exit codes:
   3  The result is partial or inconclusive.
   4  Execution failed before a trustworthy result was produced.`;
 
-export const TEST_HELP_TEXT = `Usage: tvdoctor test URL [options]
+export const TEST_HELP_TEXT = `Usage:
+  tvdoctor test URL [options]
+  tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
 
 Run a local bounded audit against an absolute HTTP(S) URL.
 
@@ -172,7 +190,14 @@ Options:
                  Explicit caller-selected remote keys used only to prepare a
                  detected startup setup screen. Defaults to observation-only.
   --max-duration-ms N
-                 Navigation safety-ceiling override for advanced/CI runs.`;
+                 Navigation safety-ceiling override for advanced/CI runs.
+
+Android CI options:
+  --apk PATH      Local APK to install and test without prompts.
+  --device SERIAL Explicit authorized emulator/device serial.
+  --adb PATH      Optional explicit adb executable path.
+  --mode MODE     quick or deep. Defaults to quick.
+  --output PATH   Report bundle directory.`;
 
 export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
@@ -182,7 +207,8 @@ that are actually available in this installed CLI.`;
 export const REPLAY_HELP_TEXT = `Usage: tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
 
 Replay one deterministic issue stored in a tvdoctor.report/v1 report. PATH
-defaults to tvdoctor-report/report.json. --target overrides the recorded web URL.`;
+defaults to tvdoctor-report/report.json. --target overrides the recorded web URL.
+For Android reports, pass --apk PATH --device SERIAL and optionally --adb PATH.`;
 
 const PORTABLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const TEST_PACK_SET: ReadonlySet<string> = new Set(TEST_PACK_NAMES);
@@ -267,18 +293,29 @@ function parseReplayArguments(
   let issueId: string | undefined;
   let reportPath = "tvdoctor-report/report.json";
   let targetOverride: string | undefined;
+  let apkPath: string | undefined;
+  let deviceSerial: string | undefined;
+  let adbPath: string | undefined;
 
   for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
     const argument = argumentsAfterCommand[index];
     if (argument === undefined) continue;
 
-    if (argument === "--report" || argument === "--target") {
+    if (["--report", "--target", "--apk", "--device", "--adb"].includes(argument)) {
       const value = argumentsAfterCommand[index + 1];
       if (value === undefined || value.startsWith("--")) {
         return `${argument} requires a value`;
       }
       if (argument === "--report") reportPath = value;
-      else {
+      else if (argument === "--apk") {
+        if (!/\.apk$/iu.test(value)) return "--apk must reference an .apk file";
+        apkPath = value;
+      } else if (argument === "--device") {
+        if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(value)) return "--device must be a valid Android serial";
+        deviceSerial = value;
+      } else if (argument === "--adb") {
+        adbPath = value;
+      } else {
         const override = safeTarget(value);
         if (override === null) return "--target must be an absolute HTTP(S) URL without credentials";
         targetOverride = override;
@@ -299,9 +336,14 @@ function parseReplayArguments(
     return "ISSUE_ID must be a portable identifier";
   }
 
-  return targetOverride === undefined
-    ? { issueId, reportPath }
-    : { issueId, reportPath, targetOverride };
+  return {
+    issueId,
+    reportPath,
+    ...(targetOverride === undefined ? {} : { targetOverride }),
+    ...(apkPath === undefined ? {} : { apkPath }),
+    ...(deviceSerial === undefined ? {} : { deviceSerial }),
+    ...(adbPath === undefined ? {} : { adbPath }),
+  };
 }
 
 export function safeTarget(value: string): string | null {
@@ -391,6 +433,106 @@ function parseTestArguments(
   };
 }
 
+interface AndroidTestCommandRequest {
+  readonly apkPath: string;
+  readonly serial: string;
+  readonly adbPath?: string;
+  readonly mode: "quick" | "deep";
+  readonly outputPath: string;
+}
+
+function parseAndroidTestArguments(argumentsAfterCommand: readonly string[]): AndroidTestCommandRequest | string {
+  let apkPath: string | undefined;
+  let serial: string | undefined;
+  let adbPath: string | undefined;
+  let mode: "quick" | "deep" = "quick";
+  let outputPath: string | undefined;
+  for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
+    const argument = argumentsAfterCommand[index];
+    if (argument === undefined) continue;
+    if (!["--apk", "--device", "--adb", "--mode", "--output"].includes(argument)) {
+      return argument.startsWith("--") ? `unknown Android test option: ${argument}` : "Android test does not accept a positional URL";
+    }
+    const value = argumentsAfterCommand[index + 1];
+    if (value === undefined || value.startsWith("--")) return `${argument} requires a value`;
+    if (value.trim().length === 0 || value.length > 1_024 || value.includes("\0")) return `${argument} requires a bounded non-empty value`;
+    if (argument === "--apk") apkPath = value;
+    else if (argument === "--device") serial = value;
+    else if (argument === "--adb") adbPath = value;
+    else if (argument === "--output") outputPath = value;
+    else if (value === "quick" || value === "deep") mode = value;
+    else return "Android --mode must be quick or deep";
+    index += 1;
+  }
+  if (apkPath === undefined) return "Android test requires --apk PATH";
+  if (!/\.apk$/iu.test(apkPath)) return "--apk must reference an .apk file";
+  if (serial === undefined) return "Android test requires --device SERIAL for deterministic CI selection";
+  if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(serial)) return "--device must be a valid Android serial";
+  return {
+    apkPath,
+    serial,
+    mode,
+    outputPath: outputPath ?? defaultOutputDirectory({
+      target: basename(apkPath, ".apk"),
+      mode,
+      platform: "android-tv",
+    }),
+    ...(adbPath === undefined ? {} : { adbPath }),
+  };
+}
+
+async function runAndroidTest(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  const request = parseAndroidTestArguments(argumentsAfterCommand);
+  if (typeof request === "string") return usageError(context, request);
+  if (context.operations?.scanAndroidApk === undefined) {
+    writeLine(context.io.writeStderr, "Android audit is unavailable in this CLI host.");
+    return EXIT_CODES.executionError;
+  }
+  writeLine(context.io.writeStdout, `Auditing Android APK ${basename(request.apkPath)} on ${request.serial}...`);
+  writeLine(context.io.writeStdout, `Plan: ${request.mode} mode; no prompts; observer setup must already be authorized.`);
+  let result: AndroidScanResult;
+  try {
+    result = await context.operations.scanAndroidApk({
+      apkPath: request.apkPath,
+      serial: request.serial,
+      mode: request.mode,
+      outputPath: request.outputPath,
+      ...(request.adbPath === undefined ? {} : { adbPath: request.adbPath }),
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
+      ...(context.terminalProgress?.isInteractive === true
+        ? {
+            onProgress: (progress) => context.terminalProgress?.update(
+              `${request.serial} | ${request.mode} Android scan | ${String(progress.actions)} actions | ${String(progress.elapsedSeconds)}s`,
+            ),
+          }
+        : {}),
+    });
+  } catch (error) {
+    writeLine(context.io.writeStderr, `Android audit failed: ${classifyCliError(error, "audit")}`);
+    return EXIT_CODES.executionError;
+  } finally {
+    context.terminalProgress?.finish();
+  }
+  const statusLabel = result.status === "completed" ? "COMPLETED"
+    : result.status === "partial" ? "PARTIAL-INCONCLUSIVE"
+      : result.status === "setup-blocker" ? "SETUP-BLOCKED" : "FAILED";
+  writeLine(context.io.writeStdout, `Result: ${statusLabel}`);
+  writeDetails(context.io.writeStdout, result.details);
+  writeLine(context.io.writeStdout, `Issues: ${String(result.issueCount)}; highest severity: ${result.highestSeverity ?? "none"}`);
+  if (result.reportPath !== null) {
+    const bundleDirectory = dirname(result.reportPath);
+    writeLine(context.io.writeStdout, `Bundle directory: ${bundleDirectory}`, 1_024);
+    writeLine(context.io.writeStdout, `Human report: ${join(bundleDirectory, "report.html")}`, 1_024);
+    writeLine(context.io.writeStdout, `Canonical JSON: ${result.reportPath}`, 1_024);
+  }
+  if (result.status === "failed") return EXIT_CODES.executionError;
+  if (result.status === "partial" || result.status === "setup-blocker") return EXIT_CODES.inconclusive;
+  return result.issueCount > 0 ? EXIT_CODES.environmentFailure : EXIT_CODES.success;
+}
+
 async function runTest(
   argumentsAfterCommand: readonly string[],
   context: CliContext,
@@ -399,6 +541,9 @@ async function runTest(
     && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")) {
     writeBlock(context.io.writeStdout, TEST_HELP_TEXT);
     return EXIT_CODES.success;
+  }
+  if (argumentsAfterCommand.includes("--apk")) {
+    return await runAndroidTest(argumentsAfterCommand, context);
   }
   const request = parseTestArguments(argumentsAfterCommand);
   if (typeof request === "string") return usageError(context, request);

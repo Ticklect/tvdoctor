@@ -53,13 +53,18 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 
 ## Android
 
-- A disposable Android TV API 36 emulator gate proved fixture install, launch,
-  UI hierarchy, real DPAD input, seeded focus-loss detection, screenshot/log
-  capture, relaunch, and teardown. This is emulator evidence only.
+- A disposable Android TV API 36 emulator gate proved observer deployment,
+  event-driven focus/window/content state, real DPAD input, seeded focus-loss
+  detection, screenshot/log capture, deterministic relaunch/replay, Deep
+  exploration, cancellation, and teardown. This is emulator evidence only.
 - The driver does not create, start, configure, stop, or delete emulators.
 - No physical Android TV, Google TV, vendor firmware, permission-dialog, DRM,
   launcher, or Fire TV compatibility is claimed.
-- UIAutomator can omit semantic properties; missing values remain unavailable.
+- Android accessibility can omit semantic properties; missing values remain
+  unavailable. Protected/secure surfaces may block state or screenshots.
+- VLC for Android 3.7.1 produced valid observer state and real DPAD transitions
+  on the API 36 emulator, but its deeper dynamic traversal eventually failed an
+  exact replay checkpoint and was retained as partial/inconclusive.
 - Install, clear-data, force-stop, and input commands alter the selected device.
   Use an explicit serial and a disposable emulator without personal data.
 

@@ -101,6 +101,8 @@ export interface ExplorerOptions {
   readonly budgets?: Partial<ExplorationBudgets>;
   /** Deterministic action priority. Defaults to protocol REMOTE_KEYS order. */
   readonly actions?: readonly RemoteKey[];
+  /** Record transitions to these snapshots but do not enqueue them for expansion/replay. */
+  readonly shouldExpand?: (snapshot: StateSnapshot) => boolean;
   /** Used when restoreInitialState is absent. */
   readonly resetStrategy?: ResetStrategy;
   /** Allows adapters to supply an equivalent deterministic root restoration. */
@@ -790,12 +792,17 @@ export async function explore(
     });
   };
 
-  if (options.signal?.aborted === true) return finish(incomplete("interrupted"));
+  const signalAborted = (): boolean => options.signal?.aborted === true;
+  if (signalAborted()) return finish(incomplete("interrupted"));
+  if (options.shouldExpand !== undefined && typeof options.shouldExpand !== "function") {
+    throw new TypeError("shouldExpand must be a function.");
+  }
 
   let capabilities: ReadonlySet<string>;
   try {
     capabilities = await withinDurationBudget(() => driver.capabilities());
   } catch (error) {
+    if (signalAborted()) return finish(incomplete("interrupted"));
     if (error instanceof DurationBudgetExceeded) return finish(incomplete("max-duration"));
     return finish(incomplete("driver-error"));
   }
@@ -818,7 +825,7 @@ export async function explore(
   };
 
   const workBudgetTermination = (): ExplorationTermination | null => {
-    if (options.signal?.aborted === true) return incomplete("interrupted");
+    if (signalAborted()) return incomplete("interrupted");
     if (elapsed() >= budgets.maxDurationMs) return incomplete("max-duration");
     if (physicalActions >= budgets.maxActions) return incomplete("max-actions");
     return null;
@@ -838,6 +845,7 @@ export async function explore(
     }
     if (elapsed() >= budgets.maxDurationMs) return finish(incomplete("max-duration"));
   } catch (error) {
+    if (signalAborted()) return finish(incomplete("interrupted"));
     if (error instanceof DurationBudgetExceeded) return finish(incomplete("max-duration"));
     if (error instanceof PreparedStateDivergenceError) return finish(incomplete("prepared-state-diverged"));
     return finish(incomplete("restoration-failed"));
@@ -956,6 +964,9 @@ export async function explore(
     try {
       resetSnapshot = await withinDurationBudget(restoreAndCapture);
     } catch (error) {
+      if (signalAborted()) {
+        return { status: "stop", termination: incomplete("interrupted") };
+      }
       if (error instanceof DurationBudgetExceeded) {
         return { status: "stop", termination: incomplete("max-duration") };
       }
@@ -1001,6 +1012,9 @@ export async function explore(
             return { status: "stop", termination: incomplete("replay-diverged") };
           }
         } catch (error) {
+          if (signalAborted()) {
+            return { status: "stop", termination: incomplete("interrupted") };
+          }
           if (error instanceof DurationBudgetExceeded) {
             return { status: "stop", termination: incomplete("max-duration") };
           }
@@ -1068,6 +1082,10 @@ export async function explore(
         settlingPolls += actionObservation.snapshotsCaptured - 1;
         if (!actionObservation.settled) unsettledActions += 1;
       } catch (error) {
+        if (signalAborted()) {
+          termination = incomplete("interrupted");
+          break exploration;
+        }
         if (error instanceof DurationBudgetExceeded) {
           termination = incomplete("max-duration");
           break exploration;
@@ -1184,7 +1202,8 @@ export async function explore(
 
       const replayable = actionObservation.actionResult.key === key
         && actionObservation.actionResult.outcome === "applied";
-      if (replayable && !destination.state.scheduled) {
+      const expandable = options.shouldExpand?.(actionObservation.snapshot) ?? true;
+      if (replayable && expandable && !destination.state.scheduled) {
         const destinationGroup = destination.state.repetitionGroup === null
           ? undefined
           : repetitionGroups.get(destination.state.repetitionGroup);

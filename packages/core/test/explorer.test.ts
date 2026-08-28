@@ -332,6 +332,34 @@ describe("bounded deterministic explorer", () => {
     expect(result.graph.actions).toHaveLength(12);
   });
 
+  it("records boundary transitions without expanding excluded destination states", async () => {
+    const result = await explore(
+      new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS),
+      {
+        actions: ["RIGHT", "LEFT", "SELECT", "BACK"],
+        budgets: {
+          maxActions: 100,
+          maxStates: 20,
+          maxDepth: 5,
+          maxDurationMs: 10_000,
+        },
+        monotonicNow: () => 0,
+        shouldExpand: (snapshot) => snapshot.location.status === "available"
+          && snapshot.location.value === "app://home",
+      },
+    );
+
+    expect(result.termination).toEqual({ reason: "queue-exhausted", complete: true });
+    expect(result.graph.actions.some((action) => (
+      action.afterSnapshot.location.status === "available"
+      && action.afterSnapshot.location.value === "app://details"
+    ))).toBe(true);
+    expect(result.graph.actions.some((action) => (
+      action.beforeSnapshot.location.status === "available"
+      && action.beforeSnapshot.location.value === "app://details"
+    ))).toBe(false);
+  });
+
   it("completes Deep exploration immediately when the frontier is exhausted", async () => {
     const result = await explore(
       new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS),

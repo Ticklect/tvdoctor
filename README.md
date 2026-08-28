@@ -84,7 +84,13 @@ npm run tvdoctor -- start
 a consent or setup screen, writes normal bundles under `Tests\`, and offers to
 open the report. Android scans stop the tested app afterward but never shut down
 an emulator unless you explicitly ask for that in a separate workflow; the APK is
-intentionally retained. For automation, use `test` directly.
+intentionally retained. TVDoctor installs its checksum-validated observer APK;
+first use requires explicit accessibility enablement on the Android device. For
+prompt-free automation, use:
+
+```powershell
+tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
+```
 
 Start the deliberately broken local target in one terminal:
 
@@ -298,7 +304,7 @@ Status words are deliberate:
 | Deterministic core and streaming pack | Beta | Unit and controlled real-Chromium fixture gates; no arbitrary-app accuracy claim. |
 | Playwright Chromium web driver | Experimental | Real Chromium and bounded production probes; DOM semantic tree is not the browser accessibility tree. |
 | `tvdoctor test URL` audit host | Experimental | Complete controlled M7 fixture gate and bounded production stress evidence; broader framework/browser evidence is still limited. |
-| Android TV ADB/UIAutomator driver | Experimental | Fake-executor tests plus a disposable API 36 Android TV emulator gate; no physical-device/vendor compatibility claim. |
+| Android TV persistent-observer driver | Experimental | Versioned framed local protocol, event-driven accessibility state, real API 36 emulator Quick/Deep/replay/cancellation gates; no physical-device/vendor compatibility claim. |
 | Baseline comparison library | Experimental | Versioned fail-closed library, controlled lifecycle proof, hosted example; not yet a standalone CLI workflow. |
 | Linux hosted verification | Beta evidence | Earlier exact candidates passed on `ubuntu-latest`; every changed release candidate needs a new exact-SHA run. |
 | Windows development verification | Experimental evidence | Local release work has run on Windows; no hosted Windows matrix is claimed. |
