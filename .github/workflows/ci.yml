@@ -146,8 +146,24 @@ jobs:
             sdkmanager --install 'build-tools;36.0.0' 'platforms;android-36' > /dev/null
             pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
             adb install -r packages/driver-android/observer/tvdoctor-observer.apk
-            adb shell settings put secure enabled_accessibility_services org.tvdoctor.observer/.ObserverAccessibilityService
-            adb shell settings put secure accessibility_enabled 1
+            adb shell am start -W -n org.tvdoctor.observer/.SetupActivity > /dev/null
+            observer_component='org.tvdoctor.observer/org.tvdoctor.observer.ObserverAccessibilityService'
+            observer_enabled=0
+            for attempt in $(seq 1 10); do
+              adb shell settings put secure enabled_accessibility_services "$observer_component"
+              adb shell settings put secure accessibility_enabled 1
+              enabled_services=$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')
+              case "$enabled_services" in
+                *org.tvdoctor.observer*) observer_enabled=1; break ;;
+              esac
+              sleep 1
+            done
+            mkdir -p artifacts/android-ci
+            adb shell dumpsys accessibility > artifacts/android-ci/accessibility-before-scan.txt
+            if [ "$observer_enabled" -ne 1 ]; then
+              echo "Observer accessibility service did not remain enabled on the emulator."
+              exit 1
+            fi
             set +e
             node packages/cli/dist/bin.js test --apk fixtures/broken-android-tv/build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk --device emulator-5554 --mode quick --output artifacts/android-ci
             scan_status=$?
