@@ -41,13 +41,12 @@ build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk
 The script compiles resources, compiles Java 17 bytecode, converts it with D8,
 aligns the APK, signs it with the repository-owned fixture-only key under
 `signing/`, and runs structural/signature verification. That password-`android`
-test key is intentionally committed so repeated local and hosted builds are
-byte-for-byte stable and upgrade-compatible. It is never used for the observer
-or a release artifact.
-
-The canonical fixture APK SHA-256 is
-`5577c681fada811605880e030a44d92eb707a0c76f69f23b4cede9e85d8f1925`;
-hosted emulator CI requires that exact build before installation.
+test key is intentionally committed so local and hosted builds remain
+upgrade-compatible. It is never used for the observer or a release artifact.
+APK container bytes can differ between operating systems and JDK releases due
+to archive metadata, so hosted CI verifies the fixture's package, signature,
+structure, seeded behavior, report, and replay instead of relying on a
+platform-specific file hash.
 
 ## Static tests and APK verification
 

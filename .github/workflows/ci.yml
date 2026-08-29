@@ -145,7 +145,6 @@ jobs:
           script: |
             sdkmanager --install 'build-tools;36.0.0' 'platforms;android-36' > /dev/null
             pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
-            echo '5577c681fada811605880e030a44d92eb707a0c76f69f23b4cede9e85d8f1925  fixtures/broken-android-tv/build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk' | sha256sum --check --strict
             adb install -r packages/driver-android/observer/tvdoctor-observer.apk
             adb shell settings put secure enabled_accessibility_services org.tvdoctor.observer/.ObserverAccessibilityService
             adb shell settings put secure accessibility_enabled 1
