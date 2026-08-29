@@ -1,7 +1,7 @@
 {
   "packageName": "org.tvdoctor.observer",
-  "versionName": "0.1.8",
+  "versionName": "0.1.9",
   "protocolVersion": 2,
-  "sha256": "6a84dc6edf34617e294cadadc0fc23baa3f60a9fdf1965a3df805358e28b9340",
+  "sha256": "047ea48ef1b011527a6b6a411201fc69d304ed5dfa00a099a5da4ca694f68ac9",
   "certificateSha256": "d8c139b0f4a845791715cc399ecec0e10023dcd1a8e46b68670ad9f8ac860adc"
 }

@@ -45,16 +45,16 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     private static final int MAX_NODES = 4_096;
     private static final int MAX_DEPTH = 64;
     private static final int MAX_STRING = 1_024;
-    private static final String OBSERVER_VERSION = "0.1.8";
+    private static final String OBSERVER_VERSION = "0.1.9";
 
     private final AtomicLong eventSequence = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean();
     private final Map<Long, ActionContext> actions = new ConcurrentHashMap<>();
+    private final Map<String, String> windowClassByPackage = new ConcurrentHashMap<>();
     private final Set<Long> cancelledRequests = ConcurrentHashMap.newKeySet();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile long lastEventElapsedMs;
     private volatile String lastPackageName;
-    private volatile String lastWindowClassName;
     private volatile int lastWindowId = -1;
     private volatile String lastStructureFingerprint = "";
     private volatile String lastStateFingerprint = "";
@@ -75,8 +75,17 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             CharSequence packageName = event.getPackageName();
             CharSequence className = event.getClassName();
-            if (packageName != null) lastPackageName = bounded(packageName.toString());
-            if (className != null) lastWindowClassName = bounded(className.toString());
+            if (packageName != null) {
+                String boundedPackageName = bounded(packageName.toString());
+                lastPackageName = boundedPackageName;
+                if (className != null) {
+                    if (windowClassByPackage.size() >= 64
+                        && !windowClassByPackage.containsKey(boundedPackageName)) {
+                        windowClassByPackage.clear();
+                    }
+                    windowClassByPackage.put(boundedPackageName, bounded(className.toString()));
+                }
+            }
             lastWindowId = event.getWindowId();
         }
         for (ActionContext action : actions.values()) {
@@ -392,10 +401,9 @@ public final class ObserverAccessibilityService extends AccessibilityService {
             maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root");
             root.recycle();
         }
-        String capturedWindowClassName = capturedPackageName != null
-            && capturedPackageName.equals(lastPackageName)
-            ? lastWindowClassName
-            : null;
+        String capturedWindowClassName = capturedPackageName == null
+            ? null
+            : windowClassByPackage.get(capturedPackageName);
         String structureFingerprint = sha256(structure.toString());
         String focusSignature = focus.stableId == null ? "none" : focus.stableId;
         String stateFingerprint = sha256(structureFingerprint + "\u001f" + focusSignature);

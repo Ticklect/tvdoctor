@@ -17,9 +17,9 @@ detected and replayed. The canonical seed is in `seeded-defects.json`.
 
 ## Build
 
-The build is Gradle-free and uses only JDK tools plus the newest installed
-Android SDK platform/build-tools while targeting API 36. It never starts,
-wipes, or changes an emulator.
+The build is Gradle-free and uses only JDK tools, pinned Android build-tools
+36.0.0, and an installed compile platform at API 36 or newer while explicitly
+targeting API 36. It never starts, wipes, or changes an emulator.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1 `
@@ -44,6 +44,10 @@ aligns the APK, signs it with the repository-owned fixture-only key under
 test key is intentionally committed so repeated local and hosted builds are
 byte-for-byte stable and upgrade-compatible. It is never used for the observer
 or a release artifact.
+
+The canonical fixture APK SHA-256 is
+`5577c681fada811605880e030a44d92eb707a0c76f69f23b4cede9e85d8f1925`;
+hosted emulator CI requires that exact build before installation.
 
 ## Static tests and APK verification
 

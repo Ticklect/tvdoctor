@@ -29,11 +29,21 @@ function Resolve-JavaTool {
     return [System.IO.Path]::GetFullPath($command.Source)
 }
 
-function ConvertTo-SdkVersion {
-    param([string]$Name)
-    $parts = @([regex]::Matches($Name, '\d+') | ForEach-Object { [int]$_.Value })
-    while ($parts.Count -lt 4) { $parts += 0 }
-    return [version]::new($parts[0], $parts[1], $parts[2], $parts[3])
+function Resolve-CompilePlatform {
+    param([string]$SdkRoot)
+    $platformsRoot = Resolve-RequiredPath (Join-Path $SdkRoot "platforms") "Android platforms"
+    $candidates = @(Get-ChildItem -LiteralPath $platformsRoot -Directory | ForEach-Object {
+        if ($_.Name -match '^android-(\d+)') {
+            [pscustomobject]@{ ApiLevel = [int]$Matches[1]; Path = $_.FullName }
+        }
+    } | Sort-Object -Property @(
+        @{ Expression = { $_.ApiLevel }; Descending = $true },
+        @{ Expression = { $_.Path }; Descending = $true }
+    ))
+    if ($candidates.Count -eq 0 -or $candidates[0].ApiLevel -lt 36) {
+        throw "Android compile platform API 36 or newer is required."
+    }
+    return Resolve-RequiredPath $candidates[0].Path "Android compile platform"
 }
 
 function Invoke-Checked {
@@ -57,24 +67,16 @@ if ([string]::IsNullOrWhiteSpace($configuredSdk)) {
 
 $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
-$buildToolsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools") "Android build-tools"
-$buildTools = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
-    Sort-Object { ConvertTo-SdkVersion $_.Name } -Descending |
-    Select-Object -First 1
-if ($null -eq $buildTools) { throw "A complete Android build-tools installation is required." }
-$platformsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "platforms") "Android platforms"
-$platform = Get-ChildItem -LiteralPath $platformsRoot -Directory |
-    Sort-Object { ConvertTo-SdkVersion $_.Name } -Descending |
-    Select-Object -First 1
-if ($null -eq $platform) { throw "A complete Android SDK platform installation is required." }
-$androidJar = Resolve-RequiredPath (Join-Path $platform.FullName "android.jar") "Android platform android.jar"
+$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools/36.0.0") "Android build-tools 36.0.0"
+$platform = Resolve-CompilePlatform $resolvedSdk
+$androidJar = Resolve-RequiredPath (Join-Path $platform "android.jar") "Android compile-platform android.jar"
 $executableSuffix = if ($isWindowsHost) { ".exe" } else { "" }
 $scriptSuffix = if ($isWindowsHost) { ".bat" } else { "" }
-$aapt2 = Resolve-RequiredPath (Join-Path $buildTools.FullName "aapt2$executableSuffix") "aapt2"
-$aapt = Resolve-RequiredPath (Join-Path $buildTools.FullName "aapt$executableSuffix") "aapt"
-$d8 = Resolve-RequiredPath (Join-Path $buildTools.FullName "d8$scriptSuffix") "d8"
-$zipalign = Resolve-RequiredPath (Join-Path $buildTools.FullName "zipalign$executableSuffix") "zipalign"
-$apksigner = Resolve-RequiredPath (Join-Path $buildTools.FullName "apksigner$scriptSuffix") "apksigner"
+$aapt2 = Resolve-RequiredPath (Join-Path $buildTools "aapt2$executableSuffix") "aapt2"
+$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt$executableSuffix") "aapt"
+$d8 = Resolve-RequiredPath (Join-Path $buildTools "d8$scriptSuffix") "d8"
+$zipalign = Resolve-RequiredPath (Join-Path $buildTools "zipalign$executableSuffix") "zipalign"
+$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner$scriptSuffix") "apksigner"
 $javac = Resolve-JavaTool "javac" $JavaHome
 $jar = Resolve-JavaTool "jar" $JavaHome
 $keytool = Resolve-JavaTool "keytool" $JavaHome

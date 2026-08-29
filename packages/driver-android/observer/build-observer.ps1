@@ -25,6 +25,23 @@ function Resolve-JavaTool {
     return [System.IO.Path]::GetFullPath($command.Source)
 }
 
+function Resolve-CompilePlatform {
+    param([string]$SdkRoot)
+    $platformsRoot = Resolve-RequiredPath (Join-Path $SdkRoot "platforms") "Android platforms"
+    $candidates = @(Get-ChildItem -LiteralPath $platformsRoot -Directory | ForEach-Object {
+        if ($_.Name -match '^android-(\d+)') {
+            [pscustomobject]@{ ApiLevel = [int]$Matches[1]; Path = $_.FullName }
+        }
+    } | Sort-Object -Property @(
+        @{ Expression = { $_.ApiLevel }; Descending = $true },
+        @{ Expression = { $_.Path }; Descending = $true }
+    ))
+    if ($candidates.Count -eq 0 -or $candidates[0].ApiLevel -lt 36) {
+        throw "Android compile platform API 36 or newer is required."
+    }
+    return Resolve-RequiredPath $candidates[0].Path "Android compile platform"
+}
+
 function Invoke-Checked {
     param([string]$Executable, [string[]]$Arguments)
     & $Executable @Arguments
@@ -39,22 +56,15 @@ if ([string]::IsNullOrWhiteSpace($configuredSdk) -and -not [string]::IsNullOrWhi
     $configuredSdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
 }
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
-$buildToolsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools") "Android build-tools"
-$platformsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "platforms") "Android platforms"
-$buildTools = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
-    Sort-Object { [version]($_.Name -replace '[^0-9.]', '') } -Descending |
-    Select-Object -First 1
-$platform = Get-ChildItem -LiteralPath $platformsRoot -Directory |
-    Sort-Object { [version]($_.Name -replace '[^0-9.]', '') } -Descending |
-    Select-Object -First 1
-if ($null -eq $buildTools -or $null -eq $platform) { throw "A complete Android SDK platform and build-tools installation is required." }
+$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools/36.0.0") "Android build-tools 36.0.0"
+$platform = Resolve-CompilePlatform $resolvedSdk
 
-$androidJar = Resolve-RequiredPath (Join-Path $platform.FullName "android.jar") "Android platform android.jar"
-$aapt2 = Resolve-RequiredPath (Join-Path $buildTools.FullName "aapt2.exe") "aapt2"
-$aapt = Resolve-RequiredPath (Join-Path $buildTools.FullName "aapt.exe") "aapt"
-$d8 = Resolve-RequiredPath (Join-Path $buildTools.FullName "d8.bat") "d8"
-$zipalign = Resolve-RequiredPath (Join-Path $buildTools.FullName "zipalign.exe") "zipalign"
-$apksigner = Resolve-RequiredPath (Join-Path $buildTools.FullName "apksigner.bat") "apksigner"
+$androidJar = Resolve-RequiredPath (Join-Path $platform "android.jar") "Android compile-platform android.jar"
+$aapt2 = Resolve-RequiredPath (Join-Path $buildTools "aapt2.exe") "aapt2"
+$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt.exe") "aapt"
+$d8 = Resolve-RequiredPath (Join-Path $buildTools "d8.bat") "d8"
+$zipalign = Resolve-RequiredPath (Join-Path $buildTools "zipalign.exe") "zipalign"
+$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner.bat") "apksigner"
 $javac = Resolve-JavaTool "javac" $JavaHome
 $jar = Resolve-JavaTool "jar" $JavaHome
 $keytool = Resolve-JavaTool "keytool" $JavaHome
@@ -89,7 +99,7 @@ Invoke-Checked $aapt2 @(
     "--min-sdk-version", "23",
     "--target-sdk-version", "36",
     "--version-code", "1",
-    "--version-name", "0.1.8",
+    "--version-name", "0.1.9",
     $compiledResources
 )
 
@@ -194,7 +204,7 @@ try {
 }
 $manifest = [ordered]@{
     packageName = "org.tvdoctor.observer"
-    versionName = "0.1.8"
+    versionName = "0.1.9"
     protocolVersion = 2
     sha256 = $sha256
     certificateSha256 = $certificateSha256

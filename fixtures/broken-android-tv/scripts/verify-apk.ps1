@@ -15,13 +15,6 @@ function Resolve-RequiredPath {
     return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
 }
 
-function ConvertTo-SdkVersion {
-    param([string]$Name)
-    $parts = @([regex]::Matches($Name, '\d+') | ForEach-Object { [int]$_.Value })
-    while ($parts.Count -lt 4) { $parts += 0 }
-    return [version]::new($parts[0], $parts[1], $parts[2], $parts[3])
-}
-
 function Invoke-Captured {
     param([string]$Executable, [string[]]$Arguments)
     $previousErrorPreference = $ErrorActionPreference
@@ -52,15 +45,11 @@ if ([string]::IsNullOrWhiteSpace($configuredSdk)) {
 
 $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
-$buildToolsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools") "Android build-tools"
-$buildTools = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
-    Sort-Object { ConvertTo-SdkVersion $_.Name } -Descending |
-    Select-Object -First 1
-if ($null -eq $buildTools) { throw "A complete Android build-tools installation is required." }
+$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools/36.0.0") "Android build-tools 36.0.0"
 $executableSuffix = if ($isWindowsHost) { ".exe" } else { "" }
 $scriptSuffix = if ($isWindowsHost) { ".bat" } else { "" }
-$aapt = Resolve-RequiredPath (Join-Path $buildTools.FullName "aapt$executableSuffix") "aapt"
-$apksigner = Resolve-RequiredPath (Join-Path $buildTools.FullName "apksigner$scriptSuffix") "apksigner"
+$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt$executableSuffix") "aapt"
+$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner$scriptSuffix") "apksigner"
 $resolvedApk = if ([System.IO.Path]::IsPathRooted($ApkPath)) {
     Resolve-RequiredPath $ApkPath "fixture APK"
 } else {
