@@ -9,9 +9,11 @@ The launcher surface contains two real Android `Button` controls:
 - **Focus Probe** has initial focus and moves Right to Safe Control.
 - **Safe Control** moves Left back to Focus Probe and retains focus on Select.
 
-Exactly one defect is seeded. Selecting Focus Probe blocks descendant focus and
-clears the selected view while Safe Control remains visible, enabled, and
-focusable. A truthful Android accessibility snapshot should therefore expose an available
+Exactly one defect is seeded. Selecting Focus Probe temporarily removes that
+probe from focus navigation, blocks descendant focus restoration, clears it,
+and restores its semantic focusability while Safe Control remains visible,
+enabled, and focusable. A truthful Android accessibility snapshot should
+therefore expose an available
 `null` focused element after `SELECT`, allowing `remote.lost-focus` to be
 detected and replayed. The canonical seed is in `seeded-defects.json`.
 

@@ -86,10 +86,14 @@ public final class MainActivity extends Activity {
 
         focusProbe.setOnClickListener((view) -> {
             status.setText(R.string.status_lost);
-            // Deliberate seed: block descendant restoration, then clear the
-            // selected button. Safe Control remains enabled and focusable.
+            // Deliberate seed: temporarily remove the selected view from focus
+            // navigation, block descendant restoration, clear it, then restore
+            // its semantic focusability. The ancestor block keeps focus null
+            // without making the resulting screen a different control surface.
             controls.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            view.setFocusable(false);
             view.clearFocus();
+            view.setFocusable(true);
             Log.i(LOG_TAG, "Seeded focus-loss transition activated");
         });
         safeControl.setOnClickListener((view) -> {
