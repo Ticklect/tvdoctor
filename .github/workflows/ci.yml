@@ -120,6 +120,13 @@ jobs:
       - name: Build host packages
         run: npm run build:packages
 
+      - name: Reclaim runner space for the Android TV image
+        run: |
+          df -h /
+          sudo rm -rf -- /usr/share/dotnet /usr/local/.ghcup /opt/ghc
+          docker system prune --all --force
+          df -h /
+
       - name: Enable KVM access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -133,7 +140,7 @@ jobs:
           api-level: 36
           target: android-tv
           arch: x86_64
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-metrics -partition-size 2048 -camera-back none -camera-front none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-metrics -camera-back none -camera-front none
           disable-animations: true
           script: |
             pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
