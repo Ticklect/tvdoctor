@@ -133,8 +133,7 @@ jobs:
           api-level: 36
           target: android-tv
           arch: x86_64
-          disk-size: 2G
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-metrics -partition-size 2048 -camera-back none -camera-front none
           disable-animations: true
           script: |
             pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
