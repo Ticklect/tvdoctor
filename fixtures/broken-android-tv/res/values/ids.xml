@@ -6,5 +6,6 @@
     <item name="fixture_instructions" type="id" />
     <item name="focus_probe" type="id" />
     <item name="safe_control" type="id" />
+    <item name="focus_sink" type="id" />
     <item name="fixture_status" type="id" />
 </resources>

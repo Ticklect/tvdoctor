@@ -6,6 +6,6 @@
     "screen": "Android TV fixture home",
     "target": "focus-probe",
     "action": "SELECT",
-    "summary": "Selecting the dedicated Focus Probe temporarily removes it from focus navigation, blocks descendant focus restoration, clears it, and restores its semantic focusability while the visible Safe Control remains focusable."
+    "summary": "Selecting the dedicated Focus Probe diverts input focus to a transparent non-accessibility sink while the visible Safe Control remains focusable."
   }
 ]

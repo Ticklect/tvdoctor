@@ -31,7 +31,7 @@ test("fixture has exactly one stable seeded defect", async () => {
     screen: "Android TV fixture home",
     target: "focus-probe",
     action: "SELECT",
-    summary: "Selecting the dedicated Focus Probe temporarily removes it from focus navigation, blocks descendant focus restoration, clears it, and restores its semantic focusability while the visible Safe Control remains focusable.",
+    summary: "Selecting the dedicated Focus Probe diverts input focus to a transparent non-accessibility sink while the visible Safe Control remains focusable.",
   });
 });
 
@@ -41,7 +41,8 @@ test("native activity exposes two semantic controls and isolates focus loss to S
   assert.match(source, /R\.id\.safe_control/u);
   assert.match(source, /focusProbe\.setNextFocusRightId\(R\.id\.safe_control\)/u);
   assert.match(source, /safeControl\.setNextFocusLeftId\(R\.id\.focus_probe\)/u);
-  assert.match(source, /controls\.setDescendantFocusability\(ViewGroup\.FOCUS_BLOCK_DESCENDANTS\);[\s\S]*view\.setFocusable\(false\);[\s\S]*view\.clearFocus\(\);[\s\S]*view\.setFocusable\(true\);/u);
+  assert.match(source, /focusSink\.setImportantForAccessibility\(View\.IMPORTANT_FOR_ACCESSIBILITY_NO\)/u);
+  assert.match(source, /focusSink\.requestFocus\(\)/u);
   assert.equal((source.match(/setOnClickListener/gu) ?? []).length, 2);
   assert.doesNotMatch(source, /Runtime\.getRuntime|ProcessBuilder|System\.exit/u);
 });

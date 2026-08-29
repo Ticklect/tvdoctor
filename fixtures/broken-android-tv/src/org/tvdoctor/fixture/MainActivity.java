@@ -6,7 +6,6 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -84,17 +83,21 @@ public final class MainActivity extends Activity {
         statusLayout.topMargin = dp(40);
         root.addView(status, statusLayout);
 
+        View focusSink = new View(this);
+        focusSink.setId(R.id.focus_sink);
+        focusSink.setAlpha(0f);
+        focusSink.setFocusable(true);
+        focusSink.setFocusableInTouchMode(true);
+        focusSink.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        root.addView(focusSink, new LinearLayout.LayoutParams(1, 1));
+
         focusProbe.setOnClickListener((view) -> {
             status.setText(R.string.status_lost);
-            // Deliberate seed: temporarily remove the selected view from focus
-            // navigation, block descendant restoration, clear it, then restore
-            // its semantic focusability. The ancestor block keeps focus null
-            // without making the resulting screen a different control surface.
-            controls.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            view.setFocusable(false);
-            view.clearFocus();
-            view.setFocusable(true);
-            Log.i(LOG_TAG, "Seeded focus-loss transition activated");
+            // Deliberate seed: move input focus to a transparent view that is
+            // excluded from accessibility. The visible semantic surface stays
+            // unchanged, while no meaningful remote focus target remains.
+            boolean diverted = focusSink.requestFocus();
+            Log.i(LOG_TAG, "Seeded focus-loss transition activated; diverted=" + diverted);
         });
         safeControl.setOnClickListener((view) -> {
             status.setText(R.string.status_safe);
