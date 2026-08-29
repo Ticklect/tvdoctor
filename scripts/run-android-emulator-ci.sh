@@ -2,16 +2,17 @@
 
 set -euo pipefail
 
-artifact_dir="artifacts/android-ci"
+artifact_root="artifacts/android-ci"
+scan_output="$artifact_root/scan"
 fixture_apk="fixtures/broken-android-tv/build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk"
 observer_apk="packages/driver-android/observer/tvdoctor-observer.apk"
 observer_component="org.tvdoctor.observer/org.tvdoctor.observer.ObserverAccessibilityService"
 
-mkdir -p "$artifact_dir"
+mkdir -p "$artifact_root"
 
 preserve_android_diagnostics() {
-  adb shell dumpsys accessibility > "$artifact_dir/accessibility-final.txt" 2>&1 || true
-  adb logcat -d -t 2000 > "$artifact_dir/logcat-final.txt" 2>&1 || true
+  adb shell dumpsys accessibility > "$artifact_root/accessibility-final.txt" 2>&1 || true
+  adb logcat -d -t 2000 > "$artifact_root/logcat-final.txt" 2>&1 || true
 }
 trap preserve_android_diagnostics EXIT
 
@@ -34,7 +35,7 @@ for attempt in $(seq 1 10); do
   sleep 1
 done
 
-adb shell dumpsys accessibility > "$artifact_dir/accessibility-before-scan.txt"
+adb shell dumpsys accessibility > "$artifact_root/accessibility-before-scan.txt"
 if [[ "$observer_enabled" -ne 1 ]]; then
   echo "Observer accessibility service did not remain enabled on the emulator."
   exit 1
@@ -45,7 +46,7 @@ node packages/cli/dist/bin.js test \
   --apk "$fixture_apk" \
   --device emulator-5554 \
   --mode quick \
-  --output "$artifact_dir"
+  --output "$scan_output"
 scan_status=$?
 set -e
 
@@ -54,4 +55,4 @@ if [[ "$scan_status" -ne 1 ]]; then
   exit 1
 fi
 
-node scripts/verify-android-ci-report.mjs "$artifact_dir/report.json"
+node scripts/verify-android-ci-report.mjs "$scan_output/report.json"
