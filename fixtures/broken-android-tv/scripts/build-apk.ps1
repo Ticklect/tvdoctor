@@ -29,6 +29,13 @@ function Resolve-JavaTool {
     return [System.IO.Path]::GetFullPath($command.Source)
 }
 
+function ConvertTo-SdkVersion {
+    param([string]$Name)
+    $parts = @([regex]::Matches($Name, '\d+') | ForEach-Object { [int]$_.Value })
+    while ($parts.Count -lt 4) { $parts += 0 }
+    return [version]::new($parts[0], $parts[1], $parts[2], $parts[3])
+}
+
 function Invoke-Checked {
     param([string]$Executable, [string[]]$Arguments)
     & $Executable @Arguments
@@ -52,12 +59,12 @@ $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
 $buildToolsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools") "Android build-tools"
 $buildTools = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
-    Sort-Object { [version]($_.Name -replace '[^0-9.]', '') } -Descending |
+    Sort-Object { ConvertTo-SdkVersion $_.Name } -Descending |
     Select-Object -First 1
 if ($null -eq $buildTools) { throw "A complete Android build-tools installation is required." }
 $platformsRoot = Resolve-RequiredPath (Join-Path $resolvedSdk "platforms") "Android platforms"
 $platform = Get-ChildItem -LiteralPath $platformsRoot -Directory |
-    Sort-Object { [version]($_.Name -replace '[^0-9.]', '') } -Descending |
+    Sort-Object { ConvertTo-SdkVersion $_.Name } -Descending |
     Select-Object -First 1
 if ($null -eq $platform) { throw "A complete Android SDK platform installation is required." }
 $androidJar = Resolve-RequiredPath (Join-Path $platform.FullName "android.jar") "Android platform android.jar"
