@@ -140,11 +140,14 @@ function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTv
       versionName: "0.1.0",
       protocolVersion: 2,
       sha256: "c".repeat(64),
+      certificateSha256: "d".repeat(64),
     },
     createObserverClient: async () => observer,
     settleTimeoutMs: 50,
     quietWindowMs: 5,
     noResponseGraceMs: 10,
+    resetStableWindowMs: 10,
+    resetSettleTimeoutMs: 50,
   });
 }
 
@@ -174,6 +177,20 @@ describe("Android V2 observer-backed driver", () => {
     expect(executor.calls.some((call) => call.join(" ").includes("forward --remove tcp:45678"))).toBe(true);
   });
 
+  it("maps explicit HOME and media controls to bounded Android key events", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    await driver.press("HOME");
+    await driver.press("PLAY_PAUSE");
+    await driver.press("FAST_FORWARD");
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_HOME");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_PLAY_PAUSE");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_FAST_FORWARD");
+    await driver.close();
+  });
+
   it("fails safely with actionable permission diagnostics", async () => {
     const executor = new FakeExecutor();
     executor.enabled = false;
@@ -193,6 +210,9 @@ describe("Android V2 observer-backed driver", () => {
     await driver.reset("relaunch");
     expect(observer.requests.map((request) => request.type)).toContain("resync");
     expect(executor.calls.some((call) => call.join(" ").includes("am force-stop org.example.tv"))).toBe(true);
+    expect(executor.calls.filter((call) => call.join(" ").includes(
+      "am start -W -f 0x10008000 -n org.example.tv/.MainActivity",
+    ))).toHaveLength(2);
     await driver.close();
   });
 

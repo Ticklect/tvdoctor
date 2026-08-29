@@ -18,6 +18,7 @@ describe("Android observer framing", () => {
       packageName: "org.tvdoctor.observer",
       protocolVersion: 2,
       sha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      certificateSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
   });
   it("decodes partial frames and multiple messages per read", () => {

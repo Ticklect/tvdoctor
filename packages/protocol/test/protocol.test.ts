@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CAPABILITIES,
+  NAVIGATION_KEYS,
   REMOTE_KEYS,
   availableObservation,
   isCapability,
@@ -16,8 +17,8 @@ import type {
 } from "../src/index.js";
 
 describe("platform-neutral protocol", () => {
-  it("exposes only the initial deterministic remote action set", () => {
-    expect(REMOTE_KEYS).toEqual([
+  it("keeps automatic navigation bounded while accepting explicit TV controls", () => {
+    expect(NAVIGATION_KEYS).toEqual([
       "UP",
       "DOWN",
       "LEFT",
@@ -25,7 +26,21 @@ describe("platform-neutral protocol", () => {
       "SELECT",
       "BACK",
     ]);
+    expect(REMOTE_KEYS).toEqual([
+      ...NAVIGATION_KEYS,
+      "HOME",
+      "PLAY_PAUSE",
+      "PLAY",
+      "PAUSE",
+      "STOP",
+      "NEXT",
+      "PREVIOUS",
+      "REWIND",
+      "FAST_FORWARD",
+    ]);
     expect(isRemoteKey("SELECT")).toBe(true);
+    expect(isRemoteKey("HOME")).toBe(true);
+    expect(isRemoteKey("PLAY_PAUSE")).toBe(true);
     expect(isRemoteKey("CLICK")).toBe(false);
   });
 

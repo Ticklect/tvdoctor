@@ -63,6 +63,15 @@ export const WEB_REMOTE_KEYBOARD_MAP: Readonly<Record<RemoteKey, string>> = {
   RIGHT: "ArrowRight",
   SELECT: "Enter",
   BACK: "Escape",
+  HOME: "Home",
+  PLAY_PAUSE: "MediaPlayPause",
+  PLAY: "MediaPlay",
+  PAUSE: "MediaPause",
+  STOP: "MediaStop",
+  NEXT: "MediaNext",
+  PREVIOUS: "MediaPrevious",
+  REWIND: "MediaRewind",
+  FAST_FORWARD: "MediaFastForward",
 };
 
 export const WEB_DRIVER_CAPABILITIES: ReadonlySet<Capability> = new Set([

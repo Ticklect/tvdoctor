@@ -1,6 +1,6 @@
 import {
   availableObservation,
-  REMOTE_KEYS,
+  NAVIGATION_KEYS,
   type ActionResult,
   type Capability,
   type RemoteKey,
@@ -235,6 +235,17 @@ describe("M8 explorer hardening", () => {
     expect(observation).toMatchObject({ snapshotsCaptured: 3, settled: true });
     expect(focusStableId(observation.snapshot)).toBe("stress-card-3");
 
+    const activated = await pressAndObserve(stableDriver, "SELECT", {
+      strategy: "stable-snapshot",
+      maxSnapshots: 4,
+      requiredStableSnapshots: 2,
+      keyOverrides: {
+        SELECT: { maxSnapshots: 4, requiredStableSnapshots: 3 },
+      },
+      wait: async () => undefined,
+    });
+    expect(activated).toMatchObject({ snapshotsCaptured: 4, settled: true });
+
     let snapshotSequence = 0;
     const neverStable = new CarouselDriver(10);
     const driver: TVDoctorDriver = {
@@ -302,7 +313,7 @@ describe("M8 explorer hardening", () => {
     });
 
     expect(result.termination).toMatchObject({ reason: "settling-exhausted", complete: false });
-    expect(result.statistics.unsettledActions).toBe(REMOTE_KEYS.length);
+    expect(result.statistics.unsettledActions).toBe(NAVIGATION_KEYS.length);
     expect(observedActionCounts).toEqual([1, 2, 3, 4, 5, 6]);
   });
 

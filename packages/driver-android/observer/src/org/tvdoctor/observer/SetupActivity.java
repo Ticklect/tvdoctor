@@ -21,7 +21,10 @@ public final class SetupActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        storeToken(getIntent());
+        if (storeToken(getIntent()) && isServiceEnabled()) {
+            finish();
+            return;
+        }
         render();
     }
 
@@ -29,24 +32,28 @@ public final class SetupActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        storeToken(intent);
+        if (storeToken(intent) && isServiceEnabled()) {
+            finish();
+            return;
+        }
         render();
     }
 
-    private void storeToken(Intent intent) {
+    private boolean storeToken(Intent intent) {
         String token = intent.getStringExtra(TOKEN_EXTRA);
         if (token != null && token.matches("[0-9a-f]{64}")) {
-            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            return getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                 .edit()
                 .putString(TOKEN_KEY, token)
                 .commit();
         }
+        return false;
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        render();
+        if (!isFinishing()) render();
     }
 
     private void render() {
@@ -94,10 +101,10 @@ public final class SetupActivity extends Activity {
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         );
         if (TextUtils.isEmpty(enabledServices)) return false;
-        ComponentName component = new ComponentName(this, ObserverAccessibilityService.class);
-        String expected = component.flattenToString();
+        ComponentName expected = new ComponentName(this, ObserverAccessibilityService.class);
         for (String enabled : enabledServices.split(":")) {
-            if (expected.equalsIgnoreCase(enabled)) return true;
+            ComponentName candidate = ComponentName.unflattenFromString(enabled);
+            if (expected.equals(candidate)) return true;
         }
         return false;
     }

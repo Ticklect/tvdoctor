@@ -43,6 +43,10 @@ const COMPONENT_CLASS_PATTERN = /^(?:\.[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)*|[A-Za
 const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
   UP: "KEYCODE_DPAD_UP", DOWN: "KEYCODE_DPAD_DOWN", LEFT: "KEYCODE_DPAD_LEFT",
   RIGHT: "KEYCODE_DPAD_RIGHT", SELECT: "KEYCODE_DPAD_CENTER", BACK: "KEYCODE_BACK",
+  HOME: "KEYCODE_HOME", PLAY_PAUSE: "KEYCODE_MEDIA_PLAY_PAUSE", PLAY: "KEYCODE_MEDIA_PLAY",
+  PAUSE: "KEYCODE_MEDIA_PAUSE", STOP: "KEYCODE_MEDIA_STOP", NEXT: "KEYCODE_MEDIA_NEXT",
+  PREVIOUS: "KEYCODE_MEDIA_PREVIOUS", REWIND: "KEYCODE_MEDIA_REWIND",
+  FAST_FORWARD: "KEYCODE_MEDIA_FAST_FORWARD",
 };
 
 interface NormalisedOptions {
@@ -55,6 +59,8 @@ interface NormalisedOptions {
   readonly settleTimeoutMs: number;
   readonly quietWindowMs: number;
   readonly noResponseGraceMs: number;
+  readonly resetStableWindowMs: number;
+  readonly resetSettleTimeoutMs: number;
   readonly observerConnectTimeoutMs: number;
   readonly observerRequestTimeoutMs: number;
   readonly signal: AbortSignal | undefined;
@@ -106,8 +112,13 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
   const quietWindowMs = positiveInteger(options.quietWindowMs, 100, "quietWindowMs");
   const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 220, "noResponseGraceMs");
   const settleTimeoutMs = positiveInteger(options.settleTimeoutMs, 2_500, "settleTimeoutMs");
+  const resetStableWindowMs = positiveInteger(options.resetStableWindowMs, 600, "resetStableWindowMs");
+  const resetSettleTimeoutMs = positiveInteger(options.resetSettleTimeoutMs, 8_000, "resetSettleTimeoutMs");
   if (quietWindowMs >= settleTimeoutMs || noResponseGraceMs >= settleTimeoutMs) {
     throw new TypeError("Android observer quiet and no-response windows must be shorter than settleTimeoutMs.");
+  }
+  if (resetStableWindowMs >= resetSettleTimeoutMs) {
+    throw new TypeError("Android reset stability window must be shorter than resetSettleTimeoutMs.");
   }
   return {
     executor: options.executor ?? new NodeAdbCommandExecutor(options.adbPath ?? defaultAdbPath(), {
@@ -118,9 +129,9 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
     maxCommandOutputBytes: options.maxCommandOutputBytes ?? 2 * 1024 * 1024,
     maxLogEntries: options.maxLogEntries ?? 500,
     maxScreenshotBytes: options.maxScreenshotBytes ?? 25 * 1024 * 1024,
-    settleTimeoutMs, quietWindowMs, noResponseGraceMs,
+    settleTimeoutMs, quietWindowMs, noResponseGraceMs, resetStableWindowMs, resetSettleTimeoutMs,
     observerConnectTimeoutMs: positiveInteger(options.observerConnectTimeoutMs, 5_000, "observerConnectTimeoutMs"),
-    observerRequestTimeoutMs: positiveInteger(options.observerRequestTimeoutMs, 5_000, "observerRequestTimeoutMs"),
+    observerRequestTimeoutMs: positiveInteger(options.observerRequestTimeoutMs, 7_500, "observerRequestTimeoutMs"),
     signal: options.signal,
     observerAsset: options.observerAsset,
     createObserverClient: options.createObserverClient ?? AndroidObserverClient.connect,
@@ -522,7 +533,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
         this.#observer = await this.#options.createObserverClient({
           port, token, hostVersion: "0.1.0",
           connectTimeoutMs: Math.min(1_000, this.#options.observerConnectTimeoutMs),
-          requestTimeoutMs: Math.min(1_000, this.#options.observerRequestTimeoutMs),
+          requestTimeoutMs: this.#options.observerRequestTimeoutMs,
           ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
         });
         return;
@@ -544,13 +555,22 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #launchPackage(packageName: string, component: string | null): Promise<void> {
     if (component === null) {
       await this.#deviceCommand(["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"], { timeoutMs: 30_000 });
-    } else await this.#deviceCommand(["shell", "am", "start", "-W", "-n", component], { timeoutMs: 30_000 });
+    } else {
+      // Permission-controller activities can remain attached to the app's task
+      // after force-stop. Without a clean task, Android may deliver this launch
+      // intent to that stale system dialog instead of starting the requested
+      // TV activity. NEW_TASK | CLEAR_TASK preserves app data while restoring a
+      // deterministic launch boundary.
+      await this.#deviceCommand([
+        "shell", "am", "start", "-W", "-f", "0x10008000", "-n", component,
+      ], { timeoutMs: 30_000 });
+    }
   }
   async #waitForTargetState(packageName: string, forceFull: boolean): Promise<AndroidStateSnapshot> {
     const observer = await this.#requiredObserver(); const deadline = performance.now() + 8_000; let latestPackage: string | null = null;
     while (performance.now() < deadline) {
       const response = await observer.request({ type: "current_state", forceFull }, {
-        timeoutMs: 5_000,
+        timeoutMs: this.#options.observerRequestTimeoutMs,
         ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
       });
       const state = parseObserverState(response.state); latestPackage = state.packageName;
@@ -562,7 +582,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #resyncTargetState(packageName: string): Promise<AndroidStateSnapshot> {
     const observer = await this.#requiredObserver();
     const response = await observer.request({ type: "resync" }, {
-      timeoutMs: 5_000,
+      timeoutMs: this.#options.observerRequestTimeoutMs,
       ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
     });
     const state = parseObserverState(response.state);
@@ -572,14 +592,17 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return this.#snapshotFromState(state);
   }
   async #waitForStableTargetState(packageName: string): Promise<AndroidStateSnapshot> {
-    const deadline = performance.now() + this.#options.settleTimeoutMs;
+    const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let previousFingerprint: string | null = null;
     let stableSince = performance.now();
     let latest: AndroidStateSnapshot | null = null;
     while (performance.now() < deadline) {
       const observer = await this.#requiredObserver();
       const response = await observer.request({ type: "resync" }, {
-        timeoutMs: Math.max(1, Math.min(5_000, Math.ceil(deadline - performance.now()))),
+        timeoutMs: Math.max(1, Math.min(
+          this.#options.observerRequestTimeoutMs,
+          Math.ceil(deadline - performance.now()),
+        )),
         ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
       });
       const state = parseObserverState(response.state);
@@ -591,7 +614,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (state.stateFingerprint !== previousFingerprint) {
         previousFingerprint = state.stateFingerprint;
         stableSince = observedAt;
-      } else if (observedAt - stableSince >= this.#options.noResponseGraceMs) {
+      } else if (observedAt - stableSince >= this.#options.resetStableWindowMs) {
         return latest;
       }
       const remainingMs = deadline - performance.now();

@@ -216,7 +216,9 @@ async function main() {
     const observerVerification = run(process.execPath, ["--input-type=module", "--eval", `
       const { resolveAndroidObserverAsset } = await import("@tvdoctor/driver-android");
       const asset = await resolveAndroidObserverAsset();
-      if (asset.protocolVersion !== 2 || !/^[0-9a-f]{64}$/u.test(asset.sha256)) {
+      if (asset.protocolVersion !== 2
+        || !/^[0-9a-f]{64}$/u.test(asset.sha256)
+        || !/^[0-9a-f]{64}$/u.test(asset.certificateSha256)) {
         throw new Error("Installed observer asset verification failed");
       }
       process.stdout.write("installed observer asset checksum: PASS\\n");

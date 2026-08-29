@@ -636,7 +636,8 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => 0,
     });
 
-    expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
+    expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
+    expect(result.termination.detail).toMatch(/^Root restoration produced state-/u);
     expect(result.statistics).toMatchObject({ physicalActions: 0, visitedStates: 1 });
     expect(result.graph.actions).toHaveLength(0);
   });
@@ -684,7 +685,8 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => 0,
     });
 
-    expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
+    expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
+    expect(result.termination.detail).toContain("Replay checkpoint 1/2 after RIGHT produced state-");
     expect(pressed).toContain("6:root:RIGHT");
     expect(pressed).not.toContain("6:wrong:SELECT");
     expect(result.statistics.pendingStates).toBeGreaterThanOrEqual(0);

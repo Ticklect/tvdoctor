@@ -1,9 +1,22 @@
-import type {
-  ActionResult,
-  RemoteKey,
-  StateSnapshot,
-  TVDoctorDriver,
+import {
+  isRemoteKey,
+  type ActionResult,
+  type RemoteKey,
+  type StateSnapshot,
+  type TVDoctorDriver,
 } from "@tvdoctor/protocol";
+
+export interface ActionSettlingLimits {
+  /** Maximum snapshots, including the first snapshot after press. */
+  readonly maxSnapshots?: number;
+  /** Consecutive equal snapshots required by stable-snapshot settling. */
+  readonly requiredStableSnapshots?: number;
+}
+
+/** Per-key limits allow longer proofs for activation than focus-only navigation. */
+export type ActionSettlingKeyOverrides = Readonly<Partial<Record<RemoteKey, ActionSettlingLimits>>>;
+
+type NormalisedActionSettlingLimits = Required<ActionSettlingLimits>;
 import { computeSnapshotFingerprint } from "./fingerprint.js";
 
 export type ActionSettlingStrategy = "driver" | "stable-snapshot";
@@ -18,6 +31,8 @@ export interface ActionSettlingOptions {
   readonly maxSnapshots?: number;
   /** Consecutive equal snapshots required by stable-snapshot settling. */
   readonly requiredStableSnapshots?: number;
+  /** Optional per-key limits; unspecified keys use the limits above. */
+  readonly keyOverrides?: ActionSettlingKeyOverrides;
   /** Delay between stability polls. Zero is valid and remains the default. */
   readonly pollIntervalMs?: number;
   /** Injectable wait primitive for deterministic hosts and tests. */
@@ -35,6 +50,7 @@ export interface NormalisedActionSettlingOptions {
   readonly strategy: ActionSettlingStrategy;
   readonly maxSnapshots: number;
   readonly requiredStableSnapshots: number;
+  readonly keyOverrides: Readonly<Partial<Record<RemoteKey, NormalisedActionSettlingLimits>>>;
   readonly pollIntervalMs: number;
   readonly wait: (durationMs: number) => Promise<void>;
   readonly equivalent: (previous: StateSnapshot, current: StateSnapshot) => boolean;
@@ -126,10 +142,47 @@ export function normaliseActionSettlingOptions(
   if (strategy === "driver" && (maxSnapshots !== 1 || requiredStableSnapshots !== 1)) {
     throw new TypeError("driver settling requires exactly one snapshot.");
   }
+  if (options.keyOverrides !== undefined
+    && (typeof options.keyOverrides !== "object" || options.keyOverrides === null || Array.isArray(options.keyOverrides))) {
+    throw new TypeError("keyOverrides must be an object.");
+  }
+  const keyOverrides: Partial<Record<RemoteKey, NormalisedActionSettlingLimits>> = {};
+  for (const [rawKey, rawLimits] of Object.entries(options.keyOverrides ?? {})) {
+    if (!isRemoteKey(rawKey)) throw new TypeError(`keyOverrides contains an unsupported remote key: ${rawKey}.`);
+    if (typeof rawLimits !== "object" || rawLimits === null || Array.isArray(rawLimits)) {
+      throw new TypeError(`keyOverrides.${rawKey} must be an object.`);
+    }
+    const unknownFields = Object.keys(rawLimits).filter((field) => (
+      field !== "maxSnapshots" && field !== "requiredStableSnapshots"
+    ));
+    if (unknownFields.length > 0) {
+      throw new TypeError(`keyOverrides.${rawKey} contains an unsupported field: ${unknownFields[0]}.`);
+    }
+    const overrideMaxSnapshots = positiveInteger(
+      rawLimits.maxSnapshots ?? maxSnapshots,
+      `keyOverrides.${rawKey}.maxSnapshots`,
+    );
+    const overrideRequiredStableSnapshots = positiveInteger(
+      rawLimits.requiredStableSnapshots ?? requiredStableSnapshots,
+      `keyOverrides.${rawKey}.requiredStableSnapshots`,
+    );
+    if (overrideRequiredStableSnapshots > overrideMaxSnapshots) {
+      throw new TypeError(`keyOverrides.${rawKey}.requiredStableSnapshots must not exceed maxSnapshots.`);
+    }
+    if (strategy === "driver"
+      && (overrideMaxSnapshots !== 1 || overrideRequiredStableSnapshots !== 1)) {
+      throw new TypeError("driver settling requires exactly one snapshot for every key.");
+    }
+    keyOverrides[rawKey] = {
+      maxSnapshots: overrideMaxSnapshots,
+      requiredStableSnapshots: overrideRequiredStableSnapshots,
+    };
+  }
   return {
     strategy,
     maxSnapshots,
     requiredStableSnapshots,
+    keyOverrides,
     pollIntervalMs: nonNegativeFinite(
       options.pollIntervalMs ?? DEFAULT_ACTION_SETTLING_OPTIONS.pollIntervalMs,
       "pollIntervalMs",
@@ -194,6 +247,7 @@ export async function pressAndObserve(
 
   // Stable-snapshot mode seeds its equivalence chain from the driver's settled
   // observation when present, then keeps polling canonical snapshots.
+  const keyLimits = settling.keyOverrides[key] ?? settling;
   let stableSnapshots = 1;
   if (actionResult.postActionSnapshot !== undefined) {
     snapshot = actionResult.postActionSnapshot;
@@ -202,8 +256,8 @@ export async function pressAndObserve(
     snapshot = await driver.snapshot();
     snapshotsCaptured = 1;
   }
-  while (snapshotsCaptured < settling.maxSnapshots
-    && stableSnapshots < settling.requiredStableSnapshots) {
+  while (snapshotsCaptured < keyLimits.maxSnapshots
+    && stableSnapshots < keyLimits.requiredStableSnapshots) {
     await settling.wait(settling.pollIntervalMs);
     const nextSnapshot = await driver.snapshot();
     snapshotsCaptured += 1;
@@ -217,6 +271,6 @@ export async function pressAndObserve(
     snapshot,
     snapshotsCaptured,
     reusedDriverObservation,
-    settled: stableSnapshots >= settling.requiredStableSnapshots,
+    settled: stableSnapshots >= keyLimits.requiredStableSnapshots,
   };
 }

@@ -49,7 +49,8 @@ Every platform adapter implements the small `TVDoctorDriver` surface:
 - required `capabilities()`, `press()`, and `snapshot()` methods;
 - optional screenshot, reset, install, launch, and log operations;
 - explicit available/unavailable observations instead of guessed values;
-- normalised remote keys: Up, Down, Left, Right, Select, and Back;
+- bounded automatic navigation keys: Up, Down, Left, Right, Select, and Back;
+- explicit remote controls for Home and media playback/seek actions;
 - JSON-serialisable UI hierarchy, focus, names, roles, bounds, and state.
 
 Capabilities describe what a driver can observe or perform, not what the target

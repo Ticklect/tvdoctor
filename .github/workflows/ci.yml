@@ -94,3 +94,68 @@ jobs:
             packages/**/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
+
+  android-emulator:
+    name: Android TV observer integration (API 36)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the exact candidate
+        # actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Configure Node.js 24
+        # actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build host packages
+        run: npm run build:packages
+
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run controlled Android TV fixture through the packaged observer
+        # reactivecircus/android-emulator-runner@v2.38.0
+        uses: reactivecircus/android-emulator-runner@c9c93e6ba9c4194322e114c40970d5983d9a07cc
+        with:
+          api-level: 36
+          target: android-tv
+          arch: x86_64
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: |
+            pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
+            adb install -r packages/driver-android/observer/tvdoctor-observer.apk
+            adb shell settings put secure enabled_accessibility_services org.tvdoctor.observer/.ObserverAccessibilityService
+            adb shell settings put secure accessibility_enabled 1
+            set +e
+            node packages/cli/dist/bin.js test --apk fixtures/broken-android-tv/build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk --device emulator-5554 --mode quick --output artifacts/android-ci
+            scan_status=$?
+            set -e
+            if [ "$scan_status" -ne 1 ]; then
+              echo "Expected deterministic finding exit code 1; received $scan_status."
+              exit 1
+            fi
+            node scripts/verify-android-ci-report.mjs artifacts/android-ci/report.json
+
+      - name: Upload Android integration evidence
+        if: ${{ always() }}
+        # actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tvdoctor-android-api36-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/android-ci/
+          if-no-files-found: warn
+          retention-days: 7

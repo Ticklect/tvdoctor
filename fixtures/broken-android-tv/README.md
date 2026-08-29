@@ -17,8 +17,9 @@ detected and replayed. The canonical seed is in `seeded-defects.json`.
 
 ## Build
 
-The build is Gradle-free and uses only JDK tools plus Android SDK API/build-tools
-36. It never starts, wipes, or changes an emulator.
+The build is Gradle-free and uses only JDK tools plus the newest installed
+Android SDK platform/build-tools while targeting API 36. It never starts,
+wipes, or changes an emulator.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1 `
@@ -38,9 +39,11 @@ build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk
 ```
 
 The script compiles resources, compiles Java 17 bytecode, converts it with D8,
-aligns the APK, creates an ephemeral fixture-only debug key under ignored
-`build/`, signs the APK, and runs structural/signature verification. No signing
-material is committed.
+aligns the APK, signs it with the repository-owned fixture-only key under
+`signing/`, and runs structural/signature verification. That password-`android`
+test key is intentionally committed so repeated local and hosted builds are
+byte-for-byte stable and upgrade-compatible. It is never used for the observer
+or a release artifact.
 
 ## Static tests and APK verification
 

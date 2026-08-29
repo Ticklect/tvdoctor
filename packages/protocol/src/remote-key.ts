@@ -1,10 +1,25 @@
-export const REMOTE_KEYS = [
+/** Safe deterministic keys used by automatic navigation exploration. */
+export const NAVIGATION_KEYS = [
   "UP",
   "DOWN",
   "LEFT",
   "RIGHT",
   "SELECT",
   "BACK",
+] as const;
+
+/** Explicit remote inputs accepted by drivers, startup actions, and replay. */
+export const REMOTE_KEYS = [
+  ...NAVIGATION_KEYS,
+  "HOME",
+  "PLAY_PAUSE",
+  "PLAY",
+  "PAUSE",
+  "STOP",
+  "NEXT",
+  "PREVIOUS",
+  "REWIND",
+  "FAST_FORWARD",
 ] as const;
 
 export type RemoteKey = (typeof REMOTE_KEYS)[number];

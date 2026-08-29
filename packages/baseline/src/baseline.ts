@@ -1,6 +1,7 @@
 import {
   isCapability,
   parseTVDoctorReportV1,
+  REMOTE_KEYS,
   type Capability,
   type IssueConfidence,
   type IssueSeverity,
@@ -29,7 +30,7 @@ import {
 const IDENTIFIER_LIMIT = 512;
 const TEXT_LIMIT = 4_000;
 const MAX_ITEMS = 20_000;
-const REMOTE_KEYS: ReadonlySet<string> = new Set(["UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK"]);
+const REMOTE_KEY_SET: ReadonlySet<string> = new Set(REMOTE_KEYS);
 const SEVERITIES: ReadonlySet<string> = new Set(["critical", "high", "medium", "low", "info"]);
 const CONFIDENCES: ReadonlySet<string> = new Set(["deterministic", "heuristic", "inference", "unobservable"]);
 const BIDI_FORMAT_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
@@ -189,7 +190,7 @@ function parseTransition(value: unknown, path: string): BaselineTransitionObserv
     "toFocusKey",
   ]);
   const action = text(item["action"], `${path}.action`, 16);
-  if (!REMOTE_KEYS.has(action)) throw new TypeError(`${path}.action is not a remote key.`);
+  if (!REMOTE_KEY_SET.has(action)) throw new TypeError(`${path}.action is not a remote key.`);
   return {
     key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
     fromScreenKey: text(item["fromScreenKey"], `${path}.fromScreenKey`, IDENTIFIER_LIMIT),

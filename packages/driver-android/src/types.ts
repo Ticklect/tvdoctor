@@ -40,6 +40,10 @@ export interface AndroidTvDriverOptions {
   readonly quietWindowMs?: number;
   /** Event-free period before bounded canonical no-op confirmation begins. */
   readonly noResponseGraceMs?: number;
+  /** Stable canonical-state window required after launch or reset. */
+  readonly resetStableWindowMs?: number;
+  /** Bounded deadline for launch/reset canonical stabilization. */
+  readonly resetSettleTimeoutMs?: number;
   readonly observerConnectTimeoutMs?: number;
   readonly observerRequestTimeoutMs?: number;
   /** Cooperative cancellation shared by ADB setup, input, and observer requests. */

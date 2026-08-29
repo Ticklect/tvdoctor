@@ -42,10 +42,21 @@ export const ANDROID_EXPLORATION_BUDGETS: Readonly<Record<
 >> = {
   quick: {
     ...EXPLORATION_BUDGET_PROFILES.quick,
-    maxDurationMs: 120_000,
+    maxDurationMs: 720_000,
   },
   deep: EXPLORATION_BUDGET_PROFILES.deep,
 };
+
+export const ANDROID_ACTION_SETTLING = {
+  strategy: "stable-snapshot",
+  maxSnapshots: 6,
+  requiredStableSnapshots: 3,
+  pollIntervalMs: 250,
+  keyOverrides: {
+    SELECT: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+    BACK: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+  },
+} as const;
 
 async function fileArtifact(
   outputRoot: string,
@@ -561,6 +572,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     const explorationPromise = explore(driver, {
       profile: options.mode,
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
+      settling: ANDROID_ACTION_SETTLING,
       restoreInitialState: async () => {
         await driver.reset("relaunch");
       },
@@ -628,6 +640,25 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       ));
     } catch {
       // Log capture is supplementary; the scan result remains authoritative.
+    }
+    try {
+      const explorationEvidence = sanitiseEvidenceJson(JSON.parse(JSON.stringify({
+        termination: result.termination,
+        budgets: result.budgets,
+        actionOrder: result.actionOrder,
+        statistics: result.statistics,
+      })) as JsonValue);
+      const explorationPath = join(outputRoot, "android-exploration.json");
+      await writeFile(explorationPath, `${stableJson(explorationEvidence)}\n`);
+      runArtifacts.push(await fileArtifact(
+        outputRoot,
+        explorationPath,
+        "run:android-exploration",
+        "report",
+        "application/json",
+      ));
+    } catch {
+      // The canonical report verdict remains authoritative if supplementary diagnostics fail.
     }
     try {
       const actionProfiles = result.graph.actions.map((action) => ({

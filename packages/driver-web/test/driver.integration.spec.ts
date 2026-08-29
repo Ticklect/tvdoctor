@@ -5,6 +5,7 @@ import type { Page } from "playwright";
 import {
   PlaywrightWebDriver,
   WEB_DRIVER_CAPABILITIES,
+  WEB_REMOTE_KEYBOARD_MAP,
   type WebDomNodeSnapshot,
 } from "../src/index.js";
 import { waitForInitialPageSettle } from "../src/settling.js";
@@ -88,6 +89,20 @@ test("reports an exact, deliberately limited capability set", async () => {
   expect(capabilities).not.toContain("accessibility-tree");
   expect(capabilities).not.toContain("install");
   expect(capabilities).not.toContain("video-capture");
+});
+
+test("maps explicit HOME and media controls to Playwright-supported keyboard keys", () => {
+  expect(WEB_REMOTE_KEYBOARD_MAP).toMatchObject({
+    HOME: "Home",
+    PLAY_PAUSE: "MediaPlayPause",
+    PLAY: "MediaPlay",
+    PAUSE: "MediaPause",
+    STOP: "MediaStop",
+    NEXT: "MediaNext",
+    PREVIOUS: "MediaPrevious",
+    REWIND: "MediaRewind",
+    FAST_FORWARD: "MediaFastForward",
+  });
 });
 
 test("RIGHT, LEFT, SELECT, and BACK drive the real fixture and snapshots expose focus bounds", async ({ baseURL }) => {

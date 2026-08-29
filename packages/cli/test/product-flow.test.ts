@@ -10,6 +10,7 @@ import {
 } from "../src/index.js";
 import { defaultOutputDirectory } from "../src/product-output.js";
 import {
+  ANDROID_ACTION_SETTLING,
   ANDROID_EXPLORATION_BUDGETS,
   androidPreflight,
   checkApkCompatibility,
@@ -44,12 +45,22 @@ describe("guided product output", () => {
     })).toContain("example-com-deep-2026-08-26-00-30-04-123");
   });
 
-  it("gives the real Android driver enough time for a useful Quick traversal", () => {
+  it("gives stable Android observations enough time for a useful Quick traversal", () => {
     expect(ANDROID_EXPLORATION_BUDGETS.quick).toMatchObject({
-      maxDurationMs: 120_000,
+      maxDurationMs: 720_000,
       maxDepth: 8,
     });
     expect(ANDROID_EXPLORATION_BUDGETS.deep.maxDurationMs).toBe(1_800_000);
+    expect(ANDROID_ACTION_SETTLING).toEqual({
+      strategy: "stable-snapshot",
+      maxSnapshots: 6,
+      requiredStableSnapshots: 3,
+      pollIntervalMs: 250,
+      keyOverrides: {
+        SELECT: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+        BACK: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+      },
+    });
   });
 });
 

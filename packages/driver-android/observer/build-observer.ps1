@@ -1,6 +1,7 @@
 param(
     [string]$AndroidSdk,
-    [string]$JavaHome
+    [string]$JavaHome,
+    [string]$ExpectedCertificateSha256 = $env:TVDOCTOR_OBSERVER_CERTIFICATE_SHA256
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,7 +89,7 @@ Invoke-Checked $aapt2 @(
     "--min-sdk-version", "23",
     "--target-sdk-version", "36",
     "--version-code", "1",
-    "--version-name", "0.1.5",
+    "--version-name", "0.1.8",
     $compiledResources
 )
 
@@ -155,7 +156,33 @@ Invoke-Checked $apksigner @(
     "--out", $outputApk,
     $alignedApk
 )
-Invoke-Checked $apksigner @("verify", "--verbose", "--print-certs", $outputApk)
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $verificationOutput = & $apksigner @("verify", "--verbose", "--print-certs", $outputApk) 2>&1
+    $verificationExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorPreference
+}
+if ($verificationExitCode -ne 0) { throw "Observer APK signature verification failed.`n$verificationOutput" }
+$verificationOutput | Write-Output
+$certificateMatch = [regex]::Match(
+    ($verificationOutput -join "`n"),
+    "Signer #1 certificate SHA-256 digest:\s*([0-9a-f]{64})",
+    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+)
+if (-not $certificateMatch.Success) { throw "Observer APK certificate SHA-256 digest was not reported by apksigner." }
+$certificateSha256 = $certificateMatch.Groups[1].Value.ToLowerInvariant()
+if (-not [string]::IsNullOrWhiteSpace($ExpectedCertificateSha256)) {
+    $normalisedExpectedCertificate = $ExpectedCertificateSha256.Trim().ToLowerInvariant()
+    if ($normalisedExpectedCertificate -notmatch '^[0-9a-f]{64}$') {
+        throw "Expected observer certificate SHA-256 must contain exactly 64 hexadecimal characters."
+    }
+    if ($certificateSha256 -ne $normalisedExpectedCertificate) {
+        throw "Observer APK certificate does not match the configured release certificate SHA-256."
+    }
+}
 
 $sha256Algorithm = [System.Security.Cryptography.SHA256]::Create()
 $apkStream = [System.IO.File]::OpenRead($outputApk)
@@ -167,9 +194,10 @@ try {
 }
 $manifest = [ordered]@{
     packageName = "org.tvdoctor.observer"
-    versionName = "0.1.5"
+    versionName = "0.1.8"
     protocolVersion = 2
     sha256 = $sha256
+    certificateSha256 = $certificateSha256
 }
 $manifestJson = $manifest | ConvertTo-Json
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)

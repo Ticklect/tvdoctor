@@ -9,6 +9,7 @@ export interface AndroidObserverAsset {
   readonly versionName: string;
   readonly protocolVersion: number;
   readonly sha256: string;
+  readonly certificateSha256: string;
 }
 
 export async function resolveAndroidObserverAsset(): Promise<AndroidObserverAsset> {
@@ -24,7 +25,9 @@ export async function resolveAndroidObserverAsset(): Promise<AndroidObserverAsse
   if (parsed["packageName"] !== "org.tvdoctor.observer"
     || typeof parsed["versionName"] !== "string"
     || parsed["protocolVersion"] !== ANDROID_OBSERVER_PROTOCOL_VERSION
-    || typeof parsed["sha256"] !== "string") {
+    || typeof parsed["sha256"] !== "string"
+    || typeof parsed["certificateSha256"] !== "string"
+    || !/^[0-9a-f]{64}$/u.test(parsed["certificateSha256"])) {
     throw new Error("Packaged Android observer manifest is invalid or incompatible.");
   }
   const sha256 = createHash("sha256").update(apk).digest("hex");
@@ -35,5 +38,6 @@ export async function resolveAndroidObserverAsset(): Promise<AndroidObserverAsse
     versionName: parsed["versionName"],
     protocolVersion: parsed["protocolVersion"],
     sha256,
+    certificateSha256: parsed["certificateSha256"],
   } as AndroidObserverAsset;
 }

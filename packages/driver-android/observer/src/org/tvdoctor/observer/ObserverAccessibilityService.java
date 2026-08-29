@@ -45,7 +45,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     private static final int MAX_NODES = 4_096;
     private static final int MAX_DEPTH = 64;
     private static final int MAX_STRING = 1_024;
-    private static final String OBSERVER_VERSION = "0.1.5";
+    private static final String OBSERVER_VERSION = "0.1.8";
 
     private final AtomicLong eventSequence = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean();
@@ -72,13 +72,13 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         long now = SystemClock.elapsedRealtime();
         long sequence = eventSequence.incrementAndGet();
         lastEventElapsedMs = now;
-        CharSequence packageName = event.getPackageName();
-        CharSequence className = event.getClassName();
-        if (packageName != null) lastPackageName = bounded(packageName.toString());
-        if (className != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            lastWindowClassName = bounded(className.toString());
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            CharSequence packageName = event.getPackageName();
+            CharSequence className = event.getClassName();
+            if (packageName != null) lastPackageName = bounded(packageName.toString());
+            if (className != null) lastWindowClassName = bounded(className.toString());
+            lastWindowId = event.getWindowId();
         }
-        lastWindowId = event.getWindowId();
         for (ActionContext action : actions.values()) {
             if (sequence > action.baselineSequence && action.firstEventElapsedMs < 0) {
                 action.firstEventElapsedMs = now;
@@ -256,7 +256,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
 
     private JSONObject beginAction(JSONObject request, long id) throws Exception {
         String key = requiredString(request, "key", 16);
-        if (!key.matches("UP|DOWN|LEFT|RIGHT|SELECT|BACK")) {
+        if (!key.matches("UP|DOWN|LEFT|RIGHT|SELECT|BACK|HOME|PLAY_PAUSE|PLAY|PAUSE|STOP|NEXT|PREVIOUS|REWIND|FAST_FORWARD")) {
             return errorResponse(id, "invalid_key", "Unsupported remote key.");
         }
         if (lastStateFingerprint.isEmpty()) captureOnMain(false);
@@ -383,10 +383,19 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         FocusHolder focus = new FocusHolder();
         Counter counter = new Counter();
         int maximumDepth = 0;
+        String capturedPackageName = lastPackageName;
+        int capturedWindowId = lastWindowId;
         if (root != null) {
+            String rootPackageName = nullableString(root.getPackageName());
+            if (rootPackageName != null) capturedPackageName = rootPackageName;
+            capturedWindowId = root.getWindowId();
             maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root");
             root.recycle();
         }
+        String capturedWindowClassName = capturedPackageName != null
+            && capturedPackageName.equals(lastPackageName)
+            ? lastWindowClassName
+            : null;
         String structureFingerprint = sha256(structure.toString());
         String focusSignature = focus.stableId == null ? "none" : focus.stableId;
         String stateFingerprint = sha256(structureFingerprint + "\u001f" + focusSignature);
@@ -396,9 +405,9 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         JSONObject state = new JSONObject()
             .put("sequence", eventSequence.get())
             .put("timestampMs", System.currentTimeMillis())
-            .put("packageName", nullable(lastPackageName))
-            .put("windowClassName", nullable(lastWindowClassName))
-            .put("windowId", lastWindowId < 0 ? JSONObject.NULL : lastWindowId)
+            .put("packageName", nullable(capturedPackageName))
+            .put("windowClassName", nullable(capturedWindowClassName))
+            .put("windowId", capturedWindowId < 0 ? JSONObject.NULL : capturedWindowId)
             .put("focused", focus.json == null ? JSONObject.NULL : focus.json)
             .put("structureFingerprint", structureFingerprint)
             .put("stateFingerprint", stateFingerprint)
@@ -429,8 +438,8 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         String packageName = nullableString(node.getPackageName());
         String text = nullableString(node.getText());
         String description = nullableString(node.getContentDescription());
-        String role = roleFor(className, node.isClickable());
         String viewId = boundedNullable(node.getViewIdResourceName());
+        String role = roleFor(className, viewId, node.isClickable());
         String stableId = viewId == null
             ? "synthetic:" + sha256(path + "\u001f" + nullToEmpty(description) + "\u001f" + nullToEmpty(text)).substring(0, 20)
             : bounded(viewId + "#" + sha256(path).substring(0, 12));
@@ -588,8 +597,9 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         return value == null ? "" : value;
     }
 
-    private static String roleFor(String className, boolean clickable) {
-        if (className == null) return clickable ? "button" : null;
+    private static String roleFor(String className, String viewId, boolean clickable) {
+        String resourceRole = roleFromViewId(viewId);
+        if (className == null) return resourceRole != null ? resourceRole : clickable ? "button" : null;
         String shortName = className.substring(className.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
         switch (shortName) {
             case "button":
@@ -605,8 +615,19 @@ public final class ObserverAccessibilityService extends AccessibilityService {
             case "listview":
             case "recyclerview": return "list";
             case "textview": return clickable ? "button" : "text";
-            default: return clickable ? "button" : null;
+            default: return resourceRole != null ? resourceRole : clickable ? "button" : null;
         }
+    }
+
+    private static String roleFromViewId(String viewId) {
+        if (viewId == null) return null;
+        String resourceName = viewId.substring(viewId.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
+        if (resourceName.equals("list") || resourceName.endsWith("_list")
+            || resourceName.equals("recycler") || resourceName.endsWith("_recycler")) {
+            return "list";
+        }
+        if (resourceName.equals("grid") || resourceName.endsWith("_grid")) return "grid";
+        return null;
     }
 
     private static String sha256(String value) {
