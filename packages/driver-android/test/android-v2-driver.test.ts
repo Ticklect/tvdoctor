@@ -196,9 +196,9 @@ describe("Android V2 observer-backed driver", () => {
     await driver.press("PLAY_PAUSE");
     await driver.press("FAST_FORWARD");
     const commands = executor.calls.map((call) => call.join(" "));
-    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_HOME");
-    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_MEDIA_PLAY_PAUSE");
-    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_MEDIA_FAST_FORWARD");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_HOME");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_PLAY_PAUSE");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_FAST_FORWARD");
     await driver.close();
   });
 

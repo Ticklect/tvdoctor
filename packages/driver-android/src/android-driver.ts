@@ -110,11 +110,7 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
   }
   const commandTimeoutMs = positiveInteger(options.commandTimeoutMs, 15_000, "commandTimeoutMs");
   const quietWindowMs = positiveInteger(options.quietWindowMs, 100, "quietWindowMs");
-  // Asynchronous Android input avoids dispatcher ANRs, but a loaded emulator
-  // can enqueue a key hundreds of milliseconds before accessibility receives
-  // it. Keep no-op confirmation conservative while changed actions continue
-  // to settle immediately from observer events.
-  const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 1_000, "noResponseGraceMs");
+  const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 220, "noResponseGraceMs");
   const settleTimeoutMs = positiveInteger(options.settleTimeoutMs, 2_500, "settleTimeoutMs");
   const resetStableWindowMs = positiveInteger(options.resetStableWindowMs, 600, "resetStableWindowMs");
   const resetSettleTimeoutMs = positiveInteger(options.resetSettleTimeoutMs, 8_000, "resetSettleTimeoutMs");
@@ -318,11 +314,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
       beginRoundTripMs = performance.now() - beginStarted;
       if (begin.actionId === undefined) throw new Error("Android observer did not return an action identity.");
       const inputStarted = performance.now();
-      // Android's synchronous input mode can block for five seconds and raise
-      // an application ANR while a TV window transition is still resolving.
-      // The observer is the action completion boundary, so enqueue exactly one
-      // key event asynchronously and let settle_action confirm its result.
-      await this.#deviceCommand(["shell", "input", "keyevent", "--async", KEY_CODES[key]], {
+      // Keep input synchronous after the durable focused-window launch guard.
+      // This is the delivery barrier that prevents a delayed key from crossing
+      // a reset boundary and mutating the next activity instance.
+      await this.#deviceCommand(["shell", "input", "keyevent", KEY_CODES[key]], {
         timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: 4_096,
       });
       const inputDispatchMs = performance.now() - inputStarted; inputDelivered = true;

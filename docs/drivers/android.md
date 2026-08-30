@@ -77,12 +77,13 @@ accessibility entry until the settings screen refreshes.
 For each action TVDoctor:
 
 1. arms a uniquely identified observer action;
-2. asynchronously enqueues one structured ADB key event, avoiding Android's
-   synchronous input-dispatch ANR path;
+2. sends one structured ADB key event synchronously after the target window
+   has proven continuously focused, preventing late input from crossing a
+   replay reset boundary;
 3. waits for focus, selection, scroll, window, or content events;
 4. requires a 100 ms event-quiet window, bounded by a 2.5 second deadline;
-5. uses a 1 second event-free grace period plus a second canonical sample for
-   no-op confirmation, covering delayed delivery on loaded emulators;
+5. uses a 220 ms event-free grace period plus a second canonical sample for
+   no-op confirmation;
 6. samples the returned canonical state at 250 ms intervals; DPAD movement
    requires three equivalent observations (at most six snapshots), while the
    screen-transition-prone `SELECT` and `BACK` actions require seven (at most
