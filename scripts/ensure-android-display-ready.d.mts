@@ -8,9 +8,15 @@ export interface AndroidDisplayReadyOptions {
 export interface AndroidDisplayReadyResult {
   readonly attempts: number;
   readonly powerState: string;
+  readonly displayState: string;
+  readonly inputState: string;
 }
 
-export function androidDisplayReady(powerState: string): boolean;
+export function androidDisplayReady(
+  powerState: string,
+  displayState: string,
+  inputState: string,
+): boolean;
 export function ensureAndroidDisplayReady(
   options: AndroidDisplayReadyOptions,
 ): Promise<AndroidDisplayReadyResult>;

@@ -140,6 +140,7 @@ jobs:
           api-level: 36
           target: android-tv
           arch: x86_64
+          profile: tv_1080p
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-metrics -camera-back none -camera-front none
           disable-animations: true
           script: bash scripts/run-android-emulator-ci.sh

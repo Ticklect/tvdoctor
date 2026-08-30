@@ -7,9 +7,10 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-export function androidDisplayReady(powerState) {
+export function androidDisplayReady(powerState, displayState, inputState) {
   return /(?:^|\s)mWakefulness=Awake(?:\s|$)/u.test(powerState)
-    && /(?:Display Power:\s*state=ON|mScreenState=ON|mState=ON)/u.test(powerState);
+    && /(?:Display State=ON|\bstate ON\b|mState=ON)/u.test(displayState)
+    && /FocusedWindows:\s*(?!<none>)[\s\S]*?displayId=\d+,\s*name=/u.test(inputState);
 }
 
 export async function ensureAndroidDisplayReady({
@@ -27,15 +28,26 @@ export async function ensureAndroidDisplayReady({
 
   await executeAdb(["shell", "svc", "power", "stayon", "true"]);
   let powerState = "No power state was returned.";
+  let displayState = "No display state was returned.";
+  let inputState = "No input state was returned.";
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await executeAdb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
     await executeAdb(["shell", "wm", "dismiss-keyguard"]);
     powerState = await executeAdb(["shell", "dumpsys", "power"]);
-    if (androidDisplayReady(powerState)) return { attempts: attempt, powerState };
+    displayState = await executeAdb(["shell", "dumpsys", "display"]);
+    inputState = await executeAdb(["shell", "dumpsys", "input"]);
+    if (androidDisplayReady(powerState, displayState, inputState)) {
+      return { attempts: attempt, powerState, displayState, inputState };
+    }
     if (attempt < maxAttempts) await wait(pollIntervalMs);
   }
   throw new Error(
-    `Android display did not become ready after ${String(maxAttempts)} attempts. Last power state:\n${powerState}`,
+    [
+      `Android display did not become ready after ${String(maxAttempts)} attempts.`,
+      `Last power state:\n${powerState}`,
+      `Last display state:\n${displayState}`,
+      `Last input state:\n${inputState}`,
+    ].join("\n"),
   );
 }
 
