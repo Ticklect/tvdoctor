@@ -50,11 +50,16 @@ function state(full: boolean, sequence = 1) {
 class FakeExecutor implements AdbCommandExecutor {
   readonly calls: string[][] = [];
   enabled = true;
+  focusAfterLaunchAttempt = 1;
+  launchAttempts = 0;
 
   async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
     const call = [...arguments_];
     this.calls.push(call);
     const joined = call.join(" ");
+    if (joined.includes("am start -W") && joined.includes("org.example.tv/.MainActivity")) {
+      this.launchAttempts += 1;
+    }
     let stdout = "";
     if (joined.includes("dumpsys package org.tvdoctor.observer")) stdout = "versionName=0.1.0";
     else if (joined.includes("settings get secure accessibility_enabled")) stdout = this.enabled ? "1" : "0";
@@ -69,6 +74,12 @@ class FakeExecutor implements AdbCommandExecutor {
     else if (joined.includes("ro.build.characteristics")) stdout = "tv";
     else if (joined.includes("ro.product.cpu.abilist")) stdout = "x86_64";
     else if (joined.includes("wm size")) stdout = "Physical size: 1920x1080";
+    else if (joined.includes("dumpsys window")) {
+      const focusedPackage = this.launchAttempts >= this.focusAfterLaunchAttempt
+        ? "org.example.tv/org.example.tv.MainActivity"
+        : "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
+      stdout = `mCurrentFocus=Window{1234567 u0 ${focusedPackage}}`;
+    }
     else if (joined.includes("pidof -s org.example.tv")) stdout = "321";
     else if (joined.includes("dumpsys package org.example.tv")) stdout = "versionName=1.2.3 versionCode=7";
     return { stdout: Buffer.from(stdout), stderr: "", exitCode: 0 };
@@ -185,9 +196,9 @@ describe("Android V2 observer-backed driver", () => {
     await driver.press("PLAY_PAUSE");
     await driver.press("FAST_FORWARD");
     const commands = executor.calls.map((call) => call.join(" "));
-    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_HOME");
-    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_PLAY_PAUSE");
-    expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_FAST_FORWARD");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_HOME");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_MEDIA_PLAY_PAUSE");
+    expect(commands).toContain("-s emulator-5554 shell input keyevent --async KEYCODE_MEDIA_FAST_FORWARD");
     await driver.close();
   });
 
@@ -222,6 +233,18 @@ describe("Android V2 observer-backed driver", () => {
     const driver = createDriver(executor, observer);
     await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
     expect(observer.resyncCalls).toBeGreaterThanOrEqual(3);
+    await driver.close();
+  });
+
+  it("relaunches when observer state is ready but Android has not focused the target window", async () => {
+    const executor = new FakeExecutor();
+    executor.focusAfterLaunchAttempt = 2;
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    expect(executor.calls.filter((call) => call.join(" ").includes(
+      "am start -W -f 0x10008000 -n org.example.tv/.MainActivity",
+    ))).toHaveLength(2);
+    expect(executor.calls.some((call) => call.join(" ").includes("dumpsys window"))).toBe(true);
     await driver.close();
   });
 

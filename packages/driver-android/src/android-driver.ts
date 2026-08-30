@@ -168,6 +168,12 @@ function optionalInteger(value: string | undefined): number | null {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
+function focusedWindowPackage(output: string): string | null {
+  const currentFocus = output.split(/\r?\n/u).find((line) => line.includes("mCurrentFocus="));
+  if (currentFocus === undefined || /mCurrentFocus=(?:null|Window\{[^}]*\snull(?:\s|\}))/u.test(currentFocus)) return null;
+  const match = /\s([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)\//u.exec(currentFocus);
+  return match?.[1] ?? null;
+}
 function pngDimensions(png: Uint8Array): { readonly width: number; readonly height: number } {
   const buffer = Buffer.from(png);
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -292,8 +298,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
     await this.#launchPackage(packageName, component);
     this.#currentApp = { ...app, id: packageName }; this.#component = component;
     this.#appMetadata = null; this.#cachedTree = null;
-    await this.#waitForTargetState(packageName, true);
-    await this.#waitForStableTargetState(packageName);
+    await this.#stabilizeTargetLaunch(packageName, true);
     await this.getAppMetadata();
   }
 
@@ -309,7 +314,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
       beginRoundTripMs = performance.now() - beginStarted;
       if (begin.actionId === undefined) throw new Error("Android observer did not return an action identity.");
       const inputStarted = performance.now();
-      await this.#deviceCommand(["shell", "input", "keyevent", KEY_CODES[key]], {
+      // Android's synchronous input mode can block for five seconds and raise
+      // an application ANR while a TV window transition is still resolving.
+      // The observer is the action completion boundary, so enqueue exactly one
+      // key event asynchronously and let settle_action confirm its result.
+      await this.#deviceCommand(["shell", "input", "keyevent", "--async", KEY_CODES[key]], {
         timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: 4_096,
       });
       const inputDispatchMs = performance.now() - inputStarted; inputDelivered = true;
@@ -376,8 +385,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
     await this.#deviceCommand(["shell", "am", "force-stop", current.id]);
     await this.#launchPackage(current.id, this.#component);
     this.#appMetadata = null; this.#cachedTree = null;
-    await this.#waitForTargetState(current.id, true);
-    await this.#waitForStableTargetState(current.id);
+    await this.#stabilizeTargetLaunch(current.id, true);
     await this.getAppMetadata();
   }
   async forceStop(packageName = this.#currentApp?.id): Promise<void> {
@@ -623,6 +631,47 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
     if (latest !== null) return latest;
     return await this.#resyncTargetState(packageName);
+  }
+  async #waitForFocusedTargetWindow(packageName: string): Promise<void> {
+    const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
+    let latestPackage: string | null = null;
+    while (performance.now() < deadline) {
+      const output = await this.#deviceText(["shell", "dumpsys", "window"], {
+        timeoutMs: Math.max(1, Math.min(
+          this.#options.commandTimeoutMs,
+          Math.ceil(deadline - performance.now()),
+        )),
+        maxOutputBytes: this.#options.maxCommandOutputBytes,
+      });
+      latestPackage = focusedWindowPackage(output);
+      if (latestPackage === packageName) return;
+      const remainingMs = deadline - performance.now();
+      if (remainingMs <= 0) break;
+      await delay(Math.min(this.#options.quietWindowMs, remainingMs), this.#options.signal);
+    }
+    throw new Error(
+      `Android did not focus a window owned by ${packageName}; current focused window package is ${latestPackage ?? "unknown"}.`,
+    );
+  }
+  async #stabilizeTargetLaunch(packageName: string, forceFull: boolean): Promise<void> {
+    let latestError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await this.#waitForTargetState(packageName, forceFull);
+        await this.#waitForFocusedTargetWindow(packageName);
+        await this.#waitForStableTargetState(packageName);
+        await this.#waitForFocusedTargetWindow(packageName);
+        return;
+      } catch (error) {
+        latestError = error;
+        if (attempt < 2) {
+          this.#cachedTree = null;
+          await this.#launchPackage(packageName, this.#component);
+        }
+      }
+    }
+    const detail = cleanText(latestError instanceof Error ? latestError.message : String(latestError));
+    throw new Error(`Android could not establish a stable focused launch for ${packageName}. ${detail}`);
   }
   async #serial(): Promise<string> {
     if (this.#resolvedSerial !== null) return this.#resolvedSerial;
