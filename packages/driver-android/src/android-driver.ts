@@ -110,7 +110,11 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
   }
   const commandTimeoutMs = positiveInteger(options.commandTimeoutMs, 15_000, "commandTimeoutMs");
   const quietWindowMs = positiveInteger(options.quietWindowMs, 100, "quietWindowMs");
-  const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 220, "noResponseGraceMs");
+  // Asynchronous Android input avoids dispatcher ANRs, but a loaded emulator
+  // can enqueue a key hundreds of milliseconds before accessibility receives
+  // it. Keep no-op confirmation conservative while changed actions continue
+  // to settle immediately from observer events.
+  const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 1_000, "noResponseGraceMs");
   const settleTimeoutMs = positiveInteger(options.settleTimeoutMs, 2_500, "settleTimeoutMs");
   const resetStableWindowMs = positiveInteger(options.resetStableWindowMs, 600, "resetStableWindowMs");
   const resetSettleTimeoutMs = positiveInteger(options.resetSettleTimeoutMs, 8_000, "resetSettleTimeoutMs");
@@ -635,6 +639,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #waitForFocusedTargetWindow(packageName: string): Promise<void> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let latestPackage: string | null = null;
+    let focusedSince: number | null = null;
     while (performance.now() < deadline) {
       const output = await this.#deviceText(["shell", "dumpsys", "window"], {
         timeoutMs: Math.max(1, Math.min(
@@ -644,7 +649,14 @@ export class AndroidTvDriver implements TVDoctorDriver {
         maxOutputBytes: this.#options.maxCommandOutputBytes,
       });
       latestPackage = focusedWindowPackage(output);
-      if (latestPackage === packageName) return;
+      const observedAt = performance.now();
+      if (latestPackage !== packageName) {
+        focusedSince = null;
+      } else if (focusedSince === null) {
+        focusedSince = observedAt;
+      } else if (observedAt - focusedSince >= this.#options.resetStableWindowMs) {
+        return;
+      }
       const remainingMs = deadline - performance.now();
       if (remainingMs <= 0) break;
       await delay(Math.min(this.#options.quietWindowMs, remainingMs), this.#options.signal);
