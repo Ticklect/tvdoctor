@@ -1,5 +1,6 @@
 node_modules/
 Tests/
+.worktrees/
 /*.rar
 /android-vlc-smoke.mjs
 .cache/
