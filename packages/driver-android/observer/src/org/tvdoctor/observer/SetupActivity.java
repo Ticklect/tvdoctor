@@ -14,17 +14,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class SetupActivity extends Activity {
-    static final String PREFERENCES = "observer";
-    static final String TOKEN_KEY = "session_token";
-    static final String TOKEN_EXTRA = "tvdoctor_token";
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (storeToken(getIntent()) && isServiceEnabled()) {
-            finish();
-            return;
-        }
         render();
     }
 
@@ -32,22 +24,7 @@ public final class SetupActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (storeToken(intent) && isServiceEnabled()) {
-            finish();
-            return;
-        }
         render();
-    }
-
-    private boolean storeToken(Intent intent) {
-        String token = intent.getStringExtra(TOKEN_EXTRA);
-        if (token != null && token.matches("[0-9a-f]{64}")) {
-            return getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                .edit()
-                .putString(TOKEN_KEY, token)
-                .commit();
-        }
-        return false;
     }
 
     @Override

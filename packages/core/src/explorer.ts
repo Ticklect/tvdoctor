@@ -1057,7 +1057,7 @@ export async function explore(
         replayActions += 1;
         try {
           const observation = await withinDurationBudget(() => pressAndObserve(measuredDriver, key, settling));
-          settlingPolls += observation.snapshotsCaptured - 1;
+          settlingPolls += observation.snapshotsObserved - 1;
           if (!observation.settled) unsettledActions += 1;
           if (!observation.settled) {
             return { status: "stop", termination: incomplete("settling-exhausted") };
@@ -1167,7 +1167,7 @@ export async function explore(
           ...settling,
           allowUnsettledActions: options.allowUnsettledActions === true,
         }));
-        settlingPolls += actionObservation.snapshotsCaptured - 1;
+        settlingPolls += actionObservation.snapshotsObserved - 1;
         if (!actionObservation.settled) unsettledActions += 1;
       } catch (error) {
         if (signalAborted()) {

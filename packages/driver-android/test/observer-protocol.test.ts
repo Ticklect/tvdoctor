@@ -16,6 +16,7 @@ describe("Android observer framing", () => {
   it("validates the checksum and protocol metadata of the packaged observer APK", async () => {
     await expect(resolveAndroidObserverAsset()).resolves.toMatchObject({
       packageName: "org.tvdoctor.observer",
+      versionName: "0.1.0",
       protocolVersion: 2,
       sha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
       certificateSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),

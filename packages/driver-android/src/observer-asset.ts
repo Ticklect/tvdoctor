@@ -15,15 +15,18 @@ export interface AndroidObserverAsset {
 export async function resolveAndroidObserverAsset(): Promise<AndroidObserverAsset> {
   const apkPath = fileURLToPath(new URL("../observer/tvdoctor-observer.apk", import.meta.url));
   const manifestPath = fileURLToPath(new URL("../observer/observer-manifest.json", import.meta.url));
-  const [apk, metadata, manifestText] = await Promise.all([
+  const [apk, metadata, manifestText, packageText] = await Promise.all([
     readFile(apkPath),
     stat(apkPath),
     readFile(manifestPath, "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
   if (!metadata.isFile() || metadata.size <= 0) throw new Error("Packaged Android observer APK is missing or empty.");
   const parsed = JSON.parse(manifestText.replace(/^\uFEFF/u, "")) as Record<string, unknown>;
+  const packageVersion = (JSON.parse(packageText) as Record<string, unknown>)["version"];
   if (parsed["packageName"] !== "org.tvdoctor.observer"
     || typeof parsed["versionName"] !== "string"
+    || parsed["versionName"] !== packageVersion
     || parsed["protocolVersion"] !== ANDROID_OBSERVER_PROTOCOL_VERSION
     || typeof parsed["sha256"] !== "string"
     || typeof parsed["certificateSha256"] !== "string"

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
@@ -212,11 +212,12 @@ function parseSettleTiming(value: unknown): ObserverSettleTiming {
     noOpConfirmed: timing["noOpConfirmed"],
   };
 }
-function parseLogcat(output: string, maximumEntries: number): readonly AndroidLogEntry[] {
+function parseLogcat(output: string, maximumEntries: number, pid: number, since: number): readonly AndroidLogEntry[] {
   const result: AndroidLogEntry[] = [];
-  const pattern = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEF])\s+([^:]{1,128}):\s?(.*)$/u;
+  const pattern = /^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEF])\s+([^:]{1,128}):\s?(.*)$/u;
   for (const line of output.split(/\r?\n/u)) {
     const match = pattern.exec(line); if (match === null) continue;
+    if (optionalInteger(match[2]) !== pid || Number(match[1]) < since) continue;
     const level = match[4] === "E" || match[4] === "F" ? "error"
       : match[4] === "W" ? "warning" : match[4] === "D" || match[4] === "V" ? "debug" : "info";
     result.push({
@@ -254,6 +255,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
   #forwardPort: number | null = null;
   #cachedTree: readonly AndroidUiNodeSnapshot[] | null = null;
   #adbTail: Promise<void> = Promise.resolve();
+  #operationTail: Promise<void> = Promise.resolve();
+  #logStart: string | null = null;
   #stateMessages = 0;
   #fullTreeMessages = 0;
   #canonicalPayloadBytes = 0;
@@ -273,10 +276,18 @@ export class AndroidTvDriver implements TVDoctorDriver {
     )).stdout));
   }
   async waitForDeviceReady(timeoutMs = 180_000): Promise<AndroidDeviceMetadata> {
+    this.#ensureOpen();
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+      throw new TypeError("timeoutMs must be a positive safe integer duration.");
+    }
     const deadline = performance.now() + timeoutMs;
     while (performance.now() < deadline) {
       try {
-        await this.#deviceText(["get-state"], { timeoutMs: Math.min(5_000, Math.max(1, deadline - performance.now())) });
+        const commandOptions = { timeoutMs: Math.min(5_000, Math.max(1, Math.ceil(deadline - performance.now()))) };
+        const state = (await this.#deviceText(["get-state"], commandOptions)).trim();
+        if (state !== "device") throw new Error("Device is not online.");
+        const boot = (await this.#deviceText(["shell", "getprop", "sys.boot_completed"], commandOptions)).trim();
+        if (boot !== "1") throw new Error("Device has not completed boot.");
         return await this.getDeviceMetadata(true);
       } catch { await delay(Math.min(250, Math.max(1, deadline - performance.now())), this.#options.signal); }
     }
@@ -292,17 +303,24 @@ export class AndroidTvDriver implements TVDoctorDriver {
     });
   }
   async launch(app: AndroidAppReference): Promise<void> {
+    return await this.#enqueueOperation(() => this.#launch(app));
+  }
+  async #launch(app: AndroidAppReference): Promise<void> {
     this.#ensureOpen(); const packageName = validatePackage(app.id);
-    await this.getDeviceMetadata(false); await this.#ensureObserver();
     const component = app.launchUri === undefined ? null : componentName(packageName, app.launchUri);
-    await this.#launchPackage(packageName, component);
+    if (this.#currentApp !== null && this.#currentApp.id !== packageName) await this.#disconnectObserver();
     this.#currentApp = { ...app, id: packageName }; this.#component = component;
+    await this.getDeviceMetadata(false); await this.#ensureObserver();
+    await this.#launchPackage(packageName, component);
     this.#appMetadata = null; this.#cachedTree = null;
     await this.#stabilizeTargetLaunch(packageName, true);
     await this.getAppMetadata();
   }
 
   async press(key: RemoteKey): Promise<ActionResult> {
+    return await this.#enqueueOperation(() => this.#press(key));
+  }
+  async #press(key: RemoteKey): Promise<ActionResult> {
     this.#ensureOpen(); const observer = await this.#requiredObserver();
     const totalStarted = performance.now(); const inputSentAtMs = Date.now();
     let inputDelivered = false; let beginRoundTripMs = 0;
@@ -371,6 +389,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
   }
 
   async snapshot(): Promise<AndroidStateSnapshot> {
+    return await this.#enqueueOperation(() => this.#snapshot());
+  }
+  async #snapshot(): Promise<AndroidStateSnapshot> {
     this.#ensureOpen(); const observer = await this.#requiredObserver();
     const response = await observer.request({ type: "current_state", forceFull: this.#cachedTree === null }, {
       ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
@@ -378,6 +399,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return this.#snapshotFromState(parseObserverState(response.state));
   }
   async reset(strategy: ResetStrategy): Promise<void> {
+    return await this.#enqueueOperation(() => this.#reset(strategy));
+  }
+  async #reset(strategy: ResetStrategy): Promise<void> {
     this.#ensureOpen(); const current = this.#currentApp;
     if (current === null) throw new Error("No Android app has been launched.");
     if (strategy === "clear-data") await this.#deviceCommand(["shell", "pm", "clear", current.id], { timeoutMs: 30_000 });
@@ -408,12 +432,20 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return { path: absolutePath, mediaType: "image/png", ...dimensions, capturedAt };
   }
   async getLogs(): Promise<readonly AndroidLogEntry[]> {
+    return await this.#enqueueOperation(() => this.#getLogs());
+  }
+  async #getLogs(): Promise<readonly AndroidLogEntry[]> {
     this.#ensureOpen();
-    const output = await this.#deviceText(["shell", "logcat", "-d", "-v", "threadtime", "-t", String(this.#options.maxLogEntries)], {
+    const pid = this.#appMetadata?.pid;
+    const current = this.#currentApp;
+    if (current === null || pid === null || pid === undefined || pid <= 0 || this.#logStart === null) return [];
+    const currentPid = async () => optionalInteger((await this.#deviceText(["shell", "pidof", "-s", current.id]).catch(() => "")).trim());
+    if (await currentPid() !== pid) return [];
+    const output = await this.#deviceText(["logcat", "-d", "-v", "epoch", `--pid=${String(pid)}`, "-T", this.#logStart], {
       timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: this.#options.maxCommandOutputBytes,
-    });
-    const entries = parseLogcat(output, this.#options.maxLogEntries); const pid = this.#appMetadata?.pid;
-    return pid === null || pid === undefined ? entries : entries.filter((entry) => entry.pid === pid);
+    }).catch(() => "");
+    if (await currentPid() !== pid) return [];
+    return parseLogcat(output, this.#options.maxLogEntries, pid, Number(this.#logStart));
   }
   getObserverMetrics(): AndroidObserverMetrics {
     const transport = this.#observer?.metrics?.() ?? null;
@@ -462,7 +494,15 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return this.#appMetadata;
   }
   async close(): Promise<void> {
-    if (this.#closed) return; this.#closed = true; this.#observer?.close(); this.#observer = null;
+    return await this.#enqueueOperation(async () => {
+      if (this.#closed) return;
+      this.#closed = true;
+      await this.#disconnectObserver();
+      this.#currentApp = null; this.#cachedTree = null; this.#logStart = null;
+    });
+  }
+  async #disconnectObserver(): Promise<void> {
+    this.#observer?.close(); this.#observer = null;
     const port = this.#forwardPort; this.#forwardPort = null;
     if (port !== null && this.#resolvedSerial !== null) {
       await this.#options.executor.execute(
@@ -470,10 +510,14 @@ export class AndroidTvDriver implements TVDoctorDriver {
         { timeoutMs: 5_000, maxOutputBytes: 4_096 },
       ).catch(() => undefined);
     }
-    this.#currentApp = null; this.#cachedTree = null;
+    this.#cachedTree = null;
   }
 
   #snapshotFromState(state: ObserverState): AndroidStateSnapshot {
+    if (this.#currentApp === null || state.packageName !== this.#currentApp.id) {
+      this.#cachedTree = null;
+      throw new Error("Android observer returned an observation outside the provisioned target package.");
+    }
     this.#stateMessages += 1;
     if (state.nodes !== undefined) this.#fullTreeMessages += 1;
     this.#canonicalPayloadBytes += Buffer.byteLength(JSON.stringify(state), "utf8");
@@ -507,15 +551,25 @@ export class AndroidTvDriver implements TVDoctorDriver {
 
   async #ensureObserver(): Promise<void> {
     if (this.#observer !== null) return;
+    const target = this.#currentApp?.id;
+    if (target === undefined) throw new Error("No Android app has been launched.");
     const asset = this.#options.observerAsset ?? await resolveAndroidObserverAsset();
-    const installed = await this.#deviceText(["shell", "dumpsys", "package", asset.packageName]).catch(() => "");
-    if (!new RegExp(`\\bversionName=${asset.versionName.replaceAll(".", "\\.")}\\b`, "u").test(installed)) {
-      await this.#deviceCommand(["install", "-r", asset.apkPath], { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes });
+    await this.#deviceCommand(["install", "-r", asset.apkPath], { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes });
+    const installedPath = (await this.#deviceText(["shell", "pm", "path", asset.packageName])).trim();
+    if (!/^package:\/data\/app\/[A-Za-z0-9_./=+~-]+\.apk$/u.test(installedPath)) {
+      throw new Error("Installed Android observer identity could not be verified.");
+    }
+    const installedApk = await this.#deviceCommand(["exec-out", "cat", installedPath.slice("package:".length)], {
+      maxOutputBytes: 25 * 1024 * 1024,
+    });
+    if (createHash("sha256").update(installedApk.stdout).digest("hex") !== asset.sha256) {
+      throw new Error("Installed Android observer identity does not match the packaged APK.");
     }
     const token = this.#options.tokenFactory();
     if (!/^[0-9a-f]{64}$/u.test(token)) throw new Error("Android observer session token generator returned an invalid token.");
     await this.#deviceCommand([
-      "shell", "am", "start", "-W", "-n", `${asset.packageName}/.SetupActivity`, "--es", "tvdoctor_token", token,
+      "shell", "content", "call", "--uri", `content://${asset.packageName}.provisioning`, "--method", "provision",
+      "--extra", `token:s:${token}`, "--extra", `target_package:s:${target}`,
     ], { timeoutMs: 15_000 });
     const [enabledFlag, enabledServices] = await Promise.all([
       this.#deviceText(["shell", "settings", "get", "secure", "accessibility_enabled"]).catch(() => "0"),
@@ -560,6 +614,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     await this.#ensureObserver(); if (this.#observer === null) throw new Error("Android observer is unavailable."); return this.#observer;
   }
   async #launchPackage(packageName: string, component: string | null): Promise<void> {
+    const start = (await this.#deviceText(["shell", "date", "+%s.%3N"]).catch(() => "")).trim();
+    this.#logStart = /^\d+\.\d{3}$/u.test(start) ? start : null;
     if (component === null) {
       await this.#deviceCommand(["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"], { timeoutMs: 30_000 });
     } else {
@@ -586,23 +642,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
     throw new Error(`Android observer did not observe ${packageName}; current window package is ${latestPackage ?? "unknown"}.`);
   }
-  async #resyncTargetState(packageName: string): Promise<AndroidStateSnapshot> {
-    const observer = await this.#requiredObserver();
-    const response = await observer.request({ type: "resync" }, {
-      timeoutMs: this.#options.observerRequestTimeoutMs,
-      ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
-    });
-    const state = parseObserverState(response.state);
-    if (state.packageName !== packageName) {
-      throw new Error(`Android observer resync crossed into ${state.packageName ?? "an unknown package"}; expected ${packageName}.`);
-    }
-    return this.#snapshotFromState(state);
-  }
   async #waitForStableTargetState(packageName: string): Promise<AndroidStateSnapshot> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let previousFingerprint: string | null = null;
     let stableSince = performance.now();
-    let latest: AndroidStateSnapshot | null = null;
     while (performance.now() < deadline) {
       const observer = await this.#requiredObserver();
       const response = await observer.request({ type: "resync" }, {
@@ -616,7 +659,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (state.packageName !== packageName) {
         throw new Error(`Android observer resync crossed into ${state.packageName ?? "an unknown package"}; expected ${packageName}.`);
       }
-      latest = this.#snapshotFromState(state);
+      const latest = this.#snapshotFromState(state);
       const observedAt = performance.now();
       if (state.stateFingerprint !== previousFingerprint) {
         previousFingerprint = state.stateFingerprint;
@@ -628,8 +671,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (remainingMs <= 0) break;
       await delay(Math.min(this.#options.quietWindowMs, remainingMs), this.#options.signal);
     }
-    if (latest !== null) return latest;
-    return await this.#resyncTargetState(packageName);
+    throw new Error(`Android target ${packageName} did not remain stable before the deadline.`);
   }
   async #waitForFocusedTargetWindow(packageName: string): Promise<void> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
@@ -704,6 +746,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
   }
   async #deviceText(arguments_: readonly string[], options: AdbCommandOptions = {}): Promise<string> {
     return utf8((await this.#deviceCommand(arguments_, options)).stdout);
+  }
+  async #enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#operationTail.then(operation, operation);
+    this.#operationTail = result.then(() => undefined, () => undefined);
+    return await result;
   }
   #ensureOpen(): void { if (this.#closed) throw new Error("Android TV driver is closed."); }
 }

@@ -106,13 +106,31 @@ The observer binds TCP only to device loopback on port 38337. TVDoctor creates
 an ephemeral local ADB forward, opens one persistent socket, and removes the
 forward during cleanup. The protocol uses a four-byte big-endian length prefix,
 bounded UTF-8 JSON frames, protocol version 2, unique request identities, and a
-random per-run 256-bit token delivered through the observer setup activity.
+random per-run 256-bit token and target-package binding provisioned through an
+Android content provider. Provisioning requires the platform DUMP permission and
+an actual shell, root, or system Binder UID; ordinary application UIDs cannot
+provision a session. The setup activity only displays accessibility setup UI.
+Successful HELLO atomically consumes and clears the stored token and package
+binding. The authenticated connection retains the target binding in memory;
+reconnecting requires fresh shell provisioning.
 
 Messages are size-checked and schema-checked. Unknown versions, malformed
 frames, stale identities, unsupported operations, timeouts, disconnects, and
 cancellation fail closed. The observer supports a fixed operation allowlist; it
 does not offer arbitrary shell commands, file reads, intents, or network access.
-It does not collect credentials or log visible application text.
+The observer transports exposed accessibility names and text for the provisioned
+target package, and excludes other packages' roots, descendants, and events.
+Password-designated nodes and their descendants have text and descriptions
+removed before names, focus records, identifiers, and fingerprints are produced.
+Other accessibility text may contain credentials or personal data if the app
+does not mark it as a password. Screenshots and target-process logs may also be
+sensitive. Review evidence before retaining or sharing it; this is not a guarantee
+that all credentials are absent.
+
+Log capture requires a proven target PID and a device-clock launch boundary.
+TVDoctor requests PID-filtered logcat output and checks the scope again before
+returning it. Missing or changed PIDs, unavailable timestamps, and failed logcat
+reads yield no log entries.
 
 ## Non-interactive and CI execution
 
@@ -151,11 +169,17 @@ activity cannot absorb the intent; application data is not cleared. It then
 requires the canonical fingerprint to remain unchanged for 600 ms, bounded by a
 separate 8 second deadline. A canonical capture remains internally bounded at 5
 seconds, while the transport allows 7.5 seconds to receive that bounded result.
-Cached observer state is discarded across that
-boundary.
+An unstable fingerprint at the deadline fails launch/reset. Complete launch,
+press/settle, snapshot, reset, and log operations are serialized so observations
+and remote input cannot cross a reset boundary. Cached observer state is
+discarded across that boundary.
 
 The packaged observer manifest records both the APK SHA-256 and signer
-certificate SHA-256. Normal package loading verifies the APK checksum. A
+certificate SHA-256. Normal package loading verifies the APK checksum and requires
+the observer version to equal the driver package version (`0.1.0`); prepack runs
+the same validation. Each new observer connection reinstalls the packaged APK
+and verifies the installed APK bytes before provisioning, regardless of the
+installed version name. A
 protected manual GitHub Actions workflow rebuilds with environment-scoped
 keystore secrets, verifies the expected certificate digest, and requires the
 APK and manifest to reproduce byte-for-byte before they can be treated as

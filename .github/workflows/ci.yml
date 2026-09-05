@@ -53,6 +53,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Repository presentation
+        run: npm run test:presentation
+
       - name: Unit tests
         run: npm run test:unit
 

@@ -50,7 +50,7 @@ useful to implementers.
 ## Repository-wide polish
 
 - Add reusable SVG brand artwork under `docs/assets/`, including a README hero and a
-  square social-preview source asset.
+  1280×640 social-preview source asset.
 - Ensure issue and pull-request templates use consistent terminology and point to
   the right validation and security guidance.
 - Check top-level metadata and documentation links for stale wording, broken paths,

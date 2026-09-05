@@ -390,6 +390,49 @@ describe("state fingerprinting", () => {
     expect(empty.screen.value).not.toBe(first.screen.value);
   });
 
+  it("bounds focusable-descendant analysis on adversarially deep trees", () => {
+    let descendant: UiNodeSnapshot = {
+      ...control("deep-leaf", "Deep leaf", false, 500),
+      focusable: false,
+    };
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      descendant = {
+        ...control(`deep-${String(depth)}`, "Decoration", false, 500),
+        focusable: false,
+        children: [descendant],
+      };
+    }
+    const deepSnapshot = snapshot({
+      location: "app://deep",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: {
+        ...control("focusable-container", "Container", false, 500),
+        children: [descendant],
+      },
+    });
+
+    expect(() => fingerprintSnapshot(deepSnapshot)).not.toThrow();
+  });
+
+  it("counts depth-truncated child visits against the total traversal budget", () => {
+    let childReads = 0;
+    const leaves = new Proxy(Array<UiNodeSnapshot>(5000).fill(control("leaf", "Leaf", false, 0)), {
+      get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/u.test(property)) childReads += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    let root: UiNodeSnapshot = { ...control("wide", "Wide", false, 0), children: leaves };
+    for (let depth = 0; depth < 63; depth += 1) {
+      root = { ...control(`level-${String(depth)}`, "Level", false, 0), children: [root] };
+    }
+    const value = snapshot({ location: "app://bounded", focusId: "leaf", focusName: "Leaf", volatileText: "Stable" });
+    fingerprintSnapshot({ ...value, uiTree: availableObservation([root]) });
+    expect(childReads).toBeLessThanOrEqual(2048);
+  });
+
   it("exposes low confidence instead of inventing unavailable signals", () => {
     const result = fingerprintSnapshot({
       capturedAt: "2026-08-20T12:00:00.000Z",

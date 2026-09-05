@@ -74,6 +74,8 @@ export interface SettledActionObservation {
   readonly snapshot: StateSnapshot;
   /** Snapshot work is explicit so callers can benchmark stronger settling. */
   readonly snapshotsCaptured: number;
+  /** All observations used, including a reused post-action snapshot. */
+  readonly snapshotsObserved: number;
   /** True when the driver's own settled observation satisfied this request. */
   readonly reusedDriverObservation: boolean;
   /** False only when stable-snapshot exhausted its bounded polling allowance. */
@@ -220,6 +222,7 @@ export async function pressAndObserve(
       actionResult,
       snapshot,
       snapshotsCaptured: actionResult.postActionSnapshot === undefined ? 1 : 0,
+      snapshotsObserved: 1,
       reusedDriverObservation: actionResult.postActionSnapshot !== undefined,
       settled: false,
     };
@@ -240,6 +243,7 @@ export async function pressAndObserve(
       actionResult,
       snapshot,
       snapshotsCaptured,
+      snapshotsObserved: 1,
       reusedDriverObservation,
       settled: true,
     };
@@ -256,11 +260,13 @@ export async function pressAndObserve(
     snapshot = await driver.snapshot();
     snapshotsCaptured = 1;
   }
-  while (snapshotsCaptured < keyLimits.maxSnapshots
+  let snapshotsObserved = 1;
+  while (snapshotsObserved < keyLimits.maxSnapshots
     && stableSnapshots < keyLimits.requiredStableSnapshots) {
     await settling.wait(settling.pollIntervalMs);
     const nextSnapshot = await driver.snapshot();
     snapshotsCaptured += 1;
+    snapshotsObserved += 1;
     stableSnapshots = settling.equivalent(snapshot, nextSnapshot)
       ? stableSnapshots + 1
       : 1;
@@ -270,6 +276,7 @@ export async function pressAndObserve(
     actionResult,
     snapshot,
     snapshotsCaptured,
+    snapshotsObserved,
     reusedDriverObservation,
     settled: stableSnapshots >= keyLimits.requiredStableSnapshots,
   };

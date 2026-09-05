@@ -11,6 +11,12 @@
         android:label="TVDoctor Observer"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
+        <provider
+            android:name=".ProvisioningProvider"
+            android:authorities="org.tvdoctor.observer.provisioning"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:grantUriPermissions="false" />
         <activity
             android:name=".SetupActivity"
             android:excludeFromRecents="true"

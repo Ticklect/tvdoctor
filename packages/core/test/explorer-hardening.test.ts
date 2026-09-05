@@ -279,6 +279,70 @@ describe("M8 explorer hardening", () => {
     });
   });
 
+  it("counts a reused driver observation inside the snapshot bound", async () => {
+    const postActionSnapshot = carouselSnapshot(0, false, 4);
+    let snapshotCalls = 0;
+    const driver: TVDoctorDriver = {
+      capabilities: async () => new Set<Capability>(["remote-input", "ui-tree"]),
+      press: async (key) => ({
+        key,
+        outcome: "applied",
+        timing: { inputSentAtMs: 1 },
+        postActionSnapshot,
+      }),
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return carouselSnapshot(snapshotCalls % 2, false, 4);
+      },
+      reset: async () => undefined,
+    };
+
+    const observation = await pressAndObserve(driver, "RIGHT", {
+      strategy: "stable-snapshot",
+      maxSnapshots: 3,
+      requiredStableSnapshots: 2,
+      equivalent: () => false,
+      wait: async () => undefined,
+    });
+
+    expect(observation).toMatchObject({
+      snapshotsObserved: 3,
+      snapshotsCaptured: 2,
+      reusedDriverObservation: true,
+      settled: false,
+    });
+    expect(snapshotCalls).toBe(2);
+  });
+
+  it("counts explorer polls when the first observation came from the driver", async () => {
+    const stable = carouselSnapshot(0, false, 4);
+    const driver: TVDoctorDriver = {
+      capabilities: async () => new Set<Capability>(["remote-input", "ui-tree"]),
+      press: async (key) => ({
+        key,
+        outcome: "applied",
+        timing: { inputSentAtMs: 1 },
+        postActionSnapshot: stable,
+      }),
+      snapshot: async () => stable,
+      reset: async () => undefined,
+    };
+
+    const result = await explore(driver, {
+      actions: ["RIGHT"],
+      budgets: { maxActions: 1, maxStates: 4, maxDepth: 1, maxDurationMs: 10_000 },
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 2,
+        requiredStableSnapshots: 2,
+        wait: async () => undefined,
+      },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.statistics).toMatchObject({ physicalActions: 1, settlingPolls: 1 });
+  });
+
   it("does not report queue exhaustion when tolerated exploration actions remain unobserved", async () => {
     const driver: TVDoctorDriver = {
       async capabilities() {

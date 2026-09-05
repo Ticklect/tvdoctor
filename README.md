@@ -1,5 +1,7 @@
 ![TVDoctor — remote-first QA for TV apps](docs/assets/tvdoctor-hero.svg)
 
+# TVDoctor
+
 <p align="center">
   <a href="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml"><img alt="TVDoctor CI" src="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="MIT Licence" src="https://img.shields.io/badge/licence-MIT-36A3FF"></a>
@@ -70,14 +72,14 @@ lockfile is the dependency authority.
 
 1. Clone and prepare a clean checkout:
 
-```sh
-git clone https://github.com/Ticklect/tvdoctor.git
-cd tvdoctor
-npm ci
-npx playwright install chromium
-npm run build
-npm run tvdoctor -- doctor
-```
+   ```sh
+   git clone https://github.com/Ticklect/tvdoctor.git
+   cd tvdoctor
+   npm ci
+   npx playwright install chromium
+   npm run build
+   npm run tvdoctor -- doctor
+   ```
 
    On Linux CI, Playwright may need system dependencies:
 
@@ -87,20 +89,20 @@ npm run tvdoctor -- doctor
 
 2. In terminal 1, start the deliberately broken Northstar target:
 
-```sh
-npm run fixture:dev
-```
+   ```sh
+   npm run fixture:dev
+   ```
 
 3. In terminal 2, run the first local fixture audit:
 
-```sh
-npm run tvdoctor -- test http://127.0.0.1:5173 \
-  --pack navigation \
-  --pack streaming \
-  --mode standard \
-  --output tvdoctor-report \
-  --query N
-```
+   ```sh
+   npm run tvdoctor -- test http://127.0.0.1:5173 \
+     --pack navigation \
+     --pack streaming \
+     --mode standard \
+     --output tvdoctor-report \
+     --query N
+   ```
 
 Use Arrow keys, Enter, and Escape in the fixture. Northstar is a benchmark, not
 a reference TV interface.

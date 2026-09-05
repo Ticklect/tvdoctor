@@ -99,7 +99,7 @@ Invoke-Checked $aapt2 @(
     "--min-sdk-version", "23",
     "--target-sdk-version", "36",
     "--version-code", "1",
-    "--version-name", "0.1.9",
+    "--version-name", "0.1.0",
     $compiledResources
 )
 
@@ -204,7 +204,7 @@ try {
 }
 $manifest = [ordered]@{
     packageName = "org.tvdoctor.observer"
-    versionName = "0.1.9"
+    versionName = "0.1.0"
     protocolVersion = 2
     sha256 = $sha256
     certificateSha256 = $certificateSha256

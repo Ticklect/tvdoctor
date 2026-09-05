@@ -136,10 +136,6 @@ function observedBoolean(value: boolean | null): string {
   return value ? "1" : "0";
 }
 
-function canExposeFocusableDescendant(node: UiNodeSnapshot): boolean {
-  return node.focusable !== false || node.children.some(canExposeFocusableDescendant);
-}
-
 function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
   let nodeCount = 0;
   let stableIdentifierCount = 0;
@@ -147,10 +143,16 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
   let geometryCount = 0;
   let truncated = false;
 
-  const visit = (node: UiNodeSnapshot, depth: number, collectionItem: boolean): string => {
-    if (nodeCount >= MAX_FINGERPRINT_NODES || depth >= MAX_FINGERPRINT_DEPTH) {
+  let visitedNodes = 0;
+  const visit = (node: UiNodeSnapshot, depth: number, collectionItem: boolean): { signature: string; exposesFocus: boolean } => {
+    if (visitedNodes >= MAX_FINGERPRINT_NODES) {
       truncated = true;
-      return "!";
+      return { signature: "!", exposesFocus: true };
+    }
+    visitedNodes += 1;
+    if (depth >= MAX_FINGERPRINT_DEPTH) {
+      truncated = true;
+      return { signature: "!", exposesFocus: true };
     }
 
     const role = normaliseRole(node.role);
@@ -159,12 +161,12 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
     // observable navigation surface. It is excluded only when the driver
     // explicitly reports it as invisible; unknown visibility remains.
     if (node.visible === false) {
-      return "";
+      return { signature: "", exposesFocus: false };
     }
     // Live regions and progress/timer nodes are evidence, not screen identity.
     // They commonly appear after the first key press or update every second.
     if (VOLATILE_ROLES.has(role)) {
-      return "";
+      return { signature: "", exposesFocus: false };
     }
 
     nodeCount += 1;
@@ -178,12 +180,14 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
     // distinct TV focus target. Android view binding may add or remove those
     // descendants asynchronously, so retain only children that can expose a
     // nested focus target. Unknown focusability remains conservative.
-    const structuralChildren = node.focusable === true
-      ? node.children.filter(canExposeFocusableDescendant)
-      : node.children;
-    const childSignatures = structuralChildren
-      .map((child) => visit(child, depth + 1, childIsCollectionItem))
-      .filter((signature) => signature.length > 0);
+    const childSignatures: string[] = [];
+    let exposesFocus = node.focusable !== false;
+    for (const child of node.children) {
+      const result = visit(child, depth + 1, childIsCollectionItem);
+      exposesFocus ||= result.exposesFocus;
+      if (node.focusable !== true || result.exposesFocus) childSignatures.push(result.signature);
+      if (visitedNodes >= MAX_FINGERPRINT_NODES) { truncated = true; break; }
+    }
     const children = VIRTUALISED_COLLECTION_ROLES.has(role)
       ? [...new Set(childSignatures)].sort().join("")
       : childSignatures.join("");
@@ -198,10 +202,15 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
     // enabled state for controls (and unknown focusability), where it remains
     // semantically meaningful.
     const enabled = node.focusable === false ? "-" : observedBoolean(node.enabled);
-    return `(${stableIdentifier}|${role}|${enabled}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`;
+    return { signature: `(${stableIdentifier}|${role}|${enabled}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`, exposesFocus };
   };
 
-  const signature = `${nodes.map((node) => visit(node, 0, false)).join("")}${truncated ? "!truncated" : ""}`;
+  const roots: string[] = [];
+  for (const node of nodes) {
+    roots.push(visit(node, 0, false).signature);
+    if (visitedNodes >= MAX_FINGERPRINT_NODES) { truncated = true; break; }
+  }
+  const signature = `${roots.join("")}${truncated ? "!truncated" : ""}`;
   return { signature, stableIdentifierCount, roleCount, geometryCount, nodeCount };
 }
 

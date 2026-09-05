@@ -8,7 +8,6 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityWindowInfo;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -26,7 +25,6 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -45,7 +43,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     private static final int MAX_NODES = 4_096;
     private static final int MAX_DEPTH = 64;
     private static final int MAX_STRING = 1_024;
-    private static final String OBSERVER_VERSION = "0.1.9";
+    private static final String OBSERVER_VERSION = "0.1.0";
 
     private final AtomicLong eventSequence = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean();
@@ -55,6 +53,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile long lastEventElapsedMs;
     private volatile String lastPackageName;
+    private volatile String targetPackageName;
     private volatile int lastWindowId = -1;
     private volatile String lastStructureFingerprint = "";
     private volatile String lastStateFingerprint = "";
@@ -69,6 +68,8 @@ public final class ObserverAccessibilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        String target = targetPackageName;
+        if (target == null || !target.equals(nullableString(event.getPackageName()))) return;
         long now = SystemClock.elapsedRealtime();
         long sequence = eventSequence.incrementAndGet();
         lastEventElapsedMs = now;
@@ -137,6 +138,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
             while (running.get()) {
                 try (Socket socket = server.accept()) {
                     socket.setTcpNoDelay(true);
+                    socket.setSoTimeout(5000);
                     serveConnection(socket);
                 } catch (IOException error) {
                     if (running.get()) System.err.println("TVDoctor observer connection ended.");
@@ -185,6 +187,15 @@ public final class ObserverAccessibilityService extends AccessibilityService {
                 } catch (JSONException error) {
                     throw new IOException("Malformed observer JSON.", error);
                 }
+                if (!authenticated.get()) {
+                    // Authenticate synchronously before reading another frame.
+                    // Only unauthenticated peers have an idle deadline; the
+                    // host may spend time processing a persistent observation.
+                    writeFrame(output, outputLock, handleRequest(request, authenticated));
+                    if (!authenticated.get()) break;
+                    socket.setSoTimeout(0);
+                    continue;
+                }
                 try {
                     workers.execute(() -> {
                         JSONObject response = handleRequest(request, authenticated);
@@ -204,6 +215,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
             }
         } finally {
             workers.shutdownNow();
+            targetPackageName = null;
             actions.clear();
             cancelledRequests.clear();
         }
@@ -239,13 +251,19 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     }
 
     private JSONObject hello(JSONObject request, AtomicBoolean authenticated, long id) throws JSONException {
+        if (authenticated.get()) return errorResponse(id, "authentication_failed", "HELLO was already consumed.");
         String token = requiredString(request, "token", 256);
         requiredString(request, "hostVersion", 64);
-        String expected = getSharedPreferences(SetupActivity.PREFERENCES, MODE_PRIVATE)
-            .getString(SetupActivity.TOKEN_KEY, "");
-        if (expected == null || expected.length() != 64 || !constantTimeEquals(expected, token)) {
+        String target = ProvisioningProvider.consume(this, token);
+        if (target == null) {
             return errorResponse(id, "authentication_failed", "Observer session token was rejected.");
         }
+        targetPackageName = target;
+        lastPackageName = null;
+        lastWindowId = -1;
+        windowClassByPackage.clear();
+        lastStructureFingerprint = "";
+        lastStateFingerprint = "";
         authenticated.set(true);
         return ok(id, "hello")
             .put("protocolVersion", PROTOCOL_VERSION)
@@ -392,14 +410,17 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         FocusHolder focus = new FocusHolder();
         Counter counter = new Counter();
         int maximumDepth = 0;
-        String capturedPackageName = lastPackageName;
-        int capturedWindowId = lastWindowId;
+        String capturedPackageName = null;
+        int capturedWindowId = -1;
         if (root != null) {
-            String rootPackageName = nullableString(root.getPackageName());
-            if (rootPackageName != null) capturedPackageName = rootPackageName;
-            capturedWindowId = root.getWindowId();
-            maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root");
-            root.recycle();
+            try {
+                String rootPackageName = nullableString(root.getPackageName());
+                if (targetPackageName != null && targetPackageName.equals(rootPackageName)) {
+                    capturedPackageName = rootPackageName;
+                    capturedWindowId = root.getWindowId();
+                    maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root", false);
+                }
+            } finally { root.recycle(); }
         }
         String capturedWindowClassName = capturedPackageName == null
             ? null
@@ -438,14 +459,17 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         FocusHolder focus,
         Counter counter,
         int depth,
-        String path
+        String path,
+        boolean passwordAncestor
     ) throws JSONException {
         if (counter.value >= MAX_NODES || depth >= MAX_DEPTH) return depth;
+        if (targetPackageName == null || !targetPackageName.equals(nullableString(node.getPackageName()))) return depth;
         counter.value += 1;
         String className = nullableString(node.getClassName());
         String packageName = nullableString(node.getPackageName());
-        String text = nullableString(node.getText());
-        String description = nullableString(node.getContentDescription());
+        boolean password = passwordAncestor || node.isPassword();
+        String text = password ? null : nullableString(node.getText());
+        String description = password ? null : nullableString(node.getContentDescription());
         String viewId = boundedNullable(node.getViewIdResourceName());
         String role = roleFor(className, viewId, node.isClickable());
         String stableId = viewId == null
@@ -512,7 +536,8 @@ public final class ObserverAccessibilityService extends AccessibilityService {
                     focus,
                     counter,
                     depth + 1,
-                    path + "/" + index
+                    path + "/" + index,
+                    password
                 ));
             } finally {
                 child.recycle();
@@ -568,12 +593,6 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         int result = value.getInt(key);
         if (result <= 0 || result > 60_000) throw new JSONException(key + " is invalid.");
         return result;
-    }
-
-    private static boolean constantTimeEquals(String left, String right) {
-        byte[] leftBytes = left.getBytes(StandardCharsets.UTF_8);
-        byte[] rightBytes = right.getBytes(StandardCharsets.UTF_8);
-        return MessageDigest.isEqual(leftBytes, rightBytes);
     }
 
     private static Object nullable(String value) {

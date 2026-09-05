@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AndroidTvDriver,
@@ -9,6 +10,8 @@ import {
 } from "../src/index.js";
 
 const TOKEN = "a".repeat(64);
+const OBSERVER_APK = Buffer.from("packaged-tvdoctor-observer");
+const OBSERVER_SHA256 = createHash("sha256").update(OBSERVER_APK).digest("hex");
 const NODE = {
   stableId: "org.example.tv:id/play",
   role: "button",
@@ -52,6 +55,14 @@ class FakeExecutor implements AdbCommandExecutor {
   enabled = true;
   focusAfterLaunchAttempt = 1;
   launchAttempts = 0;
+  deviceState = "device";
+  bootCompleted = "1";
+  installedApk = OBSERVER_APK;
+  appPid = "321";
+  logcat = [
+    "1788537600.100 321 7 I Target: target message",
+    "1788537600.200 999 8 W Other: unrelated message",
+  ].join("\n");
 
   async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
     const call = [...arguments_];
@@ -60,8 +71,18 @@ class FakeExecutor implements AdbCommandExecutor {
     if (joined.includes("am start -W") && joined.includes("org.example.tv/.MainActivity")) {
       this.launchAttempts += 1;
     }
-    let stdout = "";
-    if (joined.includes("dumpsys package org.tvdoctor.observer")) stdout = "versionName=0.1.0";
+    let stdout: string | Uint8Array = "";
+    if (joined.includes("install -r D:/packaged/tvdoctor-observer.apk")) stdout = "Success";
+    else if (joined.includes("shell pm path org.tvdoctor.observer")) {
+      stdout = "package:/data/app/org.tvdoctor.observer/base.apk";
+    } else if (joined.includes("exec-out cat /data/app/org.tvdoctor.observer/base.apk")) {
+      stdout = this.installedApk;
+    } else if (joined.includes("content call") && joined.includes("org.tvdoctor.observer.provisioning")) {
+      stdout = "Bundle[{result=provisioned}]";
+    } else if (joined.endsWith(" get-state")) stdout = this.deviceState;
+    else if (joined.includes("shell date +%s.%3N")) stdout = "1788537600.000";
+    else if (joined.includes("getprop sys.boot_completed")) stdout = this.bootCompleted;
+    else if (joined.includes("dumpsys package org.tvdoctor.observer")) stdout = "versionName=0.1.0";
     else if (joined.includes("settings get secure accessibility_enabled")) stdout = this.enabled ? "1" : "0";
     else if (joined.includes("settings get secure enabled_accessibility_services")) {
       stdout = this.enabled ? "org.tvdoctor.observer/.ObserverAccessibilityService" : "null";
@@ -80,9 +101,10 @@ class FakeExecutor implements AdbCommandExecutor {
         : "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
       stdout = `mCurrentFocus=Window{1234567 u0 ${focusedPackage}}`;
     }
-    else if (joined.includes("pidof -s org.example.tv")) stdout = "321";
+    else if (joined.includes("pidof -s org.example.tv")) stdout = this.appPid;
     else if (joined.includes("dumpsys package org.example.tv")) stdout = "versionName=1.2.3 versionCode=7";
-    return { stdout: Buffer.from(stdout), stderr: "", exitCode: 0 };
+    else if (joined.includes(" logcat ")) stdout = this.logcat;
+    return { stdout: typeof stdout === "string" ? Buffer.from(stdout) : stdout, stderr: "", exitCode: 0 };
   }
 }
 
@@ -140,6 +162,51 @@ class DepthBoundObserver extends FakeObserver {
   }
 }
 
+class AlternatingLaunchObserver extends FakeObserver {
+  resyncCalls = 0;
+
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    if (request.type !== "resync") return await super.request(request);
+    this.requests.push(request);
+    this.resyncCalls += 1;
+    return {
+      version: 2,
+      id: 3,
+      ok: true,
+      type: "resync",
+      state: {
+        ...state(true, this.currentSequence),
+        stateFingerprint: (this.resyncCalls % 2 === 0 ? "e" : "f").repeat(64),
+      },
+    };
+  }
+}
+
+class GatedObserver extends FakeObserver {
+  gateType: "begin_action" | "current_state" | null = null;
+  gateStarted: (() => void) | null = null;
+  releaseGate: (() => void) | null = null;
+
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    if (request.type === this.gateType) {
+      this.gateType = null;
+      this.gateStarted?.();
+      await new Promise<void>((resolve) => { this.releaseGate = resolve; });
+    }
+    return await super.request(request);
+  }
+}
+
+class CrossPackageObserver extends FakeObserver {
+  escape = false;
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    const result = await super.request(request);
+    return this.escape && result.state !== undefined
+      ? { ...result, state: { ...result.state, packageName: "org.other.private" } }
+      : result;
+  }
+}
+
 function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTvDriver {
   return new AndroidTvDriver({
     serial: "emulator-5554",
@@ -150,7 +217,7 @@ function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTv
       packageName: "org.tvdoctor.observer",
       versionName: "0.1.0",
       protocolVersion: 2,
-      sha256: "c".repeat(64),
+      sha256: OBSERVER_SHA256,
       certificateSha256: "d".repeat(64),
     },
     createObserverClient: async () => observer,
@@ -163,6 +230,60 @@ function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTv
 }
 
 describe("Android V2 observer-backed driver", () => {
+  it("rejects observer snapshots outside the launched package on the host boundary", async () => {
+    const observer = new CrossPackageObserver();
+    const driver = createDriver(new FakeExecutor(), observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.escape = true;
+    await expect(driver.snapshot()).rejects.toThrow(/outside.*target/u);
+    await expect(driver.press("RIGHT")).resolves.toMatchObject({ outcome: "inconclusive" });
+    await driver.close();
+  });
+  it("reinstalls and byte-verifies the exact packaged observer before provisioning", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands).toContain("-s emulator-5554 install -r D:/packaged/tvdoctor-observer.apk");
+    expect(commands).toContain("-s emulator-5554 shell pm path org.tvdoctor.observer");
+    expect(commands).toContain("-s emulator-5554 exec-out cat /data/app/org.tvdoctor.observer/base.apk");
+    await driver.close();
+  });
+
+  it("provisions the session and target through the shell-only content provider", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands).toContain(
+      `-s emulator-5554 shell content call --uri content://org.tvdoctor.observer.provisioning --method provision --extra token:s:${TOKEN} --extra target_package:s:org.example.tv`,
+    );
+    expect(commands.some((command) => command.includes("SetupActivity") && command.includes(TOKEN))).toBe(false);
+    await driver.close();
+  });
+
+  it("rejects an installed APK whose bytes differ before disclosing a provisioning token", async () => {
+    const executor = new FakeExecutor();
+    executor.installedApk = Buffer.from("another APK with the same version name");
+    const driver = createDriver(executor, new FakeObserver());
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" }))
+      .rejects.toThrow(/identity/u);
+    expect(executor.calls.some((call) => call.some((part) => part.includes(TOKEN)))).toBe(false);
+    await driver.close();
+  });
+
+  it("continues the operation queue after a rejected launch and can close", async () => {
+    const driver = createDriver(new FakeExecutor(), new FakeObserver());
+    await expect(driver.launch({ id: "invalid" })).rejects.toThrow(/package/u);
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" })).resolves.toBeUndefined();
+    await expect(driver.reset("relaunch")).resolves.toBeUndefined();
+    await expect(driver.close()).resolves.toBeUndefined();
+  });
+
   it("uses persistent observations and never invokes UIAutomator in the normal action loop", async () => {
     const executor = new FakeExecutor();
     const observer = new FakeObserver();
@@ -234,6 +355,111 @@ describe("Android V2 observer-backed driver", () => {
     await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
     expect(observer.resyncCalls).toBeGreaterThanOrEqual(3);
     await driver.close();
+  });
+
+  it("fails closed when the target fingerprint never remains stable", async () => {
+    const driver = createDriver(new FakeExecutor(), new AlternatingLaunchObserver());
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" })).rejects.toThrow(
+      /stable focused launch[\s\S]*did not remain stable/u,
+    );
+    await driver.close();
+  });
+
+  it("serializes a press through settling before a concurrent reset starts", async () => {
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.gateType = "begin_action";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const press = driver.press("RIGHT");
+    await gateStarted;
+    const reset = driver.reset("relaunch");
+    await Promise.resolve();
+    expect(executor.calls.some((call) => call.join(" ").includes("am force-stop org.example.tv"))).toBe(false);
+
+    observer.gateType = null;
+    observer.releaseGate?.();
+    await expect(press).resolves.toMatchObject({ outcome: "applied" });
+    await expect(reset).resolves.toBeUndefined();
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands.indexOf("-s emulator-5554 shell input keyevent KEYCODE_DPAD_RIGHT"))
+      .toBeLessThan(commands.indexOf("-s emulator-5554 shell am force-stop org.example.tv"));
+    await driver.close();
+  });
+
+  it("serializes a snapshot before a concurrent reset invalidates observer state", async () => {
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.gateType = "current_state";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const snapshot = driver.snapshot();
+    await gateStarted;
+    const reset = driver.reset("relaunch");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const crossedBoundary = executor.calls.some((call) => call.join(" ").includes("am force-stop org.example.tv"));
+
+    observer.gateType = null;
+    observer.releaseGate?.();
+    await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
+    await expect(reset).resolves.toBeUndefined();
+    await driver.close();
+    expect(crossedBoundary).toBe(false);
+  });
+
+  it("captures only target-PID logs from the current launch-time boundary", async () => {
+    const executor = new FakeExecutor();
+    executor.logcat = "1788537599.999 321 7 I Target: previous launch\n" + executor.logcat;
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.getLogs()).resolves.toMatchObject([
+      { pid: 321, message: "target message" },
+    ]);
+    const command = executor.calls.find((call) => call.includes("logcat"));
+    expect(command).toEqual(expect.arrayContaining(["-T", "--pid=321"]));
+    expect(command).not.toContain("shell");
+    expect(command).toContain("1788537600.000");
+    await driver.close();
+  });
+
+  it("returns no logs when a target PID cannot be proven", async () => {
+    const executor = new FakeExecutor();
+    executor.appPid = "";
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.getLogs()).resolves.toEqual([]);
+    expect(executor.calls.some((call) => call.includes("logcat"))).toBe(false);
+    await driver.close();
+  });
+
+  it("requires exact device and completed-boot readiness signals", async () => {
+    const wrongState = new FakeExecutor();
+    wrongState.deviceState = "devices";
+    const stateDriver = createDriver(wrongState, new FakeObserver());
+    await expect(stateDriver.waitForDeviceReady(20)).rejects.toThrow(/did not become ready/u);
+    await stateDriver.close();
+
+    const incompleteBoot = new FakeExecutor();
+    incompleteBoot.bootCompleted = "0";
+    const bootDriver = createDriver(incompleteBoot, new FakeObserver());
+    await expect(bootDriver.waitForDeviceReady(20)).rejects.toThrow(/did not become ready/u);
+    expect(incompleteBoot.calls.some((call) => call.join(" ").includes("getprop sys.boot_completed"))).toBe(true);
+    await bootDriver.close();
+  });
+
+  it("validates readiness lifecycle and timeout before touching ADB", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await expect(driver.waitForDeviceReady(0)).rejects.toThrow(/timeoutMs/u);
+    expect(executor.calls).toEqual([]);
+    await driver.close();
+    await expect(driver.waitForDeviceReady(10)).rejects.toThrow(/closed/u);
   });
 
   it("relaunches when observer state is ready but Android has not focused the target window", async () => {

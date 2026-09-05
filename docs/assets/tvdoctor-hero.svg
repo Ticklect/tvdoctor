@@ -13,6 +13,11 @@
       .wordmark-accent { fill: #07111F; }
       .secondary-text { fill: #38536B; fill-opacity: 1; }
       .guide { stroke: #07111F; stroke-opacity: .08; }
+      [stroke="#42E8E0"] { stroke: #007E80; }
+      [stroke="#36A3FF"] { stroke: #086FBD; }
+      [fill="#42E8E0"] { fill: #007E80; }
+      [fill="#36A3FF"] { fill: #086FBD; }
+      [fill="#FFBE55"] { fill: #A05E00; }
     }
   </style>
 

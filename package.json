@@ -41,6 +41,9 @@
     "@types/node": "24.13.3",
     "eslint": "10.8.1",
     "globals": "^17.11.0",
+    "markdown-it": "15.0.1",
+    "parse5": "8.0.1",
+    "saxes": "6.0.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.11"

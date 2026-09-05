@@ -23,6 +23,8 @@ trap preserve_android_diagnostics EXIT
 sdkmanager --install 'build-tools;36.0.0' 'platforms;android-36' > /dev/null
 pwsh -NoProfile -File fixtures/broken-android-tv/scripts/build-apk.ps1
 node scripts/ensure-android-display-ready.mjs
+node scripts/build-android-security-probe.mjs
+node scripts/test-android-observer-security.mjs
 
 adb install -r "$observer_apk"
 adb shell am start -W -n org.tvdoctor.observer/.SetupActivity > /dev/null
