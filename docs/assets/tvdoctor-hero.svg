@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="tvdoctor-hero-title tvdoctor-hero-description">
+  <title id="tvdoctor-hero-title">TVDoctor — remote-first QA for TV apps</title>
+  <desc id="tvdoctor-hero-description">A diagnostic pulse crosses a rounded television screen framed by focus brackets beside the TVDoctor wordmark.</desc>
+  <style>
+    .surface { fill: #07111F; }
+    .primary-text { fill: #F5FAFF; }
+    .secondary-text { fill: #F5FAFF; fill-opacity: .72; }
+    .guide { stroke: #F5FAFF; stroke-opacity: .08; }
+    @media (prefers-color-scheme: light) {
+      .surface { fill: #F4F8FC; }
+      .primary-text { fill: #07111F; }
+      .secondary-text { fill: #38536B; fill-opacity: 1; }
+      .guide { stroke: #07111F; stroke-opacity: .08; }
+    }
+  </style>
+
+  <rect class="surface" width="1200" height="360" rx="24"/>
+
+  <g fill="none" class="guide" stroke-width="1">
+    <path d="M0 72h1200M0 288h1200"/>
+    <path d="M476 48v264" stroke-dasharray="4 10"/>
+  </g>
+
+  <g transform="translate(84 64)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#36A3FF" stroke-width="7">
+      <path d="M48 8H20C13.4 8 8 13.4 8 20v28"/>
+      <path d="M312 8h28c6.6 0 12 5.4 12 12v28"/>
+      <path d="M8 192v28c0 6.6 5.4 12 12 12h28"/>
+      <path d="M352 192v28c0 6.6-5.4 12-12 12h-28"/>
+    </g>
+    <rect x="36" y="36" width="276" height="152" rx="24" stroke="#42E8E0" stroke-width="8"/>
+    <path d="M65 112h55l21-34 29 70 30-49 20 25h63" stroke="#42E8E0" stroke-width="8"/>
+    <circle cx="200" cy="99" r="7" fill="#FFBE55" stroke="none"/>
+    <path d="M154 188v20h40v-20M130 216h88" stroke="#36A3FF" stroke-width="7"/>
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="520" y="151" class="primary-text" font-size="70" font-weight="800" letter-spacing="3">TV<tspan fill="#42E8E0">DOCTOR</tspan></text>
+    <text x="524" y="204" class="primary-text" font-size="28" font-weight="600" letter-spacing=".2">Remote-first QA for TV apps</text>
+    <text x="524" y="252" class="secondary-text" font-size="20" font-weight="500" letter-spacing="2">Explore · Diagnose · Replay</text>
+  </g>
+
+  <g transform="translate(524 286)">
+    <rect width="54" height="5" rx="2.5" fill="#36A3FF"/>
+    <rect x="66" width="54" height="5" rx="2.5" fill="#42E8E0"/>
+    <rect x="132" width="24" height="5" rx="2.5" fill="#FFBE55"/>
+  </g>
+</svg>
