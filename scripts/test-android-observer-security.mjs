@@ -70,11 +70,11 @@ try {
     assert.match(json, /TVDOCTOR_PUBLIC_SECURITY_PROBE/u, 'the public target marker must be observable');
     assert.doesNotMatch(json, /TVDOCTOR_PASSWORD_SENTINEL|TVDOCTOR_PASSWORD_DESCRIPTION/u);
   });
-  await test('an active window outside the provisioned package exposes no accessibility content', async () => {
+  await test('an active window outside the provisioned package exposes no content and retains only the target identity', async () => {
     command(['shell', 'am', 'start', '-W', '-n', 'org.tvdoctor.observer/.SetupActivity']);
     await delay(500);
     const response = await client.request({ type: 'current_state', forceFull: true });
-    assert.equal(response.state.packageName, null);
+    assert.equal(response.state.packageName, target);
     assert.deepEqual(response.state.nodes, []);
     assert.equal(response.state.focused, null);
     assert.equal(response.state.windowClassName, null);

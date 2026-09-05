@@ -410,19 +410,25 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         FocusHolder focus = new FocusHolder();
         Counter counter = new Counter();
         int maximumDepth = 0;
-        String capturedPackageName = null;
+        // Keep the authenticated target identity even when another package owns
+        // the active window. The empty tree remains a safe, navigable boundary
+        // state without exposing the outside package or tripping the host's
+        // defence against a compromised observer claiming a different package.
+        String capturedPackageName = targetPackageName;
+        boolean targetWindowCaptured = false;
         int capturedWindowId = -1;
         if (root != null) {
             try {
                 String rootPackageName = nullableString(root.getPackageName());
                 if (targetPackageName != null && targetPackageName.equals(rootPackageName)) {
                     capturedPackageName = rootPackageName;
+                    targetWindowCaptured = true;
                     capturedWindowId = root.getWindowId();
                     maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root", false);
                 }
             } finally { root.recycle(); }
         }
-        String capturedWindowClassName = capturedPackageName == null
+        String capturedWindowClassName = !targetWindowCaptured
             ? null
             : windowClassByPackage.get(capturedPackageName);
         String structureFingerprint = sha256(structure.toString());
