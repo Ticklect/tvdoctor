@@ -479,6 +479,12 @@ describe("runStreamingPack", () => {
   it("completes the showcase journey, finds four deterministic defects, and replays Text Colour", async () => {
     const driver = new StreamingFakeDriver("conventional");
     const result = await runStreamingPack(driver, { pointerProbe: reachablePointer });
+    expect(result.issues.map((issue) => issue.id)).toEqual([
+      "TVDOCTOR-STREAM-446E4CCB9588B987D46DCCF9B8A6E09B",
+      "TVDOCTOR-STREAM-E6630F42861E67BE113C6544F740E2F2",
+      "TVDOCTOR-STREAM-A3CF65BCE3D499A07C8F14960385A88C",
+      "TVDOCTOR-STREAM-E0054201CF3672C5F256058B2DB21671",
+    ]);
 
     expect(result.status).toBe("complete");
     expect(result.termination).toMatchObject({ reason: "complete", complete: true });
@@ -487,11 +493,11 @@ describe("runStreamingPack", () => {
     expect(result.stages.find((stage) => stage.stage === "caption-text-colour")).toMatchObject({
       status: "failed",
     });
-    expect(result.issues.map((issue) => issue.rule).sort()).toEqual([
+    expect(result.issues.map((issue) => issue.rule)).toEqual([
       "accessibility.pointer-only-control",
-      "remote.reachability",
-      "streaming.captions",
       "streaming.player-control",
+      "streaming.captions",
+      "remote.reachability",
     ]);
     expect(result.issues.every((issue) => issue.confidence === "deterministic")).toBe(true);
     const textIssue = result.issues.find((issue) => issue.rule === "remote.reachability");
@@ -507,9 +513,9 @@ describe("runStreamingPack", () => {
         status: "reproduced",
       }),
     ]));
-    expect(result.pointerProbes.map((record) => record.kind).sort()).toEqual([
-      "caption-text-colour",
+    expect(result.pointerProbes.map((record) => record.kind)).toEqual([
       "player-volume-control",
+      "caption-text-colour",
     ]);
     expect(result.pointerProbes.every((record) => record.mainSessionRestored)).toBe(true);
     expect(result.volumeControl).toMatchObject({
@@ -991,21 +997,50 @@ describe("streaming budget boundaries", () => {
     ["maxDurationMs", 2_147_483_648],
   ] as const)("rejects the invalid %s streaming budget %s", async (name, value) => {
     const budgets = { [name]: value } as Partial<StreamingPackBudgets>;
-    await expect(runStreamingPack(new StreamingFakeDriver("conventional"), { budgets }))
-      .rejects.toThrow(name);
+    const maximum = name === "maxActions"
+      ? 1_000_000
+      : name === "maxLocalDepth"
+        ? 4_096
+        : name === "maxDurationMs"
+          ? 2_147_483_647
+          : 100_000;
+    const qualifier = name === "maxLocalDepth" ? "non-negative" : "positive";
+    const error = await runStreamingPack(
+      new StreamingFakeDriver("conventional"),
+      { budgets },
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(
+      `${name} must be a ${qualifier} safe integer no greater than ${String(maximum)}.`,
+    );
   });
 
   it.each([
-    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, /resetStrategy/u],
-    ["non-function restore hook", { restoreInitialState: 1 as never }, /restoreInitialState/u],
-    ["non-function clock hook", { monotonicNow: 1 as never }, /monotonicNow/u],
-    ["non-function pointer hook", { pointerProbe: { probe: 1 } as never }, /pointerProbe/u],
-    ["non-finite clock result", { monotonicNow: () => Number.NaN }, /finite/u],
+    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, "resetStrategy must be reload, relaunch, or clear-data."],
+    ["non-function restore hook", { restoreInitialState: 1 as never }, "restoreInitialState must be a function."],
+    ["non-function clock hook", { monotonicNow: 1 as never }, "monotonicNow must be a function."],
+    ["non-function pointer hook", { pointerProbe: { probe: 1 } as never }, "pointerProbe must expose a probe function."],
+    ["non-finite clock result", { monotonicNow: () => Number.NaN }, "monotonicNow must return a finite number."],
   ] as const)("rejects %s", async (_label, options, message) => {
-    await expect(runStreamingPack(
+    const error = await runStreamingPack(
       new StreamingFakeDriver("conventional"),
       options as StreamingPackOptions,
-    )).rejects.toThrow(message);
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(message);
+  });
+
+  it.each([
+    ["null options", null, "Streaming pack options must be an object."],
+    ["array options", [], "Streaming pack options must be an object."],
+    ["non-object budgets", { budgets: [] }, "budgets must be an object."],
+  ] as const)("preserves the exact TypeError for %s", async (_label, options, message) => {
+    const error = await runStreamingPack(
+      new StreamingFakeDriver("conventional"),
+      options as never,
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(message);
   });
 
   it("uses the explicit three-minute standard duration budget", () => {
