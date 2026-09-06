@@ -1,6 +1,6 @@
 import {
   availableObservation,
-  REMOTE_KEYS,
+  NAVIGATION_KEYS,
   type ActionResult,
   type Capability,
   type RemoteKey,
@@ -235,6 +235,17 @@ describe("M8 explorer hardening", () => {
     expect(observation).toMatchObject({ snapshotsCaptured: 3, settled: true });
     expect(focusStableId(observation.snapshot)).toBe("stress-card-3");
 
+    const activated = await pressAndObserve(stableDriver, "SELECT", {
+      strategy: "stable-snapshot",
+      maxSnapshots: 4,
+      requiredStableSnapshots: 2,
+      keyOverrides: {
+        SELECT: { maxSnapshots: 4, requiredStableSnapshots: 3 },
+      },
+      wait: async () => undefined,
+    });
+    expect(activated).toMatchObject({ snapshotsCaptured: 4, settled: true });
+
     let snapshotSequence = 0;
     const neverStable = new CarouselDriver(10);
     const driver: TVDoctorDriver = {
@@ -266,6 +277,70 @@ describe("M8 explorer hardening", () => {
       settlingPolls: 2,
       unsettledActions: 1,
     });
+  });
+
+  it("counts a reused driver observation inside the snapshot bound", async () => {
+    const postActionSnapshot = carouselSnapshot(0, false, 4);
+    let snapshotCalls = 0;
+    const driver: TVDoctorDriver = {
+      capabilities: async () => new Set<Capability>(["remote-input", "ui-tree"]),
+      press: async (key) => ({
+        key,
+        outcome: "applied",
+        timing: { inputSentAtMs: 1 },
+        postActionSnapshot,
+      }),
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return carouselSnapshot(snapshotCalls % 2, false, 4);
+      },
+      reset: async () => undefined,
+    };
+
+    const observation = await pressAndObserve(driver, "RIGHT", {
+      strategy: "stable-snapshot",
+      maxSnapshots: 3,
+      requiredStableSnapshots: 2,
+      equivalent: () => false,
+      wait: async () => undefined,
+    });
+
+    expect(observation).toMatchObject({
+      snapshotsObserved: 3,
+      snapshotsCaptured: 2,
+      reusedDriverObservation: true,
+      settled: false,
+    });
+    expect(snapshotCalls).toBe(2);
+  });
+
+  it("counts explorer polls when the first observation came from the driver", async () => {
+    const stable = carouselSnapshot(0, false, 4);
+    const driver: TVDoctorDriver = {
+      capabilities: async () => new Set<Capability>(["remote-input", "ui-tree"]),
+      press: async (key) => ({
+        key,
+        outcome: "applied",
+        timing: { inputSentAtMs: 1 },
+        postActionSnapshot: stable,
+      }),
+      snapshot: async () => stable,
+      reset: async () => undefined,
+    };
+
+    const result = await explore(driver, {
+      actions: ["RIGHT"],
+      budgets: { maxActions: 1, maxStates: 4, maxDepth: 1, maxDurationMs: 10_000 },
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 2,
+        requiredStableSnapshots: 2,
+        wait: async () => undefined,
+      },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.statistics).toMatchObject({ physicalActions: 1, settlingPolls: 1 });
   });
 
   it("does not report queue exhaustion when tolerated exploration actions remain unobserved", async () => {
@@ -302,7 +377,7 @@ describe("M8 explorer hardening", () => {
     });
 
     expect(result.termination).toMatchObject({ reason: "settling-exhausted", complete: false });
-    expect(result.statistics.unsettledActions).toBe(REMOTE_KEYS.length);
+    expect(result.statistics.unsettledActions).toBe(NAVIGATION_KEYS.length);
     expect(observedActionCounts).toEqual([1, 2, 3, 4, 5, 6]);
   });
 

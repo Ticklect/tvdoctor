@@ -1,10 +1,11 @@
 param(
     [string]$AndroidSdk,
-    [string]$ApkPath = "build\outputs\apk\debug\tvdoctor-broken-android-tv-debug.apk"
+    [string]$ApkPath = "build/outputs/apk/debug/tvdoctor-broken-android-tv-debug.apk"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$isWindowsHost = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 
 function Resolve-RequiredPath {
     param([string]$Path, [string]$Label)
@@ -35,15 +36,20 @@ $configuredSdk = $AndroidSdk
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:TVDOCTOR_ANDROID_SDK }
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:ANDROID_SDK_ROOT }
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:ANDROID_HOME }
+if ([string]::IsNullOrWhiteSpace($configuredSdk) -and $isWindowsHost -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $configuredSdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+}
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) {
     throw "Android SDK is required. Pass -AndroidSdk or set TVDOCTOR_ANDROID_SDK/ANDROID_SDK_ROOT."
 }
 
 $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
-$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools\36.0.0") "Android build-tools 36.0.0"
-$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt.exe") "aapt"
-$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner.bat") "apksigner"
+$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools/36.0.0") "Android build-tools 36.0.0"
+$executableSuffix = if ($isWindowsHost) { ".exe" } else { "" }
+$scriptSuffix = if ($isWindowsHost) { ".bat" } else { "" }
+$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt$executableSuffix") "aapt"
+$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner$scriptSuffix") "apksigner"
 $resolvedApk = if ([System.IO.Path]::IsPathRooted($ApkPath)) {
     Resolve-RequiredPath $ApkPath "fixture APK"
 } else {

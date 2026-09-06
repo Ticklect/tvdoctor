@@ -6,6 +6,7 @@ import {
   prepareStartup,
 } from "@tvdoctor/core";
 import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
+import { AndroidTvDriver, type AndroidTvDriverOptions } from "@tvdoctor/driver-android";
 import {
   PROTOCOL_VALIDATION_LIMITS,
   REPORT_SCHEMA_VERSION_V1,
@@ -167,19 +168,25 @@ interface ReplayCliDriver extends TVDoctorDriver {
   close(): Promise<void>;
 }
 
+interface AndroidReplayCliDriver extends ReplayCliDriver {
+  install(artifactPath: string): Promise<void>;
+}
+
 export interface NodeReplayDependencies {
   readonly createDriver?: () => ReplayCliDriver;
   readonly createAuditDriver?: () => PlaywrightWebDriver;
+  readonly createAndroidDriver?: (options: AndroidTvDriverOptions) => AndroidReplayCliDriver;
 }
 
 async function replayIssue(
   request: ReplayCommandRequest,
   createDriver: () => ReplayCliDriver,
+  createAndroidDriver: (options: AndroidTvDriverOptions) => AndroidReplayCliDriver,
 ): Promise<ReplayCommandResult> {
   const report = await loadReport(request.reportPath);
-  if (report.target.platform !== "web") {
+  if (report.target.platform !== "web" && report.target.platform !== "android-tv") {
     throw new TypeError(
-      `The Playwright replay host cannot run platform ${terminalText(report.target.platform)}.`,
+      `The installed replay host cannot run platform ${terminalText(report.target.platform)}.`,
     );
   }
   const issue = oneMatch(
@@ -198,7 +205,8 @@ async function replayIssue(
     `replay for ${terminalText(issue.id)}`,
   );
   const plan = compileStoredReplay(issue, replay);
-  if (report.target.environment[REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]
+  if (report.target.platform === "web"
+    && report.target.environment[REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]
       === REPLAY_TARGET_OVERRIDE_REQUIRED
     && request.targetOverride === undefined) {
     return {
@@ -210,13 +218,45 @@ async function replayIssue(
       ],
     };
   }
-  const driver = createDriver();
+  let driver: ReplayCliDriver;
+  let androidApk: Awaited<ReturnType<typeof inspectApk>> | null = null;
+  if (report.target.platform === "android-tv") {
+    if (request.apkPath === undefined || request.deviceSerial === undefined) {
+      throw new TypeError("Android replay requires --apk PATH and --device SERIAL.");
+    }
+    if (request.targetOverride !== undefined) throw new TypeError("--target is valid only for web replay.");
+    androidApk = await inspectApk(request.apkPath);
+    const expectedPackage = report.target.environment["package"];
+    if (androidApk.packageName === null || (typeof expectedPackage === "string" && androidApk.packageName !== expectedPackage)) {
+      throw new TypeError("The Android replay APK package does not match the report target.");
+    }
+    driver = createAndroidDriver({
+      serial: request.deviceSerial,
+      ...(request.adbPath === undefined ? {} : { adbPath: request.adbPath }),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+  } else {
+    driver = createDriver();
+  }
 
   try {
-    await driver.launch({
-      id: `cli-${issue.id}`,
-      launchUri: targetUrl(report.target.location, request.targetOverride),
-    });
+    if (report.target.platform === "android-tv") {
+      const androidDriver = driver as AndroidReplayCliDriver;
+      if (androidApk === null || androidApk.packageName === null || request.apkPath === undefined) {
+        throw new TypeError("Android replay preparation is incomplete.");
+      }
+      await androidDriver.install(request.apkPath);
+      const component = androidApk.leanbackActivity ?? androidApk.launchableActivities.at(0);
+      await androidDriver.launch({
+        id: androidApk.packageName,
+        ...(component === undefined ? {} : { launchUri: component }),
+      });
+    } else {
+      await driver.launch({
+        id: `cli-${issue.id}`,
+        launchUri: targetUrl(report.target.location, request.targetOverride),
+      });
+    }
     const result = await executeReplay(driver, plan, {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
@@ -256,6 +296,8 @@ export function createNodeCliOperations(
 ): CliOperations {
   const createDriver = dependencies.createDriver
     ?? (() => new PlaywrightWebDriver());
+  const createAndroidDriver = dependencies.createAndroidDriver
+    ?? ((options: AndroidTvDriverOptions) => new AndroidTvDriver(options));
   return {
     testTarget: createNodeAuditOperation({
       ...(dependencies.createAuditDriver === undefined
@@ -267,7 +309,7 @@ export function createNodeCliOperations(
     inspectApk,
     scanAndroidApk,
     async replayIssue(request) {
-      return await replayIssue(request, createDriver);
+      return await replayIssue(request, createDriver, createAndroidDriver);
     },
   };
 }

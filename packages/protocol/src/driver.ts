@@ -22,6 +22,18 @@ export interface ActionProfile {
   readonly pollCount?: number;
   /** True when observations started failing instantly (device wedge signature). */
   readonly wedgeSuspected?: boolean;
+  /** Persistent transport request/response time, excluding input dispatch. */
+  readonly transportMs?: number;
+  /** Time from input completion to the first relevant platform event. */
+  readonly observerEventLatencyMs?: number;
+  /** Time spent generating the canonical platform snapshot. */
+  readonly snapshotGenerationMs?: number;
+  /** Event-driven quiet/no-op confirmation time inside the platform observer. */
+  readonly settlingMs?: number;
+  /** Time spent converting the observer payload to the canonical driver snapshot. */
+  readonly hostConversionMs?: number;
+  /** End-to-end driver action time, including input, settling, and conversion. */
+  readonly totalMs?: number;
 }
 
 export interface ActionTiming {

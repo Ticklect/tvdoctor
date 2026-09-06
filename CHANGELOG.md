@@ -13,7 +13,7 @@ that `tvdoctor@0.1.0` has been published.
 - platform-neutral driver, snapshot, issue, report, and replay contracts;
 - bounded deterministic screen/focus exploration and navigation diagnostics;
 - semantic streaming and web diagnostic packs;
-- experimental Playwright Chromium and ADB/UIAutomator drivers;
+- experimental Playwright Chromium and persistent-observer Android drivers;
 - deterministic local HTML, Markdown, JSON, AI-coder, evidence, and replay
   output;
 - exact focus-transition replay and fail-closed semantic baseline comparison;
@@ -26,6 +26,11 @@ that `tvdoctor@0.1.0` has been published.
   and bounded production-site probes;
 - disposable Android TV API 36 emulator evidence for fixture install, DPAD input,
   seeded focus-loss detection, screenshot/log capture, and teardown;
+- Android observer protocol v2, event-driven settling, prompt-free APK testing,
+  Android replay, action-latency evidence, deterministic reset, and cooperative
+  cancellation;
+- bounded post-launch/reset fingerprint stabilization, unique semantic IDs for
+  repeated Android resource rows, and observer transport/tree-volume metrics;
 - package tarball/clean-consumer smoke automation and least-privilege hosted CI.
 - event-driven initial page settling that observes boot work without an
   unconditional pre-reset sleep;

@@ -1,101 +1,212 @@
-# Android TV driver status
+# Android TV testing
 
-`@tvdoctor/driver-android` is an **Experimental** local adapter that executes the
-Android SDK's `adb` binary with structured arguments. It never invokes a command
-shell.
+Android TV app testing is experimental. The normal product entry point remains:
 
-## Implemented surface
-
-- select exactly one online device, preferably by explicit serial;
-- wait for device readiness and expose bounded device/app metadata;
-- install a caller-supplied APK;
-- launch an explicit package/component or its `LEANBACK_LAUNCHER` entry;
-- force-stop/relaunch and clear application data;
-- send DPAD Up, Down, Left, Right, Center/Select, and Back;
-- dump and parse a bounded UIAutomator hierarchy with focus and bounds;
-- capture and validate bounded PNG screenshots;
-- collect bounded process-filtered logcat entries.
-
-The adapter advertises remote input, UI/accessibility hierarchy, screenshot,
-logs, install, and launch capabilities. It does not advertise network,
-performance, player-state, or video capture.
-
-## Evidence boundary
-
-Automated unit tests use a bounded fake ADB executor. A separate disposable
-Android TV emulator gate on API 36 installed and launched the controlled fixture,
-observed its hierarchy and initial focus, sent real DPAD Left/Right/Select input,
-detected the seeded focus-loss defect, captured a PNG and process-filtered logs,
-restored focus after force-stop/relaunch, and tore down cleanly.
-
-That gate justifies an Experimental adapter, not general device support. There is
-still no claim of:
-
-- physical Android TV or Google TV compatibility;
-- vendor launcher, permission, DRM, or system-dialog coverage;
-- emulator creation, startup, snapshot, shutdown, or cleanup by the driver;
-- Fire TV compatibility; or
-- portable replay for findings that Replay V1 cannot express.
-
-## Intended local use
-
-Start and own a disposable emulator outside TVDoctor, then provide the exact ADB
-path and serial:
-
-```ts
-import { AndroidTvDriver } from "@tvdoctor/driver-android";
-
-const driver = new AndroidTvDriver({
-  adbPath: "C:/Android/sdk/platform-tools/adb.exe",
-  serial: "emulator-5554",
-});
-
-await driver.waitForDeviceReady();
-await driver.install("fixtures/broken-android-tv/app/build/outputs/apk/debug/app-debug.apk");
-await driver.launch({
-  id: "org.tvdoctor.fixture",
-  launchUri: "org.tvdoctor.fixture/.MainActivity",
-});
+```powershell
+tvdoctor start
 ```
 
-The example describes the implemented API. `launchUri` is an Android component
-rather than a URL. Without it, the driver uses Android's launcher discovery. The
-caller owns driver/emulator lifecycle and cleanup.
+Choose **Android TV app - Experimental**, select a local APK, and TVDoctor
+handles device discovery, observer deployment, APK installation, launch,
+exploration, evidence, and cleanup.
 
-## Safety
+## Requirements and support boundary
 
-- Use a disposable emulator with no personal accounts or data.
-- Pass an explicit serial; ambiguous, offline, or unauthorised device lists fail
-  closed.
-- Confirm the selected package before install, clear-data, or force-stop.
-- Never run device jobs with elevated credentials against untrusted pull request
-  code.
-- APK paths and screenshot destinations are trusted operator inputs.
-- The structured executor rejects unsafe serial/package/component shapes and
-  bounds output, time, hierarchy, logs, and screenshots.
+- Node.js and npm versions supported by the TVDoctor package;
+- Android SDK platform-tools (`adb`) and build-tools (`aapt` or `aapt2`);
+- one authorized Android TV emulator/device, or an explicitly selected serial;
+- Android API 23 or newer;
+- TVDoctor Observer accessibility access enabled on the selected device.
 
-## Recorded real-emulator gate
+The automated release gate verifies a disposable Android TV API 36 x86_64
+emulator. API 23 is the observer's minimum SDK, not a claim that every vendor
+device between API 23 and API 36 has been validated. Physical Android TV and
+Google TV compatibility remains an explicit experimental limitation.
 
-The completed status gate proved, in order:
+## TVDoctor Observer setup
 
-1. device identity and readiness;
-2. fixture APK build and install;
-3. launch and focused UI hierarchy;
-4. real DPAD navigation, Select, and Back;
-5. screenshot and process-filtered logs;
-6. graph construction and seeded diagnostic detection;
-7. seeded diagnostic detection with screenshot/log evidence; and
-8. force-stop/relaunch and clean teardown.
+TVDoctor installs `org.tvdoctor.observer`, a small TVDoctor-owned APK. It does
+not modify or instrument the APK under test. On first use, the observer opens a
+device-local setup screen explaining why accessibility access is required.
 
-A fake ADB test, successful APK build, or emulator boot alone would not have
-satisfied the gate. The recorded evidence remains a single emulator/system-image
-combination and must not be inflated into physical-device support.
+Enable **TVDoctor Observer** in Android accessibility settings, then rerun the
+scan. TVDoctor checks the setting and fails closed if it is unavailable; it does
+not silently grant accessibility access or report a successful test without UI
+observation.
 
-## Unit verification
+When access is already enabled, the token-provisioning activity verifies the
+canonical enabled-service component, stores the per-run token, and immediately
+closes. It does not leave the first-use warning in front of the app under test.
 
-```sh
-npm run typecheck --workspace @tvdoctor/driver-android
-npm test --workspace @tvdoctor/driver-android
-npm run lint --workspace @tvdoctor/driver-android
-npm run build --workspace @tvdoctor/driver-android
+To open the correct device settings page from a host terminal:
+
+```powershell
+adb -s SERIAL shell am start -a android.settings.ACCESSIBILITY_SETTINGS
+adb -s SERIAL shell settings get secure enabled_accessibility_services
 ```
+
+Use the TV remote to enable **TVDoctor Observer**. The second command is a
+read-only verification aid; TVDoctor does not use privileged `settings put`
+commands to bypass user consent.
+
+The observer uses Android's `AccessibilityService`, `AccessibilityEvent`, and
+`AccessibilityNodeInfo` APIs because they provide the supported cross-app focus,
+window, visible-control, and content-change data needed by TVDoctor. Android
+does not give an ordinary accessibility service permission to synthesize
+arbitrary DPAD keys into another app, so TVDoctor deliberately retains the fast
+ADB `input keyevent` primitive for input. ADB is not used to dump UIAutomator
+hierarchies during normal exploration.
+
+Automatic exploration remains bounded to `UP`, `DOWN`, `LEFT`, `RIGHT`,
+`SELECT`, and `BACK`. Explicit startup/replay actions additionally support
+`HOME`, `PLAY_PAUSE`, `PLAY`, `PAUSE`, `STOP`, `NEXT`, `PREVIOUS`, `REWIND`,
+and `FAST_FORWARD`. HOME and media controls are never added to the automatic
+frontier, so a scan cannot unexpectedly leave the tested app or control media.
+
+To remove the observer:
+
+```powershell
+adb -s SERIAL uninstall org.tvdoctor.observer
+```
+
+Removing it also removes its local settings. Android may retain the disabled
+accessibility entry until the settings screen refreshes.
+
+## How actions settle
+
+For each action TVDoctor:
+
+1. arms a uniquely identified observer action;
+2. sends one structured ADB key event synchronously after the target window
+   has proven continuously focused, preventing late input from crossing a
+   replay reset boundary;
+3. waits for focus, selection, scroll, window, or content events;
+4. requires a 100 ms event-quiet window, bounded by a 2.5 second deadline;
+5. uses a 220 ms event-free grace period plus a second canonical sample for
+   no-op confirmation;
+6. samples the returned canonical state at 250 ms intervals; DPAD movement
+   requires three equivalent observations (at most six snapshots), while the
+   screen-transition-prone `SELECT` and `BACK` actions require seven (at most
+   fourteen snapshots);
+7. returns the final proven-stable snapshot, or ends partial if that bounded
+   post-settle check cannot converge.
+
+Focus-only movement returns a lightweight state and reuses the last validated
+tree on the host. Structural/text/selection changes return a fresh bounded tree.
+Resource identifiers are combined with deterministic structural-path suffixes,
+so repeated RecyclerView rows remain unique while retaining their semantic ID.
+Screenshots and logcat are captured for evidence, not on every normal action.
+Launch and replay resets require both a stable canonical observer state and a
+continuously focused target-app window before another remote key is sent. A
+bounded relaunch retry handles TV launchers that briefly reclaim focus.
+
+## Transport and security
+
+The observer binds TCP only to device loopback on port 38337. TVDoctor creates
+an ephemeral local ADB forward, opens one persistent socket, and removes the
+forward during cleanup. The protocol uses a four-byte big-endian length prefix,
+bounded UTF-8 JSON frames, protocol version 2, unique request identities, and a
+random per-run 256-bit token and target-package binding provisioned through an
+Android content provider. Provisioning requires the platform DUMP permission and
+an actual shell, root, or system Binder UID; ordinary application UIDs cannot
+provision a session. The setup activity only displays accessibility setup UI.
+Successful HELLO atomically consumes and clears the stored token and package
+binding. The authenticated connection retains the target binding in memory;
+reconnecting requires fresh shell provisioning.
+
+Messages are size-checked and schema-checked. Unknown versions, malformed
+frames, stale identities, unsupported operations, timeouts, disconnects, and
+cancellation fail closed. The observer supports a fixed operation allowlist; it
+does not offer arbitrary shell commands, file reads, intents, or network access.
+The observer transports exposed accessibility names and text for the provisioned
+target package, and excludes other packages' roots, descendants, and events.
+Password-designated nodes and their descendants have text and descriptions
+removed before names, focus records, identifiers, and fingerprints are produced.
+Other accessibility text may contain credentials or personal data if the app
+does not mark it as a password. Screenshots and target-process logs may also be
+sensitive. Review evidence before retaining or sharing it; this is not a guarantee
+that all credentials are absent.
+
+Log capture requires a proven target PID and a device-clock launch boundary.
+TVDoctor requests PID-filtered logcat output and checks the scope again before
+returning it. Missing or changed PIDs, unavailable timestamps, and failed logcat
+reads yield no log entries.
+
+## Non-interactive and CI execution
+
+Use the existing `test` command with an explicit APK and device:
+
+```powershell
+tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
+```
+
+Optional flags are `--adb PATH`, `--output PATH`, and `--mode deep`. This path
+never prompts. Observer accessibility access must already be explicitly enabled;
+missing setup returns a deterministic non-zero exit with actionable diagnostics.
+Android Quick mode has a twelve-minute wall-clock ceiling so the stronger
+1.5-second activation/back proof does not silently trade away frontier coverage.
+The repository CI runs the same observer/fixture path on a disposable hosted
+Android TV API 36 x86_64 emulator and validates a completed report, the seeded
+deterministic HIGH finding, and its correlated replay.
+
+Android reports contain canonical findings, screenshots, hashes, partial-run
+semantics, portable replays, `android-action-performance.json`, and an
+`android-exploration.json` record containing the exact termination reason,
+bounded detail, budgets, action order, and statistics. Replay an Android finding
+with the original APK and an explicit device:
+
+```powershell
+tvdoctor replay ISSUE_ID --report Tests\run\report.json `
+  --apk D:\apps\example.apk --device emulator-5554
+```
+
+## Lifecycle and cleanup
+
+Relaunch/reset force-stops and starts the tested package, waits for the package
+window, then establishes an observer resynchronization boundary. Launch/reset
+starts the exact TV activity in a new, cleared task so a stale permission-system
+activity cannot absorb the intent; application data is not cleared. It then
+requires the canonical fingerprint to remain unchanged for 600 ms, bounded by a
+separate 8 second deadline. A canonical capture remains internally bounded at 5
+seconds, while the transport allows 7.5 seconds to receive that bounded result.
+An unstable fingerprint at the deadline fails launch/reset. Complete launch,
+press/settle, snapshot, reset, and log operations are serialized so observations
+and remote input cannot cross a reset boundary. Cached observer state is
+discarded across that boundary.
+
+The packaged observer manifest records both the APK SHA-256 and signer
+certificate SHA-256. Normal package loading verifies the APK checksum and requires
+the observer version to equal the driver package version (`0.1.0`); prepack runs
+the same validation. Each new observer connection reinstalls the packaged APK
+and verifies the installed APK bytes before provisioning, regardless of the
+installed version name. A
+protected manual GitHub Actions workflow rebuilds with environment-scoped
+keystore secrets, verifies the expected certificate digest, and requires the
+APK and manifest to reproduce byte-for-byte before they can be treated as
+release assets.
+
+One Ctrl+C aborts observer waits and ADB work cooperatively, writes an honest
+partial report when coverage exists, force-stops the tested app with a bounded
+non-cancellable cleanup call, closes the socket, and removes the ADB forward.
+The observer remains installed and Android may keep its enabled accessibility
+service process alive for the next run.
+
+## Known limitations
+
+- support remains experimental and emulator evidence does not prove every
+  physical/vendor device;
+- accessibility trees reflect what the tested app exposes to Android;
+- protected/secure surfaces may block screenshots or accessibility content;
+- TVDoctor records transitions out of the tested package but does not expand
+  the Android launcher or unrelated system UI during normal exploration;
+- HOME and media keys are explicit-only and are not automatically explored;
+- the tested APK and its startup state must be deterministic enough for replay;
+- continuously changing accessibility trees can exhaust the bounded
+  post-action stability or scan-duration budget and remain partial;
+- VLC for Android 3.7.1 completed 300 physical actions, 87 deterministic resets,
+  and 2,606 observer request/response frames without replay divergence or
+  timeout on the API 36 emulator; Quick remained partial at its action ceiling
+  with 11 frontier entries, so this is not a clean-app claim;
+- release-signing verification requires repository maintainers to provision the
+  protected keystore and expected certificate digest; CI never exposes those
+  secrets to pull-request code.

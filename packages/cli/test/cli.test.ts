@@ -74,6 +74,58 @@ async function captureRun(
 }
 
 describe("TVDoctor CLI", () => {
+  it("runs Android APK audits non-interactively with deterministic device selection", async () => {
+    let received: { readonly apkPath: string; readonly serial: string; readonly mode: string } | null = null;
+    let stdout = "";
+    const code = await runCli([
+      "test", "--apk", "D:/apps/example.apk", "--device", "emulator-5554", "--mode", "quick", "--output", "D:/reports/android",
+    ], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: (text) => { stdout += text; }, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        scanAndroidApk: async (request) => {
+          received = request;
+          return {
+            status: "completed",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: "D:/reports/android/report.json",
+            details: ["All reachable navigation work was exhausted."],
+          };
+        },
+      },
+    });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(received).toMatchObject({ apkPath: "D:/apps/example.apk", serial: "emulator-5554", mode: "quick" });
+    expect(stdout).toContain("Result: COMPLETED");
+  });
+
+  it("rejects an ambiguous Android CI invocation without --device", async () => {
+    await expect(captureRun(["test", "--apk", "D:/apps/example.apk"])).resolves.toMatchObject({
+      code: EXIT_CODES.usageError,
+      stderr: expect.stringContaining("requires --device SERIAL"),
+    });
+  });
+
+  it("passes Android replay deployment options to the replay operation", async () => {
+    let request: import("../src/index.js").ReplayCommandRequest | null = null;
+    const code = await runCli([
+      "replay", "NAV-1", "--report", "D:/report.json", "--apk", "D:/apps/example.apk", "--device", "emulator-5554",
+    ], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: ignoreOutput, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async (value) => {
+          request = value;
+          return { status: "reproduced", details: ["Replay classification REPRODUCED"] };
+        },
+      },
+    });
+    expect(code).toBe(EXIT_CODES.environmentFailure);
+    expect(request).toMatchObject({ apkPath: "D:/apps/example.apk", deviceSerial: "emulator-5554" });
+  });
+
   it.each<readonly [readonly string[]]>([
     [["test", "--help"]],
     [["test", "-h"]],

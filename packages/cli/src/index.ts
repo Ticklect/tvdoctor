@@ -10,6 +10,7 @@ export {
   type CliContext,
   type CliIO,
   type CliOperations,
+  type ReportActionHandlers,
   type RuntimeProbeResult,
   type ReplayCommandRequest,
   type ReplayCommandResult,

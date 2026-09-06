@@ -12,11 +12,14 @@
 
 - [ ] Tests fail without the fix and pass with it, or the change is documentation-only.
 - [ ] `npm run lint` and `npm run typecheck` pass.
+- [ ] `npm run test:presentation` passes when Markdown or SVG assets change.
+- [ ] Visual assets were reviewed in both light and dark backgrounds.
 - [ ] Relevant unit and real-platform gates pass on the first attempt.
 - [ ] Partial/inconclusive results are not presented as clean.
 - [ ] Public behaviour, compatibility, limitations, and changelog are updated.
 - [ ] Generated artifacts, package tarballs, secrets, and sensitive target data are not committed.
 - [ ] Driver/support status is no stronger than the attached evidence.
+- [ ] npm availability, repository visibility, and support maturity are not overstated.
 
 ## Release impact
 

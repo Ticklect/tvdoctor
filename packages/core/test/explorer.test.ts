@@ -332,6 +332,34 @@ describe("bounded deterministic explorer", () => {
     expect(result.graph.actions).toHaveLength(12);
   });
 
+  it("records boundary transitions without expanding excluded destination states", async () => {
+    const result = await explore(
+      new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS),
+      {
+        actions: ["RIGHT", "LEFT", "SELECT", "BACK"],
+        budgets: {
+          maxActions: 100,
+          maxStates: 20,
+          maxDepth: 5,
+          maxDurationMs: 10_000,
+        },
+        monotonicNow: () => 0,
+        shouldExpand: (snapshot) => snapshot.location.status === "available"
+          && snapshot.location.value === "app://home",
+      },
+    );
+
+    expect(result.termination).toEqual({ reason: "queue-exhausted", complete: true });
+    expect(result.graph.actions.some((action) => (
+      action.afterSnapshot.location.status === "available"
+      && action.afterSnapshot.location.value === "app://details"
+    ))).toBe(true);
+    expect(result.graph.actions.some((action) => (
+      action.beforeSnapshot.location.status === "available"
+      && action.beforeSnapshot.location.value === "app://details"
+    ))).toBe(false);
+  });
+
   it("completes Deep exploration immediately when the frontier is exhausted", async () => {
     const result = await explore(
       new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS),
@@ -608,7 +636,8 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => 0,
     });
 
-    expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
+    expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
+    expect(result.termination.detail).toMatch(/^Root restoration produced state-/u);
     expect(result.statistics).toMatchObject({ physicalActions: 0, visitedStates: 1 });
     expect(result.graph.actions).toHaveLength(0);
   });
@@ -656,7 +685,8 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => 0,
     });
 
-    expect(result.termination).toEqual({ reason: "replay-diverged", complete: false });
+    expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
+    expect(result.termination.detail).toContain("Replay checkpoint 1/2 after RIGHT produced state-");
     expect(pressed).toContain("6:root:RIGHT");
     expect(pressed).not.toContain("6:wrong:SELECT");
     expect(result.statistics.pendingStates).toBeGreaterThanOrEqual(0);

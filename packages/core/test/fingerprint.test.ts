@@ -149,6 +149,66 @@ describe("state fingerprinting", () => {
     expect(modal.screen.value).not.toBe(base.screen.value);
   });
 
+  it("ignores transient enabled changes on explicitly non-focusable presentation nodes", () => {
+    const label = {
+      ...control("catalog-title", "Catalog", false, 500),
+      role: "text",
+      focusable: false,
+    };
+    const enabled = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: label,
+    }));
+    const disabled = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: { ...label, enabled: false },
+    }));
+
+    expect(disabled.screen.value).toBe(enabled.screen.value);
+  });
+
+  it("ignores presentation-only descendants of a focusable control", () => {
+    const baseControl = control("catalog-card", "Catalog", false, 500);
+    const decoration = {
+      ...control("catalog-icon", "Icon", false, 500),
+      role: "img",
+      focusable: false,
+    };
+    const plain = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: baseControl,
+    }));
+    const decorated = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: { ...baseControl, children: [decoration] },
+    }));
+    const nestedControl = fingerprintSnapshot(snapshot({
+      location: "app://catalog",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: {
+        ...baseControl,
+        children: [{ ...decoration, children: [control("nested-action", "Action", false, 520)] }],
+      },
+    }));
+
+    expect(decorated.screen.value).toBe(plain.screen.value);
+    expect(nestedControl.screen.value).not.toBe(plain.screen.value);
+  });
+
   it("does not split a stable focused control when only its live label changes", () => {
     const first = fingerprintSnapshot(snapshot({
       location: "app://player",
@@ -280,6 +340,97 @@ describe("state fingerprinting", () => {
 
     expect(withHiddenTemplate.screen.value).toBe(base.screen.value);
     expect(withHiddenDisabled.screen.value).not.toBe(base.screen.value);
+  });
+
+  it("normalises virtualised collection membership without erasing item shape", () => {
+    const collectionSnapshot = (
+      ids: readonly string[],
+      role = "button",
+      enabled = true,
+    ): StateSnapshot => {
+      const base = snapshot({
+        location: "app://catalog",
+        focusId: ids[0] ?? "none",
+        focusName: ids[0] ?? "None",
+        volatileText: "Catalog",
+      });
+      return {
+        ...base,
+        uiTree: availableObservation([{
+          stableId: "catalog-list",
+          role: "list",
+          name: "Catalog",
+          text: null,
+          bounds: { x: 0, y: 0, width: 1280, height: 720 },
+          visible: true,
+          enabled: true,
+          focusable: false,
+          focused: false,
+          modal: false,
+          selectionState: null,
+          valueNow: null,
+          children: ids.map((id, index) => ({
+            ...control(id, id, index === 0, 100 + index * 180),
+            role,
+            enabled,
+          })),
+        }]),
+      };
+    };
+
+    const first = fingerprintSnapshot(collectionSnapshot(["movie-1", "movie-2"]));
+    const scrolled = fingerprintSnapshot(collectionSnapshot(["movie-2", "movie-3"]));
+    const changedRole = fingerprintSnapshot(collectionSnapshot(["movie-2", "movie-3"], "checkbox"));
+    const disabled = fingerprintSnapshot(collectionSnapshot(["movie-2", "movie-3"], "button", false));
+    const empty = fingerprintSnapshot(collectionSnapshot([]));
+
+    expect(scrolled.screen.value).toBe(first.screen.value);
+    expect(changedRole.screen.value).not.toBe(first.screen.value);
+    expect(disabled.screen.value).not.toBe(first.screen.value);
+    expect(empty.screen.value).not.toBe(first.screen.value);
+  });
+
+  it("bounds focusable-descendant analysis on adversarially deep trees", () => {
+    let descendant: UiNodeSnapshot = {
+      ...control("deep-leaf", "Deep leaf", false, 500),
+      focusable: false,
+    };
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      descendant = {
+        ...control(`deep-${String(depth)}`, "Decoration", false, 500),
+        focusable: false,
+        children: [descendant],
+      };
+    }
+    const deepSnapshot = snapshot({
+      location: "app://deep",
+      focusId: "control-left",
+      focusName: "Left",
+      volatileText: "Stable",
+      extraNode: {
+        ...control("focusable-container", "Container", false, 500),
+        children: [descendant],
+      },
+    });
+
+    expect(() => fingerprintSnapshot(deepSnapshot)).not.toThrow();
+  });
+
+  it("counts depth-truncated child visits against the total traversal budget", () => {
+    let childReads = 0;
+    const leaves = new Proxy(Array<UiNodeSnapshot>(5000).fill(control("leaf", "Leaf", false, 0)), {
+      get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/u.test(property)) childReads += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    let root: UiNodeSnapshot = { ...control("wide", "Wide", false, 0), children: leaves };
+    for (let depth = 0; depth < 63; depth += 1) {
+      root = { ...control(`level-${String(depth)}`, "Level", false, 0), children: [root] };
+    }
+    const value = snapshot({ location: "app://bounded", focusId: "leaf", focusName: "Leaf", volatileText: "Stable" });
+    fingerprintSnapshot({ ...value, uiTree: availableObservation([root]) });
+    expect(childReads).toBeLessThanOrEqual(2048);
   });
 
   it("exposes low confidence instead of inventing unavailable signals", () => {

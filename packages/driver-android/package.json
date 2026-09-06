@@ -2,12 +2,12 @@
   "name": "@tvdoctor/driver-android",
   "version": "0.1.0",
   
-  "description": "Experimental ADB and UIAutomator Android TV driver for TVDoctor.",
+  "description": "Experimental persistent-observer Android TV driver for TVDoctor.",
   "keywords": [
     "tvdoctor",
     "android-tv",
     "adb",
-    "uiautomator",
+    "accessibility-service",
     "testing",
     "remote-control"
   ],
@@ -38,15 +38,19 @@
   },
   "files": [
     "dist",
+    "observer/tvdoctor-observer.apk",
+    "observer/observer-manifest.json",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -b --pretty false",
+    "build:observer": "powershell -NoProfile -ExecutionPolicy Bypass -File observer/build-observer.ps1",
+    "verify:observer": "node -e \"import('./dist/observer-asset.js').then(module => module.resolveAndroidObserverAsset())\"",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
-    "prepack": "npm run build -- --force"
+    "prepack": "npm run build -- --force && npm run verify:observer"
   },
   "dependencies": {
     "@tvdoctor/protocol": "0.1.0"

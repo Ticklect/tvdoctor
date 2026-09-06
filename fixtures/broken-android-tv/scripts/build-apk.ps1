@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$isWindowsHost = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 
 function Resolve-RequiredPath {
     param([string]$Path, [string]$Label)
@@ -17,7 +18,8 @@ function Resolve-RequiredPath {
 function Resolve-JavaTool {
     param([string]$Name, [string]$ConfiguredJavaHome)
     if (-not [string]::IsNullOrWhiteSpace($ConfiguredJavaHome)) {
-        $candidate = Join-Path $ConfiguredJavaHome "bin\$Name.exe"
+        $toolName = if ($isWindowsHost) { "$Name.exe" } else { $Name }
+        $candidate = Join-Path (Join-Path $ConfiguredJavaHome "bin") $toolName
         return Resolve-RequiredPath $candidate $Name
     }
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -25,6 +27,23 @@ function Resolve-JavaTool {
         throw "$Name is required. Pass -JavaHome or add a JDK to PATH."
     }
     return [System.IO.Path]::GetFullPath($command.Source)
+}
+
+function Resolve-CompilePlatform {
+    param([string]$SdkRoot)
+    $platformsRoot = Resolve-RequiredPath (Join-Path $SdkRoot "platforms") "Android platforms"
+    $candidates = @(Get-ChildItem -LiteralPath $platformsRoot -Directory | ForEach-Object {
+        if ($_.Name -match '^android-(\d+)') {
+            [pscustomobject]@{ ApiLevel = [int]$Matches[1]; Path = $_.FullName }
+        }
+    } | Sort-Object -Property @(
+        @{ Expression = { $_.ApiLevel }; Descending = $true },
+        @{ Expression = { $_.Path }; Descending = $true }
+    ))
+    if ($candidates.Count -eq 0 -or $candidates[0].ApiLevel -lt 36) {
+        throw "Android compile platform API 36 or newer is required."
+    }
+    return Resolve-RequiredPath $candidates[0].Path "Android compile platform"
 }
 
 function Invoke-Checked {
@@ -39,19 +58,25 @@ $configuredSdk = $AndroidSdk
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:TVDOCTOR_ANDROID_SDK }
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:ANDROID_SDK_ROOT }
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) { $configuredSdk = $env:ANDROID_HOME }
+if ([string]::IsNullOrWhiteSpace($configuredSdk) -and $isWindowsHost -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $configuredSdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+}
 if ([string]::IsNullOrWhiteSpace($configuredSdk)) {
     throw "Android SDK is required. Pass -AndroidSdk or set TVDOCTOR_ANDROID_SDK/ANDROID_SDK_ROOT."
 }
 
 $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $resolvedSdk = Resolve-RequiredPath $configuredSdk "Android SDK"
-$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools\36.0.0") "Android build-tools 36.0.0"
-$androidJar = Resolve-RequiredPath (Join-Path $resolvedSdk "platforms\android-36\android.jar") "Android API 36 platform"
-$aapt2 = Resolve-RequiredPath (Join-Path $buildTools "aapt2.exe") "aapt2"
-$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt.exe") "aapt"
-$d8 = Resolve-RequiredPath (Join-Path $buildTools "d8.bat") "d8"
-$zipalign = Resolve-RequiredPath (Join-Path $buildTools "zipalign.exe") "zipalign"
-$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner.bat") "apksigner"
+$buildTools = Resolve-RequiredPath (Join-Path $resolvedSdk "build-tools/36.0.0") "Android build-tools 36.0.0"
+$platform = Resolve-CompilePlatform $resolvedSdk
+$androidJar = Resolve-RequiredPath (Join-Path $platform "android.jar") "Android compile-platform android.jar"
+$executableSuffix = if ($isWindowsHost) { ".exe" } else { "" }
+$scriptSuffix = if ($isWindowsHost) { ".bat" } else { "" }
+$aapt2 = Resolve-RequiredPath (Join-Path $buildTools "aapt2$executableSuffix") "aapt2"
+$aapt = Resolve-RequiredPath (Join-Path $buildTools "aapt$executableSuffix") "aapt"
+$d8 = Resolve-RequiredPath (Join-Path $buildTools "d8$scriptSuffix") "d8"
+$zipalign = Resolve-RequiredPath (Join-Path $buildTools "zipalign$executableSuffix") "zipalign"
+$apksigner = Resolve-RequiredPath (Join-Path $buildTools "apksigner$scriptSuffix") "apksigner"
 $javac = Resolve-JavaTool "javac" $JavaHome
 $jar = Resolve-JavaTool "jar" $JavaHome
 $keytool = Resolve-JavaTool "keytool" $JavaHome
@@ -69,8 +94,8 @@ $compiledRoot = Join-Path $buildRoot "compiled"
 $generatedRoot = Join-Path $buildRoot "generated"
 $classesRoot = Join-Path $buildRoot "classes"
 $dexRoot = Join-Path $buildRoot "dex"
-$signingRoot = Join-Path $buildRoot "signing"
-$outputRoot = Join-Path $buildRoot "outputs\apk\debug"
+$signingRoot = Join-Path $fixtureRoot "signing"
+$outputRoot = Join-Path $buildRoot "outputs/apk/debug"
 foreach ($directory in @($compiledRoot, $generatedRoot, $classesRoot, $dexRoot, $signingRoot, $outputRoot)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
@@ -128,20 +153,22 @@ finally {
 Invoke-Checked $zipalign @("-f", "4", $unsignedApk, $alignedApk)
 
 $keystore = Join-Path $signingRoot "fixture-debug.p12"
-Invoke-Checked $keytool @(
-    "-genkeypair",
-    "-keystore", $keystore,
-    "-storetype", "PKCS12",
-    "-storepass", "android",
-    "-keypass", "android",
-    "-alias", "androiddebugkey",
-    "-dname", "CN=TVDoctor Fixture, OU=Development, O=TVDoctor, L=Local, ST=Local, C=GB",
-    "-keyalg", "RSA",
-    "-keysize", "2048",
-    "-sigalg", "SHA256withRSA",
-    "-validity", "10000",
-    "-noprompt"
-)
+if (-not (Test-Path -LiteralPath $keystore)) {
+    Invoke-Checked $keytool @(
+        "-genkeypair",
+        "-keystore", $keystore,
+        "-storetype", "PKCS12",
+        "-storepass", "android",
+        "-keypass", "android",
+        "-alias", "androiddebugkey",
+        "-dname", "CN=TVDoctor Fixture, OU=Development, O=TVDoctor, L=Local, ST=Local, C=GB",
+        "-keyalg", "RSA",
+        "-keysize", "2048",
+        "-sigalg", "SHA256withRSA",
+        "-validity", "10000",
+        "-noprompt"
+    )
+}
 Invoke-Checked $apksigner @(
     "sign",
     "--ks", $keystore,

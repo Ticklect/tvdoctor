@@ -53,13 +53,28 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 
 ## Android
 
-- A disposable Android TV API 36 emulator gate proved fixture install, launch,
-  UI hierarchy, real DPAD input, seeded focus-loss detection, screenshot/log
-  capture, relaunch, and teardown. This is emulator evidence only.
+- A disposable Android TV API 36 emulator gate proved observer deployment,
+  event-driven focus/window/content state, real DPAD input, seeded focus-loss
+  detection, screenshot/log capture, deterministic relaunch/replay, Deep
+  exploration, cancellation, and teardown. This is emulator evidence only.
 - The driver does not create, start, configure, stop, or delete emulators.
 - No physical Android TV, Google TV, vendor firmware, permission-dialog, DRM,
   launcher, or Fire TV compatibility is claimed.
-- UIAutomator can omit semantic properties; missing values remain unavailable.
+- Android accessibility can omit semantic properties; missing values remain
+  unavailable. Protected/secure surfaces may block state or screenshots.
+- HOME and media actions are supported only when explicitly requested in
+  startup/replay data; automatic exploration remains navigation-only.
+- Dynamic apps must reach three equivalent canonical observations for DPAD
+  movement and seven for activation/back inside the bounded post-action window.
+  Continuous churn remains partial rather than being accepted as a replay match.
+- VLC for Android 3.7.1 reached the 300-physical-action Quick ceiling after 27
+  focus states, 12 screens, and 87 deterministic resets with no replay
+  divergence or observer timeout; 11 frontier entries remained, so the result
+  is retained as partial/inconclusive rather than reported clean.
+- Hosted release-signing verification cannot run until maintainers provision the
+  protected workflow with the release keystore and certificate digest;
+  pull-request CI verifies only the tracked APK's checksum/certificate metadata
+  and disposable-emulator behavior.
 - Install, clear-data, force-stop, and input commands alter the selected device.
   Use an explicit serial and a disposable emulator without personal data.
 

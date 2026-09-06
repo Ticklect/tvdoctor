@@ -34,7 +34,7 @@ CLI or library caller ───────► TVDoctorDriver
 | --- | --- | --- |
 | `@tvdoctor/protocol` | JSON-safe driver, issue, report, and replay contracts; strict validation | Browser, Android, fixture, or filesystem behaviour |
 | `@tvdoctor/driver-web` | Chromium launch/input, DOM-derived snapshots, screenshots, logs, network/performance/media observations | Diagnostic verdicts or fixture routes |
-| `@tvdoctor/driver-android` | Structured ADB operations, DPAD input, UIAutomator hierarchy, screenshots, logs, device/app metadata | Emulator lifecycle or unsupported capability claims |
+| `@tvdoctor/driver-android` | Persistent observer transport, accessibility-event settling, canonical Android snapshots, structured ADB input/setup/screenshots/logs, device/app metadata | Explorer/report/replay policy, emulator lifecycle, or unsupported capability claims |
 | `@tvdoctor/core` | Fingerprints, bounded exploration, state graphs, navigation diagnostics, sequence minimisation, replay | DOM selectors, resource IDs, shell commands, report files |
 | `@tvdoctor/pack-streaming` | Semantic details/player/settings/captions journey and streaming verdicts | Platform-specific pointer implementation or stored fixture path |
 | `@tvdoctor/pack-web` | Independent search, settings, accessibility, layout, performance, and crash stages | Browser-only facts unless supplied through explicit hooks |
@@ -49,7 +49,8 @@ Every platform adapter implements the small `TVDoctorDriver` surface:
 - required `capabilities()`, `press()`, and `snapshot()` methods;
 - optional screenshot, reset, install, launch, and log operations;
 - explicit available/unavailable observations instead of guessed values;
-- normalised remote keys: Up, Down, Left, Right, Select, and Back;
+- bounded automatic navigation keys: Up, Down, Left, Right, Select, and Back;
+- explicit remote controls for Home and media playback/seek actions;
 - JSON-serialisable UI hierarchy, focus, names, roles, bounds, and state.
 
 Capabilities describe what a driver can observe or perform, not what the target

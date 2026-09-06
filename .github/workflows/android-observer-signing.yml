@@ -1,0 +1,80 @@
+name: Android observer release-signing verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release-signature:
+    name: Rebuild and verify the tracked observer APK
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: android-observer-release
+
+    steps:
+      - name: Check out the exact candidate
+        # actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Configure Java 17
+        # actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install pinned Android SDK components
+        shell: pwsh
+        run: |
+          sdkmanager.bat "platforms;android-36" "build-tools;36.0.0"
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Android SDK installation failed." }
+
+      - name: Materialize the protected release keystore
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TVDOCTOR_OBSERVER_KEYSTORE_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) {
+            throw "TVDOCTOR_OBSERVER_KEYSTORE_BASE64 is not configured."
+          }
+          [System.IO.File]::WriteAllBytes(
+            (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12"),
+            [Convert]::FromBase64String($env:KEYSTORE_BASE64)
+          )
+
+      - name: Rebuild with protected signing credentials
+        shell: pwsh
+        env:
+          TVDOCTOR_OBSERVER_KEYSTORE: ${{ runner.temp }}/tvdoctor-observer-release.p12
+          TVDOCTOR_OBSERVER_KEY_ALIAS: ${{ secrets.TVDOCTOR_OBSERVER_KEY_ALIAS }}
+          TVDOCTOR_OBSERVER_STORE_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_STORE_PASSWORD }}
+          TVDOCTOR_OBSERVER_KEY_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_KEY_PASSWORD }}
+          TVDOCTOR_OBSERVER_CERTIFICATE_SHA256: ${{ secrets.TVDOCTOR_OBSERVER_CERTIFICATE_SHA256 }}
+        run: .\packages\driver-android\observer\build-observer.ps1
+
+      - name: Require byte-for-byte reproducibility
+        shell: pwsh
+        run: |
+          git diff --exit-code -- `
+            packages/driver-android/observer/tvdoctor-observer.apk `
+            packages/driver-android/observer/observer-manifest.json
+
+      - name: Upload verified release assets
+        # actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tvdoctor-observer-signed-${{ github.sha }}
+          path: |
+            packages/driver-android/observer/tvdoctor-observer.apk
+            packages/driver-android/observer/observer-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove protected keystore material
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12") -Force -ErrorAction SilentlyContinue

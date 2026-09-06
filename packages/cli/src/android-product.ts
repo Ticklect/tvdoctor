@@ -7,6 +7,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import {
   EXPLORATION_BUDGET_PROFILES,
+  compileIssueReplay,
   diagnoseNavigation,
   explore,
   type ExplorationBudgets,
@@ -41,10 +42,21 @@ export const ANDROID_EXPLORATION_BUDGETS: Readonly<Record<
 >> = {
   quick: {
     ...EXPLORATION_BUDGET_PROFILES.quick,
-    maxDurationMs: 120_000,
+    maxDurationMs: 720_000,
   },
   deep: EXPLORATION_BUDGET_PROFILES.deep,
 };
+
+export const ANDROID_ACTION_SETTLING = {
+  strategy: "stable-snapshot",
+  maxSnapshots: 6,
+  requiredStableSnapshots: 3,
+  pollIntervalMs: 250,
+  keyOverrides: {
+    SELECT: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+    BACK: { maxSnapshots: 14, requiredStableSnapshots: 7 },
+  },
+} as const;
 
 async function fileArtifact(
   outputRoot: string,
@@ -282,7 +294,7 @@ function friendlyDeviceError(error: unknown): string {
 export interface AndroidPreflightDriver {
   listDevices(): Promise<readonly { readonly serial: string; readonly state: string; readonly model: string | null }[]>;
   getDeviceMetadata(refresh: boolean): Promise<AndroidDeviceMetadata>;
-  close(): void;
+  close(): Promise<void> | void;
 }
 
 export interface AndroidPreflightDependencies {
@@ -366,7 +378,7 @@ export async function androidPreflight(
           detail: friendlyDeviceError(error),
         });
       } finally {
-        metadataDriver.close();
+        await metadataDriver.close();
       }
     }
     return {
@@ -385,7 +397,7 @@ export async function androidPreflight(
       devices: [],
     };
   } finally {
-    driver.close();
+    await driver.close();
   }
 }
 
@@ -493,6 +505,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
   const driver = new AndroidTvDriver({
     ...(options.adbPath === undefined ? {} : { adbPath: options.adbPath }),
     serial: options.serial,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   try {
     const apk = await inspectApk(options.apkPath);
@@ -505,12 +518,8 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       id: apk.packageName,
       ...(component === null ? {} : { launchUri: component }),
     });
-    let initial = await driver.snapshot();
-    for (let attempt = 0; attempt < 5 && initial.uiTree.status !== "available"; attempt += 1) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
-      initial = await driver.snapshot();
-    }
-    if (initial.uiTree.status !== "available") throw new Error("Android UI automation was unavailable after launch.");
+    const initial = await driver.snapshot();
+    if (initial.uiTree.status !== "available") throw new Error("Android observer UI state was unavailable after launch.");
     let setup = classifyAndroidStartup(initial);
     if (setup !== null && options.onSetupScreen !== undefined) {
       const decision = await options.onSetupScreen(setup);
@@ -563,10 +572,12 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     const explorationPromise = explore(driver, {
       profile: options.mode,
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
+      settling: ANDROID_ACTION_SETTLING,
       restoreInitialState: async () => {
         await driver.reset("relaunch");
       },
-      allowUnsettledActions: true,
+      shouldExpand: (snapshot) => snapshot.location.status === "available"
+        && snapshot.location.value.startsWith(`android://${apk.packageName}/`),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       onProgress: (progress) => {
         latestProgress = progress;
@@ -630,6 +641,68 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     } catch {
       // Log capture is supplementary; the scan result remains authoritative.
     }
+    try {
+      const explorationEvidence = sanitiseEvidenceJson(JSON.parse(JSON.stringify({
+        termination: result.termination,
+        budgets: result.budgets,
+        actionOrder: result.actionOrder,
+        statistics: result.statistics,
+      })) as JsonValue);
+      const explorationPath = join(outputRoot, "android-exploration.json");
+      await writeFile(explorationPath, `${stableJson(explorationEvidence)}\n`);
+      runArtifacts.push(await fileArtifact(
+        outputRoot,
+        explorationPath,
+        "run:android-exploration",
+        "report",
+        "application/json",
+      ));
+    } catch {
+      // The canonical report verdict remains authoritative if supplementary diagnostics fail.
+    }
+    try {
+      const actionProfiles = result.graph.actions.map((action) => ({
+        id: action.id,
+        key: action.key,
+        outcome: action.actionResult.outcome,
+        timing: action.actionResult.timing,
+      }));
+      const totals = actionProfiles.flatMap((action) => {
+        const total = action.timing.profile?.totalMs;
+        return total === undefined ? [] : [total];
+      }).sort((left, right) => left - right);
+      const percentile = (fraction: number): number | null => {
+        if (totals.length === 0) return null;
+        return totals[Math.min(totals.length - 1, Math.max(0, Math.ceil(totals.length * fraction) - 1))] ?? null;
+      };
+      const performanceEvidence = sanitiseEvidenceJson(JSON.parse(JSON.stringify({
+        architecture: "android-observer-v2",
+        count: totals.length,
+        meanMs: totals.length === 0 ? null : totals.reduce((sum, value) => sum + value, 0) / totals.length,
+        p50Ms: percentile(0.5),
+        p90Ms: percentile(0.9),
+        p95Ms: percentile(0.95),
+        p99Ms: percentile(0.99),
+        worstMs: totals.at(-1) ?? null,
+        actions: actionProfiles,
+        observer: driver.getObserverMetrics(),
+      })) as JsonValue);
+      const performancePath = join(outputRoot, "android-action-performance.json");
+      await writeFile(performancePath, `${stableJson(performanceEvidence)}\n`);
+      runArtifacts.push(await fileArtifact(
+        outputRoot,
+        performancePath,
+        "run:android-action-performance",
+        "report",
+        "application/json",
+      ));
+    } catch {
+      // Profiling evidence is supplementary and must never rewrite the run verdict.
+    }
+    const replays = issues.flatMap((issue) => {
+      const compiled = compileIssueReplay(issue);
+      return compiled.status === "compiled" ? [compiled.plan.replay] : [];
+    });
     const report = buildTVDoctorReportV1({
       run: {
         id: `android-${startedAt.getTime().toString(36)}`,
@@ -649,6 +722,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
           version: apk.versionName ?? "unknown",
           architecture: apk.supportedAbis.join(", ") || "unknown",
           explorer: "experimental Android TV navigation audit",
+          driver: "persistent TVDoctor observer v2",
         },
       },
       coverage: {
@@ -669,7 +743,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       },
       issues,
       artifacts: runArtifacts,
-      replays: [],
+      replays,
     });
     const bundle = await writeReportBundle(store, report);
     const severityOrder = ["critical", "high", "medium", "low", "info"] as const;
@@ -700,6 +774,6 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     if (progressTimer !== undefined) clearInterval(progressTimer);
     const appPackage = selectedPackage ?? undefined;
     await driver.forceStop(appPackage ?? undefined).catch(() => undefined);
-    driver.close();
+    await driver.close();
   }
 }

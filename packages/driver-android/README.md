@@ -1,63 +1,48 @@
 # @tvdoctor/driver-android
 
-Experimental, local-first Android TV adapter for TVDoctor. It uses the Android
-SDK's `adb` executable directly and never invokes a command shell.
+Experimental Android TV adapter backed by the persistent TVDoctor Observer APK.
+It implements the existing platform-neutral `TVDoctorDriver` contract.
 
-Implemented capabilities:
+Normal exploration uses:
 
-- install a caller-supplied APK;
-- launch and force-stop an application, with relaunch and clear-data resets;
-- send real DPAD Up/Down/Left/Right, DPAD Center (Select), and Back key events;
-- capture bounded UIAutomator accessibility hierarchies, current focus, roles,
-  names, visibility evidence, and screen bounds;
-- capture and validate PNG screenshots;
-- collect bounded, process-filtered logcat records;
-- expose bounded device and installed-app metadata.
+- one persistent, authenticated, framed local observer connection;
+- Android accessibility window/focus/content events;
+- bounded event-driven settling and canonical snapshots;
+- one ADB `input keyevent` call per remote action;
+- on-demand ADB screenshots and bounded logcat evidence.
 
-The driver does not start or modify emulators. A caller must select an already
-running device (preferably with an explicit `serial`) and owns emulator cleanup.
-If no serial is supplied, exactly one online device must be present; ambiguous,
-offline, or unauthorised device lists fail closed.
+ADB remains responsible for device discovery, observer/target installation,
+launch, reset, input, screenshots, port forwarding, and cleanup. UIAutomator
+hierarchy dumping is not part of the production action loop.
 
 ```ts
 import { AndroidTvDriver } from "@tvdoctor/driver-android";
 
-const driver = new AndroidTvDriver({
-  adbPath: process.env.ANDROID_SDK_ROOT
-    ? `${process.env.ANDROID_SDK_ROOT}/platform-tools/adb`
-    : "adb",
-  serial: "emulator-5554",
-});
-
-await driver.waitForDeviceReady();
-await driver.install("fixtures/broken-android-tv/app/build/outputs/apk/debug/app-debug.apk");
-await driver.launch({
-  id: "org.tvdoctor.fixture",
-  launchUri: "org.tvdoctor.fixture/.MainActivity",
-});
+const driver = new AndroidTvDriver({ serial: "emulator-5554" });
+try {
+  await driver.install("example.apk");
+  await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+  const result = await driver.press("RIGHT");
+  console.log(result.timing.profile?.totalMs, result.postActionSnapshot);
+} finally {
+  await driver.close();
+}
 ```
 
-`launchUri` is an Android component, not a web URL. If it is omitted, the
-driver launches the package's `LEANBACK_LAUNCHER` entry via Android's `monkey`
-tool. `reload` and `relaunch` both perform a native force-stop/relaunch;
-`clear-data` additionally runs `pm clear` for the selected package.
-
-UIAutomator does not expose every platform property. Missing values remain
-`null` or an explicit unavailable observation. Inclusion in the active
-UIAutomator dump plus a positive bounds rectangle is used as the conservative
-visibility signal. The adapter does not claim network, performance,
-player-state, or video-capture capabilities.
+The packaged observer asset is versioned, checksum-validated, and tied to host
+protocol version 2. `prepack` verifies that exact release asset and never creates
+or publishes a signing key. Maintainers use `build:observer` with controlled
+signing material when updating the tracked APK. First use requires explicit
+accessibility enablement on the device. See the repository's Android driver
+guide for setup, security, CI, privacy, support boundaries, and uninstall
+instructions.
 
 ## Verification
 
 ```sh
+npm run build:observer --workspace @tvdoctor/driver-android
 npm run typecheck --workspace @tvdoctor/driver-android
 npm test --workspace @tvdoctor/driver-android
 npm run lint --workspace @tvdoctor/driver-android
 npm run build --workspace @tvdoctor/driver-android
 ```
-
-These unit tests use a bounded fake ADB executor. Platform support must remain
-experimental until the Milestone 9 conformance and disposable Android TV
-emulator gate passes install, launch, real DPAD input, hierarchy observation,
-screenshot, logs, graph diagnostics, report generation, and replay.

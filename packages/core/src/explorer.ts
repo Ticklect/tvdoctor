@@ -1,4 +1,5 @@
 import {
+  NAVIGATION_KEYS,
   REMOTE_KEYS,
   type ActionResult,
   type RemoteKey,
@@ -99,8 +100,10 @@ export interface ExplorerOptions {
   /** An explicit profile activates the M8 priority/compression defaults. */
   readonly profile?: ExplorationProfile;
   readonly budgets?: Partial<ExplorationBudgets>;
-  /** Deterministic action priority. Defaults to protocol REMOTE_KEYS order. */
+  /** Deterministic action priority. Defaults to the bounded navigation-key set. */
   readonly actions?: readonly RemoteKey[];
+  /** Record transitions to these snapshots but do not enqueue them for expansion/replay. */
+  readonly shouldExpand?: (snapshot: StateSnapshot) => boolean;
   /** Used when restoreInitialState is absent. */
   readonly resetStrategy?: ResetStrategy;
   /** Allows adapters to supply an equivalent deterministic root restoration. */
@@ -304,6 +307,58 @@ function incomplete(
   };
 }
 
+function snapshotNodeCount(snapshot: StateSnapshot): number | null {
+  if (snapshot.uiTree.status !== "available") return null;
+  const count = (nodes: readonly UiNodeSnapshot[]): number => nodes.reduce(
+    (total, node) => total + 1 + count(node.children),
+    0,
+  );
+  return count(snapshot.uiTree.value);
+}
+
+function snapshotStructure(snapshot: StateSnapshot): readonly string[] | null {
+  if (snapshot.uiTree.status !== "available") return null;
+  const flatten = (nodes: readonly UiNodeSnapshot[], depth: number): readonly string[] => nodes.flatMap((node) => [
+    `${String(depth)}:${node.stableId ?? ""}|${node.role ?? ""}|${String(node.visible)}|${String(node.enabled)}|${String(node.focusable)}|${String(node.modal)}`,
+    ...flatten(node.children, depth + 1),
+  ]);
+  return flatten(snapshot.uiTree.value, 0);
+}
+
+function snapshotDifference(expected: StateSnapshot, observed: StateSnapshot): string {
+  const expectedLocation = expected.location.status === "available"
+    ? expected.location.value
+    : "unavailable";
+  const observedLocation = observed.location.status === "available"
+    ? observed.location.value
+    : "unavailable";
+  const expectedFocus = expected.focusedElement.status === "available"
+    ? expected.focusedElement.value?.stableId ?? expected.focusedElement.value?.role ?? "none"
+    : "unavailable";
+  const observedFocus = observed.focusedElement.status === "available"
+    ? observed.focusedElement.value?.stableId ?? observed.focusedElement.value?.role ?? "none"
+    : "unavailable";
+  const expectedNodes = snapshotNodeCount(expected);
+  const observedNodes = snapshotNodeCount(observed);
+  const expectedStructure = snapshotStructure(expected);
+  const observedStructure = snapshotStructure(observed);
+  let firstDifference = "";
+  if (expectedStructure !== null && observedStructure !== null) {
+    const differenceIndex = expectedStructure.findIndex(
+      (value, index) => value !== observedStructure[index],
+    );
+    if (differenceIndex >= 0) {
+      firstDifference = ` First structural difference at node ${String(differenceIndex + 1)}: ${expectedStructure[differenceIndex]} -> ${observedStructure[differenceIndex] ?? "missing"}.`;
+    } else if (expectedStructure.length !== observedStructure.length) {
+      firstDifference = ` First structural difference at node ${String(Math.min(expectedStructure.length, observedStructure.length) + 1)}: tree length changed.`;
+    }
+  }
+  const locationDifference = expectedLocation === observedLocation
+    ? ""
+    : ` Location ${expectedLocation} -> ${observedLocation}.`;
+  return `UI nodes ${String(expectedNodes ?? "unavailable")} -> ${String(observedNodes ?? "unavailable")}; focus ${expectedFocus} -> ${observedFocus}.${locationDifference}${firstDifference}`;
+}
+
 function positiveInteger(value: number, name: string, maximum: number): number {
   if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     throw new TypeError(`${name} must be a positive safe integer no greater than ${String(maximum)}.`);
@@ -420,7 +475,7 @@ function normaliseActions(actions: readonly RemoteKey[] | undefined): readonly R
   if (actions !== undefined && !Array.isArray(actions)) {
     throw new TypeError("Explorer actions must be an array.");
   }
-  const result = [...(actions ?? REMOTE_KEYS)];
+  const result = [...(actions ?? NAVIGATION_KEYS)];
   const allowed = new Set<string>(REMOTE_KEYS);
   if (result.some((key) => typeof key !== "string" || !allowed.has(key))) {
     throw new TypeError("Explorer actions must contain only known remote keys.");
@@ -790,12 +845,17 @@ export async function explore(
     });
   };
 
-  if (options.signal?.aborted === true) return finish(incomplete("interrupted"));
+  const signalAborted = (): boolean => options.signal?.aborted === true;
+  if (signalAborted()) return finish(incomplete("interrupted"));
+  if (options.shouldExpand !== undefined && typeof options.shouldExpand !== "function") {
+    throw new TypeError("shouldExpand must be a function.");
+  }
 
   let capabilities: ReadonlySet<string>;
   try {
     capabilities = await withinDurationBudget(() => driver.capabilities());
   } catch (error) {
+    if (signalAborted()) return finish(incomplete("interrupted"));
     if (error instanceof DurationBudgetExceeded) return finish(incomplete("max-duration"));
     return finish(incomplete("driver-error"));
   }
@@ -818,7 +878,7 @@ export async function explore(
   };
 
   const workBudgetTermination = (): ExplorationTermination | null => {
-    if (options.signal?.aborted === true) return incomplete("interrupted");
+    if (signalAborted()) return incomplete("interrupted");
     if (elapsed() >= budgets.maxDurationMs) return incomplete("max-duration");
     if (physicalActions >= budgets.maxActions) return incomplete("max-actions");
     return null;
@@ -838,6 +898,7 @@ export async function explore(
     }
     if (elapsed() >= budgets.maxDurationMs) return finish(incomplete("max-duration"));
   } catch (error) {
+    if (signalAborted()) return finish(incomplete("interrupted"));
     if (error instanceof DurationBudgetExceeded) return finish(incomplete("max-duration"));
     if (error instanceof PreparedStateDivergenceError) return finish(incomplete("prepared-state-diverged"));
     return finish(incomplete("restoration-failed"));
@@ -956,6 +1017,9 @@ export async function explore(
     try {
       resetSnapshot = await withinDurationBudget(restoreAndCapture);
     } catch (error) {
+      if (signalAborted()) {
+        return { status: "stop", termination: incomplete("interrupted") };
+      }
       if (error instanceof DurationBudgetExceeded) {
         return { status: "stop", termination: incomplete("max-duration") };
       }
@@ -972,8 +1036,15 @@ export async function explore(
     } finally {
       phaseTimings.resetMs += durationSince(resetStartedAt);
     }
-    if (fingerprintSnapshot(resetSnapshot).stateIdentity !== initialFingerprint.stateIdentity) {
-      return { status: "stop", termination: incomplete("replay-diverged") };
+    const resetFingerprint = fingerprintSnapshot(resetSnapshot);
+    if (resetFingerprint.stateIdentity !== initialFingerprint.stateIdentity) {
+      return {
+        status: "stop",
+        termination: incomplete(
+          "replay-diverged",
+          `Root restoration produced ${resetFingerprint.fingerprint.stateValue}; expected ${initialFingerprint.fingerprint.stateValue} before replaying [${entry.sequence.join(", ")}]. ${snapshotDifference(initialSnapshot, resetSnapshot)}`,
+        ),
+      };
     }
 
     let currentSnapshot = resetSnapshot;
@@ -986,21 +1057,45 @@ export async function explore(
         replayActions += 1;
         try {
           const observation = await withinDurationBudget(() => pressAndObserve(measuredDriver, key, settling));
-          settlingPolls += observation.snapshotsCaptured - 1;
+          settlingPolls += observation.snapshotsObserved - 1;
           if (!observation.settled) unsettledActions += 1;
           if (!observation.settled) {
             return { status: "stop", termination: incomplete("settling-exhausted") };
           }
           currentSnapshot = observation.snapshot;
           if (observation.actionResult.key !== key || observation.actionResult.outcome !== "applied") {
-            return { status: "stop", termination: incomplete("replay-diverged") };
+            return {
+              status: "stop",
+              termination: incomplete(
+                "replay-diverged",
+                `Replay action ${String(index + 1)}/${String(entry.sequence.length)} (${key}) returned ${observation.actionResult.key}/${observation.actionResult.outcome} for [${entry.sequence.join(", ")}].`,
+              ),
+            };
           }
           const expectedCheckpoint = entry.checkpoints[index];
+          const observedCheckpoint = fingerprintSnapshot(currentSnapshot);
           if (expectedCheckpoint === undefined
-            || fingerprintSnapshot(currentSnapshot).stateIdentity !== expectedCheckpoint) {
-            return { status: "stop", termination: incomplete("replay-diverged") };
+            || observedCheckpoint.stateIdentity !== expectedCheckpoint) {
+            const expectedState = expectedCheckpoint === undefined
+              ? undefined
+              : stateByIdentity.get(expectedCheckpoint);
+            const expectedValue = expectedState?.fingerprint.fingerprint.stateValue
+              ?? (expectedCheckpoint === undefined ? "a recorded checkpoint" : "the recorded checkpoint");
+            const difference = expectedState === undefined
+              ? ""
+              : ` ${snapshotDifference(expectedState.representativeSnapshot, currentSnapshot)}`;
+            return {
+              status: "stop",
+              termination: incomplete(
+                "replay-diverged",
+                `Replay checkpoint ${String(index + 1)}/${String(entry.sequence.length)} after ${key} produced ${observedCheckpoint.fingerprint.stateValue}; expected ${expectedValue} for [${entry.sequence.join(", ")}].${difference}`,
+              ),
+            };
           }
         } catch (error) {
+          if (signalAborted()) {
+            return { status: "stop", termination: incomplete("interrupted") };
+          }
           if (error instanceof DurationBudgetExceeded) {
             return { status: "stop", termination: incomplete("max-duration") };
           }
@@ -1017,8 +1112,15 @@ export async function explore(
       phaseTimings.pathReplayMs += durationSince(replayStartedAt);
     }
 
-    if (fingerprintSnapshot(currentSnapshot).stateIdentity !== entry.state.identity) {
-      return { status: "stop", termination: incomplete("replay-diverged") };
+    const restoredFingerprint = fingerprintSnapshot(currentSnapshot);
+    if (restoredFingerprint.stateIdentity !== entry.state.identity) {
+      return {
+        status: "stop",
+        termination: incomplete(
+          "replay-diverged",
+          `Replay completed at ${restoredFingerprint.fingerprint.stateValue}; expected ${entry.state.fingerprint.fingerprint.stateValue} for [${entry.sequence.join(", ")}]. ${snapshotDifference(entry.state.representativeSnapshot, currentSnapshot)}`,
+        ),
+      };
     }
     return { status: "ok", snapshot: currentSnapshot };
   };
@@ -1065,9 +1167,13 @@ export async function explore(
           ...settling,
           allowUnsettledActions: options.allowUnsettledActions === true,
         }));
-        settlingPolls += actionObservation.snapshotsCaptured - 1;
+        settlingPolls += actionObservation.snapshotsObserved - 1;
         if (!actionObservation.settled) unsettledActions += 1;
       } catch (error) {
+        if (signalAborted()) {
+          termination = incomplete("interrupted");
+          break exploration;
+        }
         if (error instanceof DurationBudgetExceeded) {
           termination = incomplete("max-duration");
           break exploration;
@@ -1184,7 +1290,8 @@ export async function explore(
 
       const replayable = actionObservation.actionResult.key === key
         && actionObservation.actionResult.outcome === "applied";
-      if (replayable && !destination.state.scheduled) {
+      const expandable = options.shouldExpand?.(actionObservation.snapshot) ?? true;
+      if (replayable && expandable && !destination.state.scheduled) {
         const destinationGroup = destination.state.repetitionGroup === null
           ? undefined
           : repetitionGroups.get(destination.state.repetitionGroup);

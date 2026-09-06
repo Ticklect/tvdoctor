@@ -1,1 +1,8 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Documentation and contribution guidance
+    url: https://github.com/Ticklect/tvdoctor/tree/main/docs
+    about: Review the documentation and contribution guidance before opening an issue.
+  - name: Private security reporting
+    url: https://github.com/Ticklect/tvdoctor/blob/main/SECURITY.md
+    about: Do not disclose vulnerabilities or sensitive report evidence in a public issue; follow the private reporting guidance.

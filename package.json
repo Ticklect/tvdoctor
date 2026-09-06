@@ -27,19 +27,23 @@
     "test:driver": "npm test --workspace @tvdoctor/driver-web",
     "test:fixture": "npm test --workspace @tvdoctor/broken-streaming-web",
     "test:package-smoke": "node scripts/package-smoke.mjs",
+    "test:presentation": "node --test scripts/repository-presentation.test.mjs && node scripts/check-repository-presentation.mjs",
     "test:report-integration": "npm run test:integration --workspace @tvdoctor/reporters",
     "test:streaming-integration": "npm run test:integration --workspace @tvdoctor/pack-streaming",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "tvdoctor": "node packages/cli/dist/bin.js",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && npm run typecheck --workspace @tvdoctor/broken-streaming-web && npm run typecheck --workspace @tvdoctor/driver-web && npm run typecheck --workspace @tvdoctor/core && npm run typecheck --workspace @tvdoctor/pack-streaming && npm run typecheck --workspace @tvdoctor/reporters",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test && npm run build"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "eslint": "10.8.1",
     "globals": "^17.11.0",
+    "markdown-it": "15.0.1",
+    "parse5": "8.0.1",
+    "saxes": "6.0.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.11"

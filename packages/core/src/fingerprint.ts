@@ -63,6 +63,14 @@ const VOLATILE_ROLES: ReadonlySet<string> = new Set([
   "status",
   "timer",
 ]);
+const VIRTUALISED_COLLECTION_ROLES: ReadonlySet<string> = new Set([
+  "carousel",
+  "feed",
+  "grid",
+  "list",
+  "listbox",
+  "tree",
+]);
 
 const CONFIDENCE_RANK: Readonly<Record<MatchConfidence, number>> = {
   low: 0,
@@ -135,24 +143,30 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
   let geometryCount = 0;
   let truncated = false;
 
-  const visit = (node: UiNodeSnapshot, depth: number): string => {
-    if (nodeCount >= MAX_FINGERPRINT_NODES || depth >= MAX_FINGERPRINT_DEPTH) {
+  let visitedNodes = 0;
+  const visit = (node: UiNodeSnapshot, depth: number, collectionItem: boolean): { signature: string; exposesFocus: boolean } => {
+    if (visitedNodes >= MAX_FINGERPRINT_NODES) {
       truncated = true;
-      return "!";
+      return { signature: "!", exposesFocus: true };
+    }
+    visitedNodes += 1;
+    if (depth >= MAX_FINGERPRINT_DEPTH) {
+      truncated = true;
+      return { signature: "!", exposesFocus: true };
     }
 
-    const stableIdentifier = normaliseStableIdentifier(node.stableId);
     const role = normaliseRole(node.role);
+    const stableIdentifier = collectionItem ? "" : normaliseStableIdentifier(node.stableId);
     // Hidden DOM is frequently template/sprite/cache state rather than the
     // observable navigation surface. It is excluded only when the driver
     // explicitly reports it as invisible; unknown visibility remains.
     if (node.visible === false) {
-      return "";
+      return { signature: "", exposesFocus: false };
     }
     // Live regions and progress/timer nodes are evidence, not screen identity.
     // They commonly appear after the first key press or update every second.
     if (VOLATILE_ROLES.has(role)) {
-      return "";
+      return { signature: "", exposesFocus: false };
     }
 
     nodeCount += 1;
@@ -161,16 +175,42 @@ function structureFor(nodes: readonly UiNodeSnapshot[]): StructureComputation {
     if (role.length > 0) roleCount += 1;
     if (geometry.length > 0) geometryCount += 1;
 
-    const children = node.children.map((child) => visit(child, depth + 1)).join("");
+    const childIsCollectionItem = collectionItem || VIRTUALISED_COLLECTION_ROLES.has(role);
+    // Text/icon decoration inside an already focusable control cannot become a
+    // distinct TV focus target. Android view binding may add or remove those
+    // descendants asynchronously, so retain only children that can expose a
+    // nested focus target. Unknown focusability remains conservative.
+    const childSignatures: string[] = [];
+    let exposesFocus = node.focusable !== false;
+    for (const child of node.children) {
+      const result = visit(child, depth + 1, childIsCollectionItem);
+      exposesFocus ||= result.exposesFocus;
+      if (node.focusable !== true || result.exposesFocus) childSignatures.push(result.signature);
+      if (visitedNodes >= MAX_FINGERPRINT_NODES) { truncated = true; break; }
+    }
+    const children = VIRTUALISED_COLLECTION_ROLES.has(role)
+      ? [...new Set(childSignatures)].sort().join("")
+      : childSignatures.join("");
     // The focused flag is intentionally absent: it belongs to FocusState.
     // Viewport visibility is incidental: scrolling a carousel changes which
     // cards are visible without changing their navigation identity.
     // Absolute bounds are deliberately a confidence signal, not identity:
     // focus transforms and scrollIntoView change them without changing screen.
-    return `(${stableIdentifier}|${role}|${observedBoolean(node.enabled)}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`;
+    // Android frequently toggles `enabled` on presentation-only TextViews while
+    // asynchronously rebinding a collection. That cannot change the TV
+    // navigation surface when the node is explicitly non-focusable. Preserve
+    // enabled state for controls (and unknown focusability), where it remains
+    // semantically meaningful.
+    const enabled = node.focusable === false ? "-" : observedBoolean(node.enabled);
+    return { signature: `(${stableIdentifier}|${role}|${enabled}|${observedBoolean(node.focusable)}|${observedBoolean(node.modal)}${children})`, exposesFocus };
   };
 
-  const signature = `${nodes.map((node) => visit(node, 0)).join("")}${truncated ? "!truncated" : ""}`;
+  const roots: string[] = [];
+  for (const node of nodes) {
+    roots.push(visit(node, 0, false).signature);
+    if (visitedNodes >= MAX_FINGERPRINT_NODES) { truncated = true; break; }
+  }
+  const signature = `${roots.join("")}${truncated ? "!truncated" : ""}`;
   return { signature, stableIdentifierCount, roleCount, geometryCount, nodeCount };
 }
 

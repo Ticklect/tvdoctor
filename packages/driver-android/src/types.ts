@@ -5,6 +5,8 @@ import type {
   StateSnapshot,
   UiNodeSnapshot,
 } from "@tvdoctor/protocol";
+import type { AndroidObserverAsset } from "./observer-asset.js";
+import type { AndroidObserverClientOptions, AndroidObserverConnection } from "./observer-client.js";
 
 export interface AdbCommandOptions {
   readonly timeoutMs?: number;
@@ -29,28 +31,28 @@ export interface AndroidTvDriverOptions {
   /** Explicit device serial. Omit only when exactly one online device exists. */
   readonly serial?: string;
   readonly commandTimeoutMs?: number;
-  readonly hierarchyTimeoutMs?: number;
   readonly maxCommandOutputBytes?: number;
-  readonly maxHierarchyBytes?: number;
-  readonly maxHierarchyNodes?: number;
-  readonly maxHierarchyDepth?: number;
   readonly maxLogEntries?: number;
   readonly maxScreenshotBytes?: number;
+  /** Bounded observer settle deadline for a normal remote action. */
   readonly settleTimeoutMs?: number;
-  readonly settlePollIntervalMs?: number;
-  readonly settleStableSamples?: number;
+  /** Event quiet window required before a changed state is returned. */
+  readonly quietWindowMs?: number;
+  /** Event-free period before bounded canonical no-op confirmation begins. */
   readonly noResponseGraceMs?: number;
-  /**
-   * How long the last settled hierarchy may be reused as the next action's
-   * pre-input baseline. Zero disables reuse and always captures fresh.
-   */
-  readonly baselineReuseMs?: number;
-  /**
-   * Quiet window between screen-stability samples used to confirm a changed
-   * UI without a second full hierarchy capture.
-   */
-  readonly stabilityProbeMs?: number;
+  /** Stable canonical-state window required after launch or reset. */
+  readonly resetStableWindowMs?: number;
+  /** Bounded deadline for launch/reset canonical stabilization. */
+  readonly resetSettleTimeoutMs?: number;
+  readonly observerConnectTimeoutMs?: number;
+  readonly observerRequestTimeoutMs?: number;
+  /** Cooperative cancellation shared by ADB setup, input, and observer requests. */
+  readonly signal?: AbortSignal;
   readonly executor?: AdbCommandExecutor;
+  /** Test/release injection seams; normal callers should use the packaged observer. */
+  readonly observerAsset?: AndroidObserverAsset;
+  readonly createObserverClient?: (options: AndroidObserverClientOptions) => Promise<AndroidObserverConnection>;
+  readonly tokenFactory?: () => string;
 }
 
 export interface AndroidAppReference extends AppReference {
@@ -96,7 +98,7 @@ export interface AndroidHierarchyMetadata {
   readonly capturedNodeCount: number;
   readonly maxNodeCount: number;
   readonly maxDepth: number;
-  readonly truncated: false;
+  readonly truncated: boolean;
 }
 
 export interface AndroidStateSnapshot extends StateSnapshot {
@@ -119,4 +121,17 @@ export interface AndroidDeviceListEntry {
   readonly model: string | null;
   readonly device: string | null;
   readonly transportId: string | null;
+}
+
+export interface AndroidObserverMetrics {
+  readonly stateMessages: number;
+  readonly fullTreeMessages: number;
+  readonly lightweightStateMessages: number;
+  readonly canonicalPayloadBytes: number;
+  readonly transport: {
+    readonly bytesSent: number;
+    readonly bytesReceived: number;
+    readonly framesSent: number;
+    readonly framesReceived: number;
+  } | null;
 }

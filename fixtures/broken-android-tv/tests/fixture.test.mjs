@@ -31,7 +31,7 @@ test("fixture has exactly one stable seeded defect", async () => {
     screen: "Android TV fixture home",
     target: "focus-probe",
     action: "SELECT",
-    summary: "Selecting the dedicated Focus Probe blocks descendant focus and clears the active control while the visible Safe Control remains focusable.",
+    summary: "Selecting the dedicated Focus Probe diverts input focus to a transparent non-accessibility sink while the visible Safe Control remains focusable.",
   });
 });
 
@@ -41,7 +41,8 @@ test("native activity exposes two semantic controls and isolates focus loss to S
   assert.match(source, /R\.id\.safe_control/u);
   assert.match(source, /focusProbe\.setNextFocusRightId\(R\.id\.safe_control\)/u);
   assert.match(source, /safeControl\.setNextFocusLeftId\(R\.id\.focus_probe\)/u);
-  assert.match(source, /controls\.setDescendantFocusability\(ViewGroup\.FOCUS_BLOCK_DESCENDANTS\);[\s\S]*view\.clearFocus\(\);/u);
+  assert.match(source, /focusSink\.setImportantForAccessibility\(View\.IMPORTANT_FOR_ACCESSIBILITY_NO\)/u);
+  assert.match(source, /focusSink\.requestFocus\(\)/u);
   assert.equal((source.match(/setOnClickListener/gu) ?? []).length, 2);
   assert.doesNotMatch(source, /Runtime\.getRuntime|ProcessBuilder|System\.exit/u);
 });
@@ -49,12 +50,13 @@ test("native activity exposes two semantic controls and isolates focus loss to S
 test("build scripts stay SDK-local and avoid dynamic shell evaluation", async () => {
   const build = await text("scripts/build-apk.ps1");
   const verify = await text("scripts/verify-apk.ps1");
-  assert.match(build, /platforms\\android-36\\android\.jar/u);
-  assert.match(build, /build-tools\\36\.0\.0/u);
+  assert.match(build, /Resolve-CompilePlatform/u);
+  assert.match(build, /ApiLevel -lt 36/u);
+  assert.match(build, /build-tools\/36\.0\.0/u);
   assert.match(build, /Refusing to clean a build directory outside the Android fixture/u);
   assert.match(build, /aapt2/u);
-  assert.match(build, /d8\.bat/u);
-  assert.match(build, /apksigner\.bat/u);
+  assert.match(build, /d8\$scriptSuffix/u);
+  assert.match(build, /apksigner\$scriptSuffix/u);
   for (const script of [build, verify]) {
     assert.doesNotMatch(script, /Invoke-Expression|cmd\s+\/c|Start-Process/u);
   }

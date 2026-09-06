@@ -1,40 +1,50 @@
+![TVDoctor — remote-first QA for TV apps](docs/assets/tvdoctor-hero.svg)
+
 # TVDoctor
 
-Automated QA for TV apps and ten-foot interfaces.
+<p align="center">
+  <a href="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml"><img alt="TVDoctor CI" src="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT Licence" src="https://img.shields.io/badge/licence-MIT-36A3FF"></a>
+  <a href="package.json"><img alt="Node 24" src="https://img.shields.io/badge/Node-24-42E8E0"></a>
+  <a href="package.json"><img alt="npm 11" src="https://img.shields.io/badge/npm-11-42E8E0"></a>
+  <a href="RELEASE.md"><img alt="0.1.0 release candidate" src="https://img.shields.io/badge/0.1.0-release%20candidate-FFBE55"></a>
+</p>
 
-TVDoctor explores the journeys people perform with Up, Down, Left, Right,
-Select, and Back, then writes the evidence needed to understand and reproduce a
-failure. It runs locally: no AI service, cloud account, API key, or telemetry
-service is required.
+TVDoctor explores TV interfaces with the same small remote vocabulary people use—
+Up, Down, Left, Right, Select, and Back—then produces evidence-linked findings and
+deterministic replays that developers can act on.
 
-> **Release status:** the source candidate and publishable packages are versioned
-> `0.1.0`, but `tvdoctor@0.1.0` has not been published to npm. The web path has
-> controlled real-Chromium evidence, the disposable Android TV emulator gate has
-> passed, and hosted GitHub Actions runs have passed for earlier exact candidates.
-> A selected release candidate is accepted only after its own clean gate and
-> exact-SHA hosted run; the release audit records that proof. All surfaces remain
-> Beta, Experimental, or Planned—nothing is Stable before the preview is released
-> and observed in wider use. Public repository visibility is also an explicit
-> owner decision; this README does not claim anonymous source access.
+It runs locally: no AI service, cloud account, API key, or telemetry service is
+required.
 
-## What it finds
+> **Release candidate:** source and publishable packages are versioned `0.1.0`,
+> but npm publication has not happened. Acceptance requires clean local and hosted
+> gates at the exact candidate SHA; earlier green runs are supporting
+> evidence, not proof of a changed candidate. All surfaces remain Beta,
+> Experimental, or Planned, and repository visibility remains an explicit owner
+> decision.
 
-- unreachable or lost remote focus, focus traps, broken Back behaviour, and
-  pointer-only controls;
-- semantic streaming, search, settings, accessibility, layout, performance,
-  console-error, and crash problems where the driver can observe them;
-- regressions in issues, screens, focus targets, transitions, and latency through
-  a versioned, fail-closed baseline library;
-- deterministic focus-transition reproductions where Replay V1 can express the
-  finding.
+## Why TVDoctor
 
-Results are bounded and evidence-based. Missing observability or an exhausted
-budget becomes partial/inconclusive, never a clean pass.
+| Remote-realistic exploration | Fail-closed results | Evidence and replay |
+| --- | --- | --- |
+| Drives Up, Down, Left, Right, Select, and Back through bounded journeys instead of assuming pointer access. | Treats missing observability, exhausted budgets, and inconclusive replay as non-clean outcomes. | Links findings to screenshots, UI state, transitions, logs, and portable deterministic replays when Replay V1 can express them. |
 
-## Verified demo
+## What it catches
+
+- **Navigation:** unreachable or lost focus, focus traps, broken Back behaviour,
+  and pointer-only controls.
+- **Streaming and UI semantics:** playback, search, settings, accessibility, and
+  layout problems where the selected driver can observe them.
+- **Diagnostics:** performance, console-error, and crash signals with explicit
+  evidence availability and run-status boundaries.
+- **Regression baselines:** changes in issues, screens, focus targets,
+  transitions, and latency through a versioned, fail-closed library.
+
+## See it work
 
 The Northstar fixture contains deliberate defects. The controlled streaming gate
-discovers this journey semantically:
+discovers this route semantically:
 
 ```text
 Home -> Details -> Play -> Controls -> Settings -> Captions -> Appearance
@@ -51,60 +61,80 @@ TVDoctor  HIGH  remote.reachability
 ```
 
 The fixture gate completes 17 stages and reports four in-scope seeded defects.
-That is deterministic fixture evidence, not a general accuracy claim. See the
-[demo and reproduction guide](docs/demo.md).
+That is deterministic fixture evidence, not a general accuracy claim.
 
-## Install from a clean source checkout
+**[See the full demo and exact reproduction guide →](docs/demo.md)**
 
-With repository access, the declared development environment is Node.js 24 and
-npm 11. The lockfile is the dependency authority.
+## Try the source candidate
 
-```sh
-git clone https://github.com/Ticklect/tvdoctor.git
-cd tvdoctor
-npm ci
-npx playwright install chromium
-npm run build
-npm run tvdoctor -- doctor
-```
+With repository access, use the declared Node.js 24 and npm 11 environment. The
+lockfile is the dependency authority.
 
-On Linux CI, Playwright may need system dependencies:
+1. Clone and prepare a clean checkout:
 
-```sh
-npx playwright install chromium --with-deps
-```
+   ```sh
+   git clone https://github.com/Ticklect/tvdoctor.git
+   cd tvdoctor
+   npm ci
+   npx playwright install chromium
+   npm run build
+   npm run tvdoctor -- doctor
+   ```
 
-Start TVDoctor in an interactive terminal:
+   On Linux CI, Playwright may need system dependencies:
+
+   ```sh
+   npx playwright install chromium --with-deps
+   ```
+
+2. In terminal 1, start the deliberately broken Northstar target:
+
+   ```sh
+   npm run fixture:dev
+   ```
+
+3. In terminal 2, run the first local fixture audit:
+
+   ```sh
+   npm run tvdoctor -- test http://127.0.0.1:5173 \
+     --pack navigation \
+     --pack streaming \
+     --mode standard \
+     --output tvdoctor-report \
+     --query N
+   ```
+
+Use Arrow keys, Enter, and Escape in the fixture. Northstar is a benchmark, not
+a reference TV interface.
+
+For the guided website and experimental Android TV flow, run this in an
+interactive terminal:
 
 ```sh
 npm run tvdoctor -- start
 ```
 
-`start` guides website and experimental Android TV testing, asks before changing
-a consent or setup screen, writes normal bundles under `Tests\`, and offers to
-open the report. Android scans stop the tested app afterward but never shut down
-an emulator unless you explicitly ask for that in a separate workflow; the APK is
-intentionally retained. For automation, use `test` directly.
+`start` asks before changing a consent or setup screen, writes normal bundles
+under `Tests\`, and offers to open the report. Android scans stop the tested app
+afterward but never shut down an emulator unless you explicitly ask for that in a
+separate workflow; the APK is intentionally retained. TVDoctor installs its
+checksum-validated observer APK; first use requires explicit accessibility
+enablement on the Android device. For prompt-free automation, use:
 
-Start the deliberately broken local target in one terminal:
-
-```sh
-npm run fixture:dev
+```powershell
+tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
 ```
 
-Open `http://127.0.0.1:5173` manually, or audit it from a second terminal:
+## Choose a surface
 
-```sh
-npm run tvdoctor -- test http://127.0.0.1:5173 \
-  --pack navigation \
-  --pack streaming \
-  --mode standard \
-  --output tvdoctor-report \
-  --query N
-```
-
-Use Arrow keys, Enter, and Escape in the fixture. Northstar is a benchmark, not
-a reference TV interface.
+| Surface | Support / maturity | Start here |
+| --- | --- | --- |
+| [Web audit](docs/drivers/web.md) | Experimental | Playwright Chromium with bounded production evidence; DOM semantics are not the browser accessibility tree. |
+| [Android TV](docs/drivers/android.md) | Experimental | API 36 emulator evidence only; no physical-device or vendor compatibility claim. |
+| [Reports](#report-bundle) | Beta format | `tvdoctor.report/v1` is the canonical result, with human-readable HTML and Markdown views. |
+| [Replay](#replay) | Beta format, bounded execution | `tvdoctor.replay/v1` executes supported deterministic focus transitions; other findings remain review-only. |
+| [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned, fail-closed comparison library; not yet a standalone CLI workflow. |
+| [Limitations](docs/limitations.md) | Required reading | Current observability, evidence, platform, and compatibility boundaries. |
 
 ### Registry installation
 
@@ -298,7 +328,7 @@ Status words are deliberate:
 | Deterministic core and streaming pack | Beta | Unit and controlled real-Chromium fixture gates; no arbitrary-app accuracy claim. |
 | Playwright Chromium web driver | Experimental | Real Chromium and bounded production probes; DOM semantic tree is not the browser accessibility tree. |
 | `tvdoctor test URL` audit host | Experimental | Complete controlled M7 fixture gate and bounded production stress evidence; broader framework/browser evidence is still limited. |
-| Android TV ADB/UIAutomator driver | Experimental | Fake-executor tests plus a disposable API 36 Android TV emulator gate; no physical-device/vendor compatibility claim. |
+| Android TV persistent-observer driver | Experimental | Versioned framed local protocol, event-driven accessibility state, real API 36 emulator Quick/Deep/replay/cancellation gates; no physical-device/vendor compatibility claim. |
 | Baseline comparison library | Experimental | Versioned fail-closed library, controlled lifecycle proof, hosted example; not yet a standalone CLI workflow. |
 | Linux hosted verification | Beta evidence | Earlier exact candidates passed on `ubuntu-latest`; every changed release candidate needs a new exact-SHA run. |
 | Windows development verification | Experimental evidence | Local release work has run on Windows; no hosted Windows matrix is claimed. |

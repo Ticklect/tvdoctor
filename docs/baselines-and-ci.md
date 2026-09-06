@@ -96,7 +96,7 @@ workflow is promoted.
 
 ## Repository CI safety model
 
-The repository's browser-only CI job:
+The repository's aggregate release-candidate CI job:
 
 1. grants only read access to repository contents;
 2. pins official actions to reviewed commit SHAs;
@@ -108,9 +108,16 @@ The repository's browser-only CI job:
 7. uploads bounded diagnostic artifacts on failure with short retention; and
 8. uses no secrets, privileged Android devices, or publish credentials.
 
-Android/emulator CI is a separate trust tier. Never expose privileged hardware,
-signing keys, production APKs, or persistent emulator state to untrusted pull
-request code.
+An independent Android job boots a disposable hosted API 36 Android TV x86_64
+emulator, builds the controlled fixture, installs the packaged observer, enables
+its accessibility service only inside that disposable emulator, and requires a
+completed seeded-defect report plus correlated replay. It uses no production
+APK, persistent device, or signing secret.
+
+Observer release signing is a separate, manual, environment-protected workflow.
+Its keystore, passwords, and expected certificate digest are repository secrets
+and are never available to pull-request jobs. The workflow must reproduce the
+tracked APK and checksum/certificate manifest byte-for-byte.
 
 ## Hosted status
 
