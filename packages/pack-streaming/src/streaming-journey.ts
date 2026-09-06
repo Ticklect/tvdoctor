@@ -514,7 +514,6 @@ export async function runStreamingJourney(
       expansion,
       textConclusive,
       nestedBackPassed,
-      journeySequence: captionJourneySequence,
     } = await runCaptionJourney({
       session,
       options,
@@ -526,8 +525,10 @@ export async function runStreamingJourney(
       settingsSequence,
       stage,
       requireTarget,
+      updateJourneySequence: (sequence) => {
+        journeySequence = sequence;
+      },
     });
-    journeySequence = captionJourneySequence;
 
     const complete = playerExpansion.complete
       && captionsExpansion.complete

@@ -67,6 +67,7 @@ interface CaptionJourneyContext {
     readonly status: "found";
     readonly candidate: RankedSemanticCandidate;
   }>;
+  readonly updateJourneySequence: (sequence: readonly RemoteKey[]) => void;
 }
 
 export interface CaptionJourneyResult {
@@ -74,7 +75,6 @@ export interface CaptionJourneyResult {
   readonly expansion: ExpansionResult;
   readonly textConclusive: boolean;
   readonly nestedBackPassed: boolean;
-  readonly journeySequence: readonly RemoteKey[];
 }
 
 /** Executes the ordered Captions, Appearance, Text Colour, and nested-BACK stages. */
@@ -89,11 +89,13 @@ export async function runCaptionJourney({
   settingsSequence,
   stage,
   requireTarget,
+  updateJourneySequence,
 }: CaptionJourneyContext): Promise<CaptionJourneyResult> {
     const captions = await requireTarget(settingsSequence, "captions", "captions");
     await session.activate(captions.sequence, captions.candidate.descriptor, "discovery");
     let snapshot = await session.snapshot();
     let journeySequence: readonly RemoteKey[] = [...captions.sequence, "SELECT"];
+    updateJourneySequence(journeySequence);
     const appearanceOnCaptions = rankSemanticCandidates(snapshot, "appearance")[0] ?? null;
     if (appearanceOnCaptions === null) {
       stages.splice(stages.findIndex((value) => value.stage === "captions"), 1);
@@ -230,6 +232,7 @@ export async function runCaptionJourney({
     await session.activate(appearanceState.path, appearance.descriptor, "discovery");
     snapshot = await session.snapshot();
     journeySequence = [...appearanceState.path, "SELECT"];
+    updateJourneySequence(journeySequence);
     const textTargetCandidate = rankSemanticCandidates(snapshot, "text-colour")[0] ?? null;
     if (textTargetCandidate === null) {
       stages.splice(stages.findIndex((value) => value.stage === "appearance"), 1);
@@ -372,6 +375,5 @@ export async function runCaptionJourney({
     expansion,
     textConclusive,
     nestedBackPassed,
-    journeySequence,
   };
 }

@@ -32,19 +32,23 @@ type Variant = "conventional" | "variant";
 
 interface FakeState {
   caption: "english" | "off" | "unexpected";
+  captionsAppearanceVisible: boolean;
   ambiguousProgress: boolean;
   elapsed: number;
   focus: string;
   playing: boolean;
   rewindName: string;
   screen: Screen;
+  textColourVisible: boolean;
 }
 
 interface FakeDriverOptions {
   readonly ambiguousProgress?: boolean;
+  readonly captionsAppearanceVisible?: boolean;
   readonly captionSelectionOutcome?: "ignored" | "unexpected" | "works";
   readonly rewindName?: string;
   readonly settingsOpens?: boolean;
+  readonly textColourVisible?: boolean;
 }
 
 interface ControlDefinition {
@@ -152,12 +156,16 @@ function controlsFor(state: FakeState, variant: Variant): readonly ControlDefini
         { id: "captions-off", name: "Off Current selection", x: 920, y: 170 },
         { id: "captions-english", name: "English CC Closed captions", x: 920, y: 240 },
         { id: "captions-spanish", name: "Español Subtitles", x: 920, y: 310 },
-        { id: "captions-appearance", name: "Appearance Font colour and background", x: 920, y: 380 },
+        ...(state.captionsAppearanceVisible
+          ? [{ id: "captions-appearance", name: "Appearance Font colour and background", x: 920, y: 380 }]
+          : []),
       ];
     case "appearance":
       return [
         { id: "caption-font", name: "Font Size Medium", x: 920, y: 170 },
-        { id: "caption-text-colour", name: "Text Colour Warm white", x: 920, y: 240, focusable: false },
+        ...(state.textColourVisible
+          ? [{ id: "caption-text-colour", name: "Text Colour Warm white", x: 920, y: 240, focusable: false }]
+          : []),
         { id: "caption-background", name: "Background Colour Black", x: 920, y: 310 },
         { id: "caption-edge", name: "Edge Style Soft shadow", x: 920, y: 380 },
       ];
@@ -328,11 +336,13 @@ class StreamingFakeDriver implements TVDoctorDriver {
     return {
       ambiguousProgress: this.options.ambiguousProgress ?? false,
       caption: "off",
+      captionsAppearanceVisible: this.options.captionsAppearanceVisible ?? true,
       elapsed: 100,
       focus: "home-anchor",
       playing: false,
       rewindName: this.options.rewindName ?? "Rewind 10 seconds",
       screen: "home",
+      textColourVisible: this.options.textColourVisible ?? true,
     };
   }
 
@@ -667,6 +677,48 @@ describe("runStreamingPack", () => {
     expect(result.stages.find((stageResult) => stageResult.stage === "captions")?.status).toBe("skipped");
     expect(driver.selectedIds.filter((id) => id === "player-settings")).toHaveLength(1);
     expect(driver.selectedIds).not.toContain("player-captions");
+  });
+
+  it("retains the Captions SELECT route when the opened menu has no Appearance target", async () => {
+    const result = await runStreamingPack(
+      new StreamingFakeDriver(
+        "conventional",
+        true,
+        false,
+        { captionsAppearanceVisible: false },
+      ),
+      { pointerProbe: reachablePointer },
+    );
+    const captions = result.stages.find((stageResult) => stageResult.stage === "captions");
+
+    expect(result.termination).toEqual({
+      reason: "journey-partial",
+      complete: false,
+      detail: "Captions could not be confirmed.",
+    });
+    expect(captions?.sequence.at(-1)).toBe("SELECT");
+    expect(result.journeySequence).toEqual(captions?.sequence);
+  });
+
+  it("retains the Appearance SELECT route when the opened surface has no Text Colour target", async () => {
+    const result = await runStreamingPack(
+      new StreamingFakeDriver(
+        "conventional",
+        true,
+        false,
+        { textColourVisible: false },
+      ),
+      { pointerProbe: reachablePointer },
+    );
+    const appearance = result.stages.find((stageResult) => stageResult.stage === "appearance");
+
+    expect(result.termination).toEqual({
+      reason: "journey-partial",
+      complete: false,
+      detail: "Caption Appearance could not be confirmed.",
+    });
+    expect(appearance?.sequence.at(-1)).toBe("SELECT");
+    expect(result.journeySequence).toEqual(appearance?.sequence);
   });
 
   it("withholds rewind classification when playback progress provenance is ambiguous", async () => {
