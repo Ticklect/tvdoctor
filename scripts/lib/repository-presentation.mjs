@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import MarkdownIt from 'markdown-it';
 import { parseFragment } from 'parse5';
 import { SaxesParser } from 'saxes';
@@ -46,6 +46,9 @@ export function validateLocalReferences(markdownPath, markdown, exists, reposito
     }
     if (!exists(resolved)) {
       errors.push(`${markdownPath}: missing local reference ${target}`);
+    } else {
+      const stats = statSync(resolved);
+      if (stats.isFile() && stats.size === 0) errors.push(`${markdownPath}: empty local reference ${target}`);
     }
   }
   return errors;

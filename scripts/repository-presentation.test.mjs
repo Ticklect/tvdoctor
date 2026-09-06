@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   extractLocalReferences,
   validateLocalReferences,
@@ -21,6 +24,19 @@ test('validateLocalReferences reports decoded missing files without URL fragment
     (path) => path.replaceAll('\\', '/').endsWith('docs/demo.md'),
   );
   assert.deepEqual(errors, ['README.md: missing local reference docs/My Guide.md']);
+});
+
+test('validateLocalReferences reports an empty linked repository document', () => {
+  const repositoryRoot = mkdtempSync(path.join(tmpdir(), 'tvdoctor-presentation-'));
+  try {
+    writeFileSync(path.join(repositoryRoot, 'empty.md'), '');
+    assert.deepEqual(
+      validateLocalReferences('README.md', '[empty](empty.md)', () => true, repositoryRoot),
+      ['README.md: empty local reference empty.md'],
+    );
+  } finally {
+    rmSync(repositoryRoot, { recursive: true, force: true });
+  }
 });
 
 test('validateSvg requires a viewBox, title, description, and forbids scripts', () => {

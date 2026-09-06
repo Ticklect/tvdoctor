@@ -360,8 +360,7 @@ before relying on a result.
 ## Contributing, security, and licence
 
 Bug reports, fixtures, diagnostics, and carefully scoped driver work are welcome.
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). Do not put secrets, proprietary target
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Do not put secrets, proprietary target
 data, or unredacted report bundles in an issue.
 
 Report suspected vulnerabilities through GitHub's private vulnerability-reporting
