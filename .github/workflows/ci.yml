@@ -138,7 +138,7 @@ jobs:
 
       - name: Run controlled Android TV fixture through the packaged observer
         # reactivecircus/android-emulator-runner@v2.38.0
-        uses: reactivecircus/android-emulator-runner@c9c93e6ba9c4194322e114c40970d5983d9a07cc
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 36
           target: android-tv
