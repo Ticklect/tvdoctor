@@ -63,7 +63,10 @@ async function runFixtureExploration(fixtureUrl: string): Promise<ExplorationRes
   const driver = new PlaywrightWebDriver({
     settle: {
       noResponseGraceMs: 15,
-      quietWindowMs: 20,
+      // The fixture restores focus in requestAnimationFrame after rerendering.
+      // Keep the quiet window longer than the driver's 25 ms settle poll so a
+      // transient body-focused DOM cannot become a replay checkpoint.
+      quietWindowMs: 50,
       timeoutMs: 2_500,
     },
   });
