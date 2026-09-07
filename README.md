@@ -10,41 +10,101 @@
   <a href="RELEASE.md"><img alt="0.1.0 release candidate" src="https://img.shields.io/badge/0.1.0-release%20candidate-FFBE55"></a>
 </p>
 
-TVDoctor explores TV interfaces with the same small remote vocabulary people use—
-Up, Down, Left, Right, Select, and Back—then produces evidence-linked findings and
-deterministic replays that developers can act on.
+## Find TV navigation bugs before your users do
 
-It runs locally: no AI service, cloud account, API key, or telemetry service is
-required.
+TVDoctor explores TV interfaces with the same controls people actually use:
+**Up, Down, Left, Right, Select, and Back**. It looks for broken focus and
+navigation, records the path that exposed the problem, and gives you evidence you
+can inspect instead of a vague "test failed" message.
 
-> **Release candidate:** source and publishable packages are versioned `0.1.0`,
-> but npm publication has not happened. Acceptance requires clean local and hosted
-> gates at the exact candidate SHA; earlier green runs are supporting
-> evidence, not proof of a changed candidate. All surfaces remain Beta,
-> Experimental, or Planned, and repository visibility remains an explicit owner
-> decision.
+No authored navigation journey is required for the normal explorer. TVDoctor runs
+locally and does not require an AI service, cloud account, API key, or telemetry
+service.
 
-## Why TVDoctor
+### What it finds
 
-| Remote-realistic exploration | Fail-closed results | Evidence and replay |
-| --- | --- | --- |
-| Drives Up, Down, Left, Right, Select, and Back through bounded journeys instead of assuming pointer access. | Treats missing observability, exhausted budgets, and inconclusive replay as non-clean outcomes. | Links findings to screenshots, UI state, transitions, logs, and portable deterministic replays when Replay V1 can express them. |
+- lost or disappearing focus;
+- focus traps and navigation loops;
+- visible controls that cannot be reached with the remote;
+- broken or surprising Back behaviour;
+- directional navigation that gets stuck or skips a likely target;
+- pointer-only controls and other TV-unfriendly UI behaviour;
+- selected streaming, layout, performance, console, and crash signals when the
+  active driver can observe them.
 
-## What it catches
+### What you get
 
-- **Navigation:** unreachable or lost focus, focus traps, broken Back behaviour,
-  and pointer-only controls.
-- **Streaming and UI semantics:** playback, search, settings, accessibility, and
-  layout problems where the selected driver can observe them.
-- **Diagnostics:** performance, console-error, and crash signals with explicit
-  evidence availability and run-status boundaries.
-- **Regression baselines:** changes in issues, screens, focus targets,
-  transitions, and latency through a versioned, fail-closed library.
+Every audit produces a self-contained report bundle with the evidence available
+for that run:
 
-## See it work
+- a human-readable `report.html`;
+- screenshots and UI excerpts;
+- the exact D-pad path to each finding;
+- transition, log, network, and runtime evidence where supported;
+- machine-readable `report.json`;
+- deterministic replay for supported focus-transition failures.
 
-The Northstar fixture contains deliberate defects. The controlled streaming gate
-discovers this route semantically:
+TVDoctor also **fails closed**. If required observation is missing, a coverage
+budget is exhausted, or replay cannot classify the result, the run is not reported
+as clean.
+
+## Try it on your app
+
+TVDoctor `0.1.0` is currently a source release candidate and has not been published
+to npm yet. Use Node.js 24 and npm 11 for the source workspace.
+
+```sh
+git clone https://github.com/Ticklect/tvdoctor.git
+cd tvdoctor
+npm ci
+npx playwright install chromium
+npm run build
+npm run tvdoctor -- doctor
+npm run tvdoctor -- start
+```
+
+`start` gives you a guided choice:
+
+```text
+What would you like to test?
+
+> Website
+  Android TV app - Experimental
+  Exit
+```
+
+For a website, enter the URL. For Android TV, choose a local APK and an authorised
+Android TV emulator/device. TVDoctor handles the supported install, launch,
+exploration, evidence, and cleanup flow.
+
+Android TV support is **Experimental**. The automated release gate currently
+verifies an Android TV API 36 emulator; physical-device and vendor compatibility
+are not claimed yet. First use also requires explicitly enabling TVDoctor
+Observer accessibility access on the selected Android device.
+
+For prompt-free runs:
+
+```sh
+# Web
+npm run tvdoctor -- test http://127.0.0.1:3000 --mode quick
+
+# Android TV
+npm run tvdoctor -- test --apk D:\\apps\\example.apk --device emulator-5554 --mode quick
+```
+
+On Linux CI, Playwright may need system dependencies:
+
+```sh
+npx playwright install chromium --with-deps
+```
+
+## See a guaranteed broken example
+
+Northstar is TVDoctor's deliberately broken fixture. It exists to prove the tool
+against known defects, not to pretend a controlled fixture represents every real
+TV app.
+
+One seeded route looks like this:
 
 ```text
 Home -> Details -> Play -> Controls -> Settings -> Captions -> Appearance
@@ -60,86 +120,69 @@ TVDoctor  HIGH  remote.reachability
            `- portable focus-transition replay
 ```
 
+Run it from a source checkout:
+
+```sh
+# terminal 1
+npm run fixture:dev
+
+# terminal 2
+npm run tvdoctor -- test http://127.0.0.1:5173 \
+  --pack navigation \
+  --pack streaming \
+  --mode standard \
+  --output tvdoctor-report \
+  --query N
+```
+
 The fixture gate completes 17 stages and reports four in-scope seeded defects.
 That is deterministic fixture evidence, not a general accuracy claim.
 
 **[See the full demo and exact reproduction guide →](docs/demo.md)**
 
-## Try the source candidate
+## What works today
 
-With repository access, use the declared Node.js 24 and npm 11 environment. The
-lockfile is the dependency authority.
-
-1. Clone and prepare a clean checkout:
-
-   ```sh
-   git clone https://github.com/Ticklect/tvdoctor.git
-   cd tvdoctor
-   npm ci
-   npx playwright install chromium
-   npm run build
-   npm run tvdoctor -- doctor
-   ```
-
-   On Linux CI, Playwright may need system dependencies:
-
-   ```sh
-   npx playwright install chromium --with-deps
-   ```
-
-2. In terminal 1, start the deliberately broken Northstar target:
-
-   ```sh
-   npm run fixture:dev
-   ```
-
-3. In terminal 2, run the first local fixture audit:
-
-   ```sh
-   npm run tvdoctor -- test http://127.0.0.1:5173 \
-     --pack navigation \
-     --pack streaming \
-     --mode standard \
-     --output tvdoctor-report \
-     --query N
-   ```
-
-Use Arrow keys, Enter, and Escape in the fixture. Northstar is a benchmark, not
-a reference TV interface.
-
-For the guided website and experimental Android TV flow, run this in an
-interactive terminal:
-
-```sh
-npm run tvdoctor -- start
-```
-
-`start` asks before changing a consent or setup screen, writes normal bundles
-under `Tests\`, and offers to open the report. Android scans stop the tested app
-afterward but never shut down an emulator unless you explicitly ask for that in a
-separate workflow; the APK is intentionally retained. TVDoctor installs its
-checksum-validated observer APK; first use requires explicit accessibility
-enablement on the Android device. For prompt-free automation, use:
-
-```powershell
-tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
-```
-
-## Choose a surface
-
-| Surface | Support / maturity | Start here |
+| Surface | Status | Current boundary |
 | --- | --- | --- |
-| [Web audit](docs/drivers/web.md) | Experimental | Playwright Chromium with bounded production evidence; DOM semantics are not the browser accessibility tree. |
-| [Android TV](docs/drivers/android.md) | Experimental | API 36 emulator evidence only; no physical-device or vendor compatibility claim. |
-| [Reports](#report-bundle) | Beta format | `tvdoctor.report/v1` is the canonical result, with human-readable HTML and Markdown views. |
-| [Replay](#replay) | Beta format, bounded execution | `tvdoctor.replay/v1` executes supported deterministic focus transitions; other findings remain review-only. |
-| [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned, fail-closed comparison library; not yet a standalone CLI workflow. |
-| [Limitations](docs/limitations.md) | Required reading | Current observability, evidence, platform, and compatibility boundaries. |
+| [Web audit](docs/drivers/web.md) | Experimental | Playwright Chromium with controlled fixtures and bounded production stress evidence. |
+| [Android TV](docs/drivers/android.md) | Experimental | Persistent observer, event-driven accessibility state, APK install/launch, Quick/Deep exploration, report and replay gates on an API 36 emulator. Physical-device/vendor verification is still pending. |
+| [Reports](#report-bundle) | Beta format | Human-readable HTML/Markdown plus canonical `tvdoctor.report/v1`. |
+| [Replay](#replay) | Beta format | Executes supported deterministic focus-transition failures; other findings can remain evidence-only. |
+| [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned comparison library for issues, screens, focus targets, transitions, and latency. |
 
-### Registry installation
+> **Release candidate:** source and publishable packages are versioned `0.1.0`,
+> but npm publication has not happened. Acceptance requires clean local and hosted
+> gates at the exact candidate SHA. Earlier green runs are supporting evidence,
+> not proof of a changed candidate.
 
-These commands are the intended npm experience after publication; they are not
-an assertion that `tvdoctor@0.1.0` is currently available from the registry:
+## Why trust the result
+
+### Remote-first exploration
+
+TVDoctor drives the UI with the small remote vocabulary a TV user has rather than
+assuming pointer access. Exploration is bounded and records the actions and states
+it actually reached.
+
+### Fail-closed outcomes
+
+TVDoctor distinguishes findings, partial/inconclusive runs, invalid usage, and
+execution failures. A partial run with zero findings is **not** evidence that the
+target is clean.
+
+### Evidence before claims
+
+Findings link back to the observations used to justify them. Unavailable evidence
+is represented explicitly rather than silently substituted with a guess.
+
+### Local-first operation
+
+No AI API or hosted analysis service is required. Reports can contain sensitive UI
+text, screenshots, URLs, and logs, so review bundles before sharing them.
+
+## Registry installation
+
+These are the intended commands after npm publication; they are not an assertion
+that `tvdoctor@0.1.0` is currently available from the registry:
 
 ```sh
 npm install --save-dev tvdoctor
@@ -166,7 +209,7 @@ tvdoctor --help
 | --- | --- |
 | `--pack NAME` | `navigation`, `streaming`, `search`, `settings`, `accessibility`, `layout`, `performance`, or `crashes`. Repeat to select several. Omit it (or use `all` alone) to run every pack. |
 | `--mode MODE` | `quick` or `deep`; the advanced `standard` alias remains accepted for existing scripts. Modes select predefined bounded action/state/depth/time profiles; the report records the effective combined budgets. |
-| `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
+| `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
 | `--query TEXT` | Printable, non-sensitive search text, at most 64 characters. Defaults to `N`. It may be entered into the target and retained as evidence. |
 | `--startup-actions KEY[,KEY...]` | Explicit caller-selected remote keys used only after TVDoctor detects a focused setup wall. Observation-only is the default; TVDoctor never chooses consent. |
 | `--max-duration-ms N` | Advanced navigation safety-ceiling override for CI or exhaustive runs. |
@@ -237,7 +280,7 @@ open tvdoctor-report/report.html
 xdg-open tvdoctor-report/report.html
 
 # Windows PowerShell
-Start-Process .\tvdoctor-report\report.html
+Start-Process .\\tvdoctor-report\\report.html
 ```
 
 Unavailable evidence is represented explicitly. Report generation escapes
@@ -264,19 +307,40 @@ replay are executable. Numeric playback state, selection, focus styling,
 geometry, clipping, latency, log, crash, and screenshot findings remain
 review-only when V1 cannot express their corrected state.
 
+Replay can also be inconclusive. Checkpoint drift, assertion drift, unavailable
+observation, unobserved input, interruption, and exhausted budgets are kept
+separate from a proven fixed result.
+
 Reports strip credentials and may strip an original URL's query or fragment. If
 the audited route depended on a query string or hash, replay must not guess it:
 pass the exact authorised route again with `--target`. Never put passwords,
 tokens, session IDs, or personal data in that URL.
 
+## Android TV notes
+
+Android testing uses a TVDoctor-owned observer APK for focus, window, visible
+control, and content-change observation. Normal remote input is deliberately sent
+with structured ADB `input keyevent` commands; normal exploration does **not** use
+ADB UIAutomator hierarchy dumps.
+
+The observer's accessibility access must be explicitly enabled by the user on the
+selected device. TVDoctor does not use privileged `settings put` commands to
+bypass that consent.
+
+The observer uses a versioned, authenticated loopback protocol over an ephemeral
+ADB port forward. See the [Android driver guide](docs/drivers/android.md) for the
+support boundary, security model, settling behaviour, CI path, and known
+limitations.
+
 ## CI and release checks
 
 The repository workflow uses Node 24, installs Playwright Chromium, runs build,
-lint, typecheck, unit and real-browser integration gates, executes the exact CLI
-M7 integration, performs clean tarball/consumer smoke testing, and uploads useful
-failure artifacts. It uses no repository secrets.
+lint, typecheck, presentation checks, unit and real-browser integration gates,
+executes the CLI integration, performs clean tarball/consumer smoke testing, and
+uploads useful failure artifacts. The Android workflow also runs the observer
+integration on an API 36 Android TV emulator.
 
-Run the same release-relevant checks locally:
+Run the release-relevant checks locally:
 
 ```sh
 npm ci
@@ -296,19 +360,20 @@ older green run is supporting evidence, not proof of a changed candidate.
   Linux CI use `--with-deps`, then rerun `tvdoctor doctor`.
 - **Unsupported Node/npm:** install a Node 24/npm 11 environment and rerun
   `npm ci`. Do not use `--force` to bypass the declared engine range.
-- **Target cannot be reached:** open the URL in Chromium from the same host,
-  confirm the local server is still running, and avoid production/authenticated
-  targets.
+- **Target cannot be reached:** open the URL in Chromium from the same host and
+  confirm the local server is still running.
+- **Android observer is not enabled:** enable TVDoctor Observer in the device's
+  accessibility settings, then rerun the scan.
 - **Output directory already exists or is unwritable:** choose a new directory
   under a trusted writable location. TVDoctor does not merge report bundles.
 - **Audit seems slow:** packs intentionally reset and replay paths; dynamic pages
-  can consume the bounded settle and duration budgets. Use `quick` for an initial
-  probe, then inspect partial reasons before increasing scope.
+  can consume the settle and duration budgets. Use `quick` for an initial probe,
+  then inspect partial reasons before increasing scope.
 - **Replay is inconclusive:** confirm the target version and route match the
   report, supply `--target` when query/hash routing was redacted, and check the
   issue has an available deterministic replay.
-- **Interrupted run:** confirm the target and browser processes stopped, retain
-  any partial bundle for diagnosis, and rerun into a fresh directory.
+- **Interrupted run:** retain any partial bundle for diagnosis and rerun into a
+  fresh directory after confirming the target is ready again.
 
 ## Compatibility and support
 
