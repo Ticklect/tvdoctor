@@ -89,7 +89,7 @@ For prompt-free runs:
 npm run tvdoctor -- test http://127.0.0.1:3000 --mode quick
 
 # Android TV
-npm run tvdoctor -- test --apk D:\\apps\\example.apk --device emulator-5554 --mode quick
+npm run tvdoctor -- test --apk D:\apps\example.apk --device emulator-5554 --mode quick
 ```
 
 On Linux CI, Playwright may need system dependencies:
@@ -209,7 +209,7 @@ tvdoctor --help
 | --- | --- |
 | `--pack NAME` | `navigation`, `streaming`, `search`, `settings`, `accessibility`, `layout`, `performance`, or `crashes`. Repeat to select several. Omit it (or use `all` alone) to run every pack. |
 | `--mode MODE` | `quick` or `deep`; the advanced `standard` alias remains accepted for existing scripts. Modes select predefined bounded action/state/depth/time profiles; the report records the effective combined budgets. |
-| `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
+| `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
 | `--query TEXT` | Printable, non-sensitive search text, at most 64 characters. Defaults to `N`. It may be entered into the target and retained as evidence. |
 | `--startup-actions KEY[,KEY...]` | Explicit caller-selected remote keys used only after TVDoctor detects a focused setup wall. Observation-only is the default; TVDoctor never chooses consent. |
 | `--max-duration-ms N` | Advanced navigation safety-ceiling override for CI or exhaustive runs. |
@@ -280,7 +280,7 @@ open tvdoctor-report/report.html
 xdg-open tvdoctor-report/report.html
 
 # Windows PowerShell
-Start-Process .\\tvdoctor-report\\report.html
+Start-Process .\tvdoctor-report\report.html
 ```
 
 Unavailable evidence is represented explicitly. Report generation escapes
