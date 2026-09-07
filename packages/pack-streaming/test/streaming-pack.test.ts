@@ -32,19 +32,23 @@ type Variant = "conventional" | "variant";
 
 interface FakeState {
   caption: "english" | "off" | "unexpected";
+  captionsAppearanceVisible: boolean;
   ambiguousProgress: boolean;
   elapsed: number;
   focus: string;
   playing: boolean;
   rewindName: string;
   screen: Screen;
+  textColourVisible: boolean;
 }
 
 interface FakeDriverOptions {
   readonly ambiguousProgress?: boolean;
+  readonly captionsAppearanceVisible?: boolean;
   readonly captionSelectionOutcome?: "ignored" | "unexpected" | "works";
   readonly rewindName?: string;
   readonly settingsOpens?: boolean;
+  readonly textColourVisible?: boolean;
 }
 
 interface ControlDefinition {
@@ -152,12 +156,16 @@ function controlsFor(state: FakeState, variant: Variant): readonly ControlDefini
         { id: "captions-off", name: "Off Current selection", x: 920, y: 170 },
         { id: "captions-english", name: "English CC Closed captions", x: 920, y: 240 },
         { id: "captions-spanish", name: "Español Subtitles", x: 920, y: 310 },
-        { id: "captions-appearance", name: "Appearance Font colour and background", x: 920, y: 380 },
+        ...(state.captionsAppearanceVisible
+          ? [{ id: "captions-appearance", name: "Appearance Font colour and background", x: 920, y: 380 }]
+          : []),
       ];
     case "appearance":
       return [
         { id: "caption-font", name: "Font Size Medium", x: 920, y: 170 },
-        { id: "caption-text-colour", name: "Text Colour Warm white", x: 920, y: 240, focusable: false },
+        ...(state.textColourVisible
+          ? [{ id: "caption-text-colour", name: "Text Colour Warm white", x: 920, y: 240, focusable: false }]
+          : []),
         { id: "caption-background", name: "Background Colour Black", x: 920, y: 310 },
         { id: "caption-edge", name: "Edge Style Soft shadow", x: 920, y: 380 },
       ];
@@ -328,11 +336,13 @@ class StreamingFakeDriver implements TVDoctorDriver {
     return {
       ambiguousProgress: this.options.ambiguousProgress ?? false,
       caption: "off",
+      captionsAppearanceVisible: this.options.captionsAppearanceVisible ?? true,
       elapsed: 100,
       focus: "home-anchor",
       playing: false,
       rewindName: this.options.rewindName ?? "Rewind 10 seconds",
       screen: "home",
+      textColourVisible: this.options.textColourVisible ?? true,
     };
   }
 
@@ -479,6 +489,12 @@ describe("runStreamingPack", () => {
   it("completes the showcase journey, finds four deterministic defects, and replays Text Colour", async () => {
     const driver = new StreamingFakeDriver("conventional");
     const result = await runStreamingPack(driver, { pointerProbe: reachablePointer });
+    expect(result.issues.map((issue) => issue.id)).toEqual([
+      "TVDOCTOR-STREAM-446E4CCB9588B987D46DCCF9B8A6E09B",
+      "TVDOCTOR-STREAM-E6630F42861E67BE113C6544F740E2F2",
+      "TVDOCTOR-STREAM-A3CF65BCE3D499A07C8F14960385A88C",
+      "TVDOCTOR-STREAM-E0054201CF3672C5F256058B2DB21671",
+    ]);
 
     expect(result.status).toBe("complete");
     expect(result.termination).toMatchObject({ reason: "complete", complete: true });
@@ -487,11 +503,11 @@ describe("runStreamingPack", () => {
     expect(result.stages.find((stage) => stage.stage === "caption-text-colour")).toMatchObject({
       status: "failed",
     });
-    expect(result.issues.map((issue) => issue.rule).sort()).toEqual([
+    expect(result.issues.map((issue) => issue.rule)).toEqual([
       "accessibility.pointer-only-control",
-      "remote.reachability",
-      "streaming.captions",
       "streaming.player-control",
+      "streaming.captions",
+      "remote.reachability",
     ]);
     expect(result.issues.every((issue) => issue.confidence === "deterministic")).toBe(true);
     const textIssue = result.issues.find((issue) => issue.rule === "remote.reachability");
@@ -507,9 +523,9 @@ describe("runStreamingPack", () => {
         status: "reproduced",
       }),
     ]));
-    expect(result.pointerProbes.map((record) => record.kind).sort()).toEqual([
-      "caption-text-colour",
+    expect(result.pointerProbes.map((record) => record.kind)).toEqual([
       "player-volume-control",
+      "caption-text-colour",
     ]);
     expect(result.pointerProbes.every((record) => record.mainSessionRestored)).toBe(true);
     expect(result.volumeControl).toMatchObject({
@@ -661,6 +677,48 @@ describe("runStreamingPack", () => {
     expect(result.stages.find((stageResult) => stageResult.stage === "captions")?.status).toBe("skipped");
     expect(driver.selectedIds.filter((id) => id === "player-settings")).toHaveLength(1);
     expect(driver.selectedIds).not.toContain("player-captions");
+  });
+
+  it("retains the Captions SELECT route when the opened menu has no Appearance target", async () => {
+    const result = await runStreamingPack(
+      new StreamingFakeDriver(
+        "conventional",
+        true,
+        false,
+        { captionsAppearanceVisible: false },
+      ),
+      { pointerProbe: reachablePointer },
+    );
+    const captions = result.stages.find((stageResult) => stageResult.stage === "captions");
+
+    expect(result.termination).toEqual({
+      reason: "journey-partial",
+      complete: false,
+      detail: "Captions could not be confirmed.",
+    });
+    expect(captions?.sequence.at(-1)).toBe("SELECT");
+    expect(result.journeySequence).toEqual(captions?.sequence);
+  });
+
+  it("retains the Appearance SELECT route when the opened surface has no Text Colour target", async () => {
+    const result = await runStreamingPack(
+      new StreamingFakeDriver(
+        "conventional",
+        true,
+        false,
+        { textColourVisible: false },
+      ),
+      { pointerProbe: reachablePointer },
+    );
+    const appearance = result.stages.find((stageResult) => stageResult.stage === "appearance");
+
+    expect(result.termination).toEqual({
+      reason: "journey-partial",
+      complete: false,
+      detail: "Caption Appearance could not be confirmed.",
+    });
+    expect(appearance?.sequence.at(-1)).toBe("SELECT");
+    expect(result.journeySequence).toEqual(appearance?.sequence);
   });
 
   it("withholds rewind classification when playback progress provenance is ambiguous", async () => {
@@ -991,21 +1049,50 @@ describe("streaming budget boundaries", () => {
     ["maxDurationMs", 2_147_483_648],
   ] as const)("rejects the invalid %s streaming budget %s", async (name, value) => {
     const budgets = { [name]: value } as Partial<StreamingPackBudgets>;
-    await expect(runStreamingPack(new StreamingFakeDriver("conventional"), { budgets }))
-      .rejects.toThrow(name);
+    const maximum = name === "maxActions"
+      ? 1_000_000
+      : name === "maxLocalDepth"
+        ? 4_096
+        : name === "maxDurationMs"
+          ? 2_147_483_647
+          : 100_000;
+    const qualifier = name === "maxLocalDepth" ? "non-negative" : "positive";
+    const error = await runStreamingPack(
+      new StreamingFakeDriver("conventional"),
+      { budgets },
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(
+      `${name} must be a ${qualifier} safe integer no greater than ${String(maximum)}.`,
+    );
   });
 
   it.each([
-    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, /resetStrategy/u],
-    ["non-function restore hook", { restoreInitialState: 1 as never }, /restoreInitialState/u],
-    ["non-function clock hook", { monotonicNow: 1 as never }, /monotonicNow/u],
-    ["non-function pointer hook", { pointerProbe: { probe: 1 } as never }, /pointerProbe/u],
-    ["non-finite clock result", { monotonicNow: () => Number.NaN }, /finite/u],
+    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, "resetStrategy must be reload, relaunch, or clear-data."],
+    ["non-function restore hook", { restoreInitialState: 1 as never }, "restoreInitialState must be a function."],
+    ["non-function clock hook", { monotonicNow: 1 as never }, "monotonicNow must be a function."],
+    ["non-function pointer hook", { pointerProbe: { probe: 1 } as never }, "pointerProbe must expose a probe function."],
+    ["non-finite clock result", { monotonicNow: () => Number.NaN }, "monotonicNow must return a finite number."],
   ] as const)("rejects %s", async (_label, options, message) => {
-    await expect(runStreamingPack(
+    const error = await runStreamingPack(
       new StreamingFakeDriver("conventional"),
       options as StreamingPackOptions,
-    )).rejects.toThrow(message);
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(message);
+  });
+
+  it.each([
+    ["null options", null, "Streaming pack options must be an object."],
+    ["array options", [], "Streaming pack options must be an object."],
+    ["non-object budgets", { budgets: [] }, "budgets must be an object."],
+  ] as const)("preserves the exact TypeError for %s", async (_label, options, message) => {
+    const error = await runStreamingPack(
+      new StreamingFakeDriver("conventional"),
+      options as never,
+    ).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(message);
   });
 
   it("uses the explicit three-minute standard duration budget", () => {

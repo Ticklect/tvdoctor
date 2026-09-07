@@ -205,6 +205,19 @@ async function deterministicRun(): Promise<ExplorationResult> {
   });
 }
 
+async function expectTypeError(
+  operation: Promise<unknown>,
+  message: string,
+): Promise<void> {
+  try {
+    await operation;
+    expect.unreachable("Expected explorer validation to reject.");
+  } catch (error) {
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toBe(message);
+  }
+}
+
 describe("bounded deterministic explorer", () => {
   it("stops before touching the driver when exploration is already interrupted", async () => {
     const controller = new AbortController();
@@ -812,19 +825,20 @@ describe("bounded deterministic explorer", () => {
   });
 
   it.each([
-    ["unknown action", { actions: ["POWER"] as unknown as readonly RemoteKey[] }, /known remote keys/u],
-    ["duplicate actions", { actions: ["RIGHT", "RIGHT"] }, /duplicates/u],
-    ["unknown profile", { profile: "turbo" as never }, /profile/u],
-    ["unknown frontier strategy", { frontierStrategy: "random" as never }, /frontierStrategy/u],
-    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, /resetStrategy/u],
-    ["non-function restore hook", { restoreInitialState: 1 as never }, /restoreInitialState/u],
-    ["non-function clock hook", { monotonicNow: 1 as never }, /monotonicNow/u],
-    ["non-function settling wait hook", { settling: { wait: 1 as never } }, /wait/u],
-    ["non-function settling comparison hook", { settling: { equivalent: 1 as never } }, /equivalent/u],
-    ["non-boolean compression flag", { repetitionCompression: { enabled: "yes" as never } }, /enabled/u],
-    ["non-finite clock result", { monotonicNow: () => Number.NaN }, /finite/u],
-  ] as const)("rejects %s", async (_label, options, message) => {
-    await expect(explore(new CounterDriver(), options as ExplorerOptions)).rejects.toThrow(message);
+    ["unknown action", { actions: ["POWER"] as unknown as readonly RemoteKey[] }, "Explorer actions must contain only known remote keys."],
+    ["duplicate actions", { actions: ["RIGHT", "RIGHT"] }, "Explorer actions must not contain duplicates."],
+    ["unknown profile", { profile: "turbo" as never }, "profile must be quick, standard, or deep."],
+    ["unknown frontier strategy", { frontierStrategy: "random" as never }, "frontierStrategy must be breadth-first or priority."],
+    ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, "resetStrategy must be reload, relaunch, or clear-data."],
+    ["non-function restore hook", { restoreInitialState: 1 as never }, "restoreInitialState must be a function."],
+    ["non-function restore snapshot hook", { restoreInitialSnapshot: 1 as never }, "restoreInitialSnapshot must be a function."],
+    ["non-function clock hook", { monotonicNow: 1 as never }, "monotonicNow must be a function."],
+    ["non-function settling wait hook", { settling: { wait: 1 as never } }, "wait must be a function."],
+    ["non-function settling comparison hook", { settling: { equivalent: 1 as never } }, "equivalent must be a function."],
+    ["non-boolean compression flag", { repetitionCompression: { enabled: "yes" as never } }, "repetitionCompression.enabled must be a boolean."],
+    ["non-finite clock result", { monotonicNow: () => Number.NaN }, "monotonicNow must return a finite number."],
+  ] as const)("rejects %s with the exact public error", async (_label, options, message) => {
+    await expectTypeError(explore(new CounterDriver(), options as ExplorerOptions), message);
   });
 
   it.each([

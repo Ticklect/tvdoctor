@@ -96,6 +96,61 @@ async function allFiles(root: string, relative = ""): Promise<readonly string[]>
 }
 
 describe("Node audit release hardening", () => {
+  it("closes the owned driver exactly once after a successful audit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-success-close-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates the same close rejection once after an otherwise successful audit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-success-close-failure-"));
+    try {
+      const closeError = new Error("primary driver close failed");
+      const closed = vi.fn(async () => {
+        throw closeError;
+      });
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      await expect(operation({
+        target: "https://example.test/app",
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      })).rejects.toBe(closeError);
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes a failed-run bundle when launch fails and keeps technical detail out of user copy", async () => {
     const root = await mkdtemp(join(tmpdir(), "tvdoctor-launch-failure-"));
     try {
@@ -123,6 +178,247 @@ describe("Node audit release hardening", () => {
       expect(JSON.stringify(result)).not.toContain("SECRET_CANARY");
       expect(await readFile(join(root, "bundle", "report.json"), "utf8")).not.toContain("SECRET_CANARY");
       expect(await readFile(join(root, "bundle", "report.html"), "utf8")).toContain("Scan could not complete");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the owned driver exactly once when an audit stage throws", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-stage-failure-close-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => {
+            throw new Error("stage initialization failed");
+          },
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["streaming"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses close rejection after stage failure and retains failed-run copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-stage-and-close-failure-"));
+    try {
+      const closeError = new Error("secondary close failure");
+      const closed = vi.fn(async () => {
+        throw closeError;
+      });
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => {
+            throw new Error("stage initialization failed");
+          },
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["streaming"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.details.slice(0, 3)).toEqual([
+        "The scan could not complete.",
+        "TVDoctor could not complete this scan because the browser session failed.",
+        "Technical detail was retained in failure-debug.json.",
+      ]);
+      expect(result.details[3]).toMatch(/^Report: /u);
+      expect(await readFile(join(root, "bundle", "failure-debug.json"), "utf8"))
+        .toContain("stage initialization failed");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the owned driver exactly once when a pre-aborted signal skips stages", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-interrupted-close-"));
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const closed = vi.fn(async () => undefined);
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["streaming"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        signal: controller.signal,
+      });
+
+      expect(result.status).toBe("partial");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses close rejection after interruption during active exploration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-active-interruption-close-"));
+    try {
+      const controller = new AbortController();
+      const closeError = new Error("interrupted close failed");
+      const closed = vi.fn(async () => {
+        throw closeError;
+      });
+      let capabilityCalls = 0;
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => {
+            capabilityCalls += 1;
+            if (capabilityCalls === 2) controller.abort();
+            return new Set(["remote-input", "ui-tree"]);
+          },
+          reset: async () => undefined,
+          snapshot: async () => snapshot("home"),
+          getPerformanceProfile: () => null,
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["navigation"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        signal: controller.signal,
+      });
+
+      expect(capabilityCalls).toBe(2);
+      expect(result.status).toBe("partial");
+      expect(result.details).toContain(
+        "The scan was interrupted; completed navigation coverage was retained.",
+      );
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the owned driver exactly once when failed-report writing rejects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-failed-report-rejection-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => {
+            throw new Error("stage failure before invalid report target");
+          },
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      await expect(operation({
+        target: "not a valid URL",
+        packs: ["streaming"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      })).rejects.toMatchObject({
+        name: "TypeError",
+        message: "Invalid URL",
+        code: "ERR_INVALID_URL",
+      });
+      expect(await readFile(join(root, "bundle", "failure-debug.json"), "utf8"))
+        .toContain("stage failure before invalid report target");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("closes the owned driver exactly once after a setup blocker stops the audit early", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-setup-blocker-close-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const consentButton = {
+        stableId: "accept-consent",
+        role: "button",
+        name: "Accept",
+        text: "Accept",
+        bounds: { x: 10, y: 10, width: 100, height: 40 },
+        visible: true,
+        enabled: true,
+        focusable: true,
+        focused: true,
+        modal: false,
+        selectionState: null,
+        valueNow: null,
+        children: [],
+      };
+      const consentSnapshot: StateSnapshot = {
+        capturedAt: "2026-08-25T12:00:00.000Z",
+        location: availableObservation("https://example.test/app"),
+        focusedElement: availableObservation({
+          stableId: "accept-consent",
+          role: "button",
+          name: "Accept",
+          bounds: { x: 10, y: 10, width: 100, height: 40 },
+        }),
+        uiTree: availableObservation([{
+          ...consentButton,
+          stableId: "consent-dialog",
+          role: "dialog",
+          name: "Privacy choice",
+          text: "Privacy choice",
+          focusable: false,
+          focused: false,
+          modal: true,
+          children: [consentButton],
+        }]),
+      };
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          reset: async () => undefined,
+          snapshot: async () => consentSnapshot,
+          close: closed,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: ["navigation"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("partial");
+      expect(result.details[0]).toContain("scan was not started");
       expect(closed).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
