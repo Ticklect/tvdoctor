@@ -3,6 +3,7 @@ export {
   EXIT_CODES,
   HELP_TEXT,
   REPLAY_HELP_TEXT,
+  SETUP_HELP_TEXT,
   TEST_HELP_TEXT,
   TEST_PACK_NAMES,
   safeTarget,

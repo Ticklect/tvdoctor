@@ -130,6 +130,7 @@ export interface CliContext {
   readonly io: CliIO;
   readonly operations?: CliOperations;
   readonly runtimeProbe?: () => Promise<RuntimeProbeResult>;
+  readonly runtimeSetup?: (signal?: AbortSignal) => Promise<void>;
   readonly startTerminal?: StartTerminal;
   readonly signal?: AbortSignal;
   readonly terminalProgress?: {
@@ -151,6 +152,7 @@ Usage:
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
   tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
+  tvdoctor setup
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
   tvdoctor version
@@ -161,6 +163,7 @@ Usage:
 Commands:
   start     Open the guided product flow.
   test      Run a bounded local audit and write a report bundle.
+  setup     Install the Chromium runtime matched to this TVDoctor version.
   doctor    Diagnose the installed runtime and browser environment.
   replay    Re-run one deterministic issue from a V1 report.
   version   Print the installed TVDoctor version.
@@ -203,6 +206,11 @@ export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
 Report the local Node.js and host environment together with the capabilities
 that are actually available in this installed CLI.`;
+
+export const SETUP_HELP_TEXT = `Usage: tvdoctor setup
+
+Install the Chromium browser build matched to this TVDoctor version, then verify
+that TVDoctor can launch it. The browser is stored in Playwright's user cache.`;
 
 export const REPLAY_HELP_TEXT = `Usage: tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
 
@@ -705,6 +713,41 @@ async function runDoctor(
     : EXIT_CODES.environmentFailure;
 }
 
+async function runSetup(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  if (
+    argumentsAfterCommand.length === 1
+    && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")
+  ) {
+    writeBlock(context.io.writeStdout, SETUP_HELP_TEXT);
+    return EXIT_CODES.success;
+  }
+  if (argumentsAfterCommand.length > 0) {
+    return usageError(context, `setup does not accept arguments: ${argumentsAfterCommand.join(" ")}`);
+  }
+  if (context.runtimeSetup === undefined || context.runtimeProbe === undefined) {
+    writeLine(context.io.writeStderr, "Chromium setup is unavailable in this CLI host.");
+    return EXIT_CODES.executionError;
+  }
+  writeLine(context.io.writeStdout, "Installing TVDoctor's Chromium runtime...");
+  try {
+    await context.runtimeSetup(context.signal);
+    await context.runtimeProbe();
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const firstLine = raw.split(/\r?\n/u, 1)[0] ?? "Unknown error";
+    writeLine(
+      context.io.writeStderr,
+      `Chromium setup failed: ${sanitizeTerminalText(firstLine, { maximumLength: 240 })}`,
+    );
+    return EXIT_CODES.executionError;
+  }
+  writeLine(context.io.writeStdout, "Chromium is installed and ready for TVDoctor.");
+  return EXIT_CODES.success;
+}
+
 async function runStart(
   argumentsAfterCommand: readonly string[],
   context: CliContext,
@@ -748,6 +791,7 @@ export async function runCli(
       argumentsAfterCommand.length === 1 &&
       (argumentsAfterCommand[0] === "test" ||
         argumentsAfterCommand[0] === "doctor" ||
+        argumentsAfterCommand[0] === "setup" ||
         argumentsAfterCommand[0] === "replay")
     ) {
       writeBlock(
@@ -756,6 +800,8 @@ export async function runCli(
           ? TEST_HELP_TEXT
           : argumentsAfterCommand[0] === "doctor"
             ? DOCTOR_HELP_TEXT
+            : argumentsAfterCommand[0] === "setup"
+              ? SETUP_HELP_TEXT
             : REPLAY_HELP_TEXT,
       );
       return EXIT_CODES.success;
@@ -769,6 +815,10 @@ export async function runCli(
 
   if (command === "doctor") {
     return await runDoctor(argumentsAfterCommand, context);
+  }
+
+  if (command === "setup") {
+    return await runSetup(argumentsAfterCommand, context);
   }
 
   if (command === "start") {

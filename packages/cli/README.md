@@ -6,11 +6,11 @@ against TV web applications and writes evidence-linked local report bundles.
 ## Requirements
 
 - Node.js 24
-- a Playwright Chromium installation
+- Chromium installed by TVDoctor
 
 ```sh
 npm install --save-dev tvdoctor
-npx playwright install chromium
+npx tvdoctor setup
 ```
 
 ## First audit

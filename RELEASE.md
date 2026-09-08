@@ -83,7 +83,7 @@ In a new directory with an empty npm cache where practical:
 ```sh
 npm init -y
 npm install --save-dev tvdoctor@0.1.0
-npx playwright install chromium
+npx tvdoctor setup
 npx tvdoctor --version
 npx tvdoctor --help
 npx tvdoctor doctor

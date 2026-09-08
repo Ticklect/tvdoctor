@@ -76,8 +76,8 @@ lockfile is the dependency authority.
    git clone https://github.com/Ticklect/tvdoctor.git
    cd tvdoctor
    npm ci
-   npx playwright install chromium
    npm run build
+   npm run tvdoctor -- setup
    npm run tvdoctor -- doctor
    ```
 
@@ -143,7 +143,7 @@ an assertion that `tvdoctor@0.1.0` is currently available from the registry:
 
 ```sh
 npm install --save-dev tvdoctor
-npx playwright install chromium
+npx tvdoctor setup
 npx tvdoctor test http://127.0.0.1:3000
 ```
 
@@ -154,6 +154,7 @@ Until publication is verified, use the source-checkout commands above.
 ```text
 tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
 tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
+tvdoctor setup
 tvdoctor doctor
 tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
 tvdoctor version
@@ -171,7 +172,8 @@ tvdoctor --help
 | `--startup-actions KEY[,KEY...]` | Explicit caller-selected remote keys used only after TVDoctor detects a focused setup wall. Observation-only is the default; TVDoctor never chooses consent. |
 | `--max-duration-ms N` | Advanced navigation safety-ceiling override for CI or exhaustive runs. |
 
-`doctor` checks the declared Node runtime, host, installed Playwright Chromium,
+`setup` installs the exact Chromium build required by TVDoctor and verifies that
+it launches. `doctor` checks the declared Node runtime, host, installed Chromium,
 and whether the audit host is available. Run it before a long audit.
 
 `version`, `--version`, and `-V` print the installed CLI package version.
@@ -282,7 +284,8 @@ Run the same release-relevant checks locally:
 
 ```sh
 npm ci
-npx playwright install chromium
+npm run build
+npm run tvdoctor -- setup
 npm run check
 npm run test:package-smoke
 node examples/baseline-ci-example.mjs
@@ -294,7 +297,7 @@ older green run is supporting evidence, not proof of a changed candidate.
 
 ## Troubleshooting
 
-- **Chromium executable is missing:** run `npx playwright install chromium`; on
+- **Chromium executable is missing:** run `npx tvdoctor setup`; on
   Linux CI use `--with-deps`, then rerun `tvdoctor doctor`.
 - **Unsupported Node/npm:** install a Node 24/npm 11 environment and rerun
   `npm ci`. Do not use `--force` to bypass the declared engine range.

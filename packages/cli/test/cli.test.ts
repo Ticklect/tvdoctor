@@ -7,6 +7,7 @@ import {
   EXIT_CODES,
   HELP_TEXT,
   REPLAY_HELP_TEXT,
+  SETUP_HELP_TEXT,
   TEST_HELP_TEXT,
   diagnoseEnvironment,
   runCli,
@@ -168,6 +169,61 @@ describe("TVDoctor CLI", () => {
       });
     },
   );
+
+  it.each<readonly [readonly string[]]>([
+    [["setup", "--help"]],
+    [["setup", "-h"]],
+    [["help", "setup"]],
+  ])("prints setup-specific help for %j", async (arguments_) => {
+    await expect(captureRun(arguments_)).resolves.toEqual({
+      code: EXIT_CODES.success,
+      stderr: "",
+      stdout: `${SETUP_HELP_TEXT}\n`,
+    });
+  });
+
+  it("installs and verifies the matched Chromium runtime", async () => {
+    const events: string[] = [];
+    let stdout = "";
+    const controller = new AbortController();
+    const code = await runCli(["setup"], {
+      environment: SUPPORTED_ENVIRONMENT,
+      signal: controller.signal,
+      io: { writeStdout: (text) => { stdout += text; }, writeStderr: ignoreOutput },
+      runtimeSetup: async (signal) => {
+        expect(signal).toBe(controller.signal);
+        events.push("install");
+      },
+      runtimeProbe: async () => {
+        events.push("verify");
+        return { capabilities: ["remote-input"] };
+      },
+    });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(events).toEqual(["install", "verify"]);
+    expect(stdout).toBe(
+      "Installing TVDoctor's Chromium runtime...\n" +
+      "Chromium is installed and ready for TVDoctor.\n",
+    );
+  });
+
+  it("fails setup without reporting readiness when verification fails", async () => {
+    let stdout = "";
+    let stderr = "";
+    const code = await runCli(["setup"], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: {
+        writeStdout: (text) => { stdout += text; },
+        writeStderr: (text) => { stderr += text; },
+      },
+      runtimeSetup: async () => undefined,
+      runtimeProbe: async () => { throw new Error("browser launch failed\nsecret detail"); },
+    });
+    expect(code).toBe(EXIT_CODES.executionError);
+    expect(stdout).not.toContain("ready");
+    expect(stderr).toBe("Chromium setup failed: browser launch failed\n");
+    expect(stderr).not.toContain("secret detail");
+  });
 
   it.each<readonly [readonly string[]]>([
     [["replay", "--help"]],
