@@ -50,6 +50,17 @@ Replay distinguishes a reproduced finding, a fixed finding, an inconclusive
 run, and an execution error. Executing a replay is not itself proof that the
 original defect reproduced; use the reported classification and fresh evidence.
 
+## Regression baselines
+
+```sh
+npx tvdoctor baseline create --report tvdoctor-report/report.json --output tvdoctor-baseline.json
+npx tvdoctor baseline compare --baseline tvdoctor-baseline.json --report current-report/report.json
+```
+
+Both commands use `inventory.json` beside the selected report unless
+`--inventory` is supplied. Creation accepts only complete reviewed runs;
+comparison fails closed when equivalent observation coverage is unavailable.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -57,6 +57,8 @@ that `tvdoctor@0.1.0` has been published.
 - `tvdoctor setup` for installing and verifying the matched Chromium runtime;
 - `tvdoctor ci` with an explicit severity policy, fail-closed incomplete runs,
   concise Markdown and JUnit exports, plus a ready-made GitHub Action.
+- `tvdoctor baseline create` and `baseline compare` file workflows with concise
+  new, resolved, and unchanged finding counts.
 
 ### Verification status
 

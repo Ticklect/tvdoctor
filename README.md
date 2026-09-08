@@ -133,7 +133,7 @@ tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
 | [Android TV](docs/drivers/android.md) | Experimental | API 36 emulator evidence only; no physical-device or vendor compatibility claim. |
 | [Reports](#report-bundle) | Beta format | `tvdoctor.report/v1` is the canonical result, with human-readable HTML and Markdown views. |
 | [Replay](#replay) | Beta format, bounded execution | `tvdoctor.replay/v1` executes supported deterministic focus transitions; other findings remain review-only. |
-| [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned, fail-closed comparison library; not yet a standalone CLI workflow. |
+| [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned, fail-closed CLI and library comparison with semantic inventories. |
 | [Limitations](docs/limitations.md) | Required reading | Current observability, evidence, platform, and compatibility boundaries. |
 
 ### Registry installation
@@ -272,6 +272,19 @@ Reports strip credentials and may strip an original URL's query or fragment. If
 the audited route depended on a query string or hash, replay must not guess it:
 pass the exact authorised route again with `--target`. Never put passwords,
 tokens, session IDs, or personal data in that URL.
+
+## Regression baselines
+
+Create a baseline from a reviewed, complete report, then compare later runs:
+
+```sh
+tvdoctor baseline create --report tvdoctor-report/report.json --output tvdoctor-baseline.json
+tvdoctor baseline compare --baseline tvdoctor-baseline.json --report current-report/report.json
+```
+
+The comparison prints counts such as `2 new, 1 resolved, 4 unchanged findings`
+and writes `baseline-comparison.json`. Missing coverage, partial runs, target
+mismatches, or invalid inputs fail closed rather than producing a clean result.
 
 ## CI and release checks
 

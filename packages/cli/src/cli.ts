@@ -99,6 +99,32 @@ export interface ReplayCommandResult {
   readonly details: readonly string[];
 }
 
+export interface BaselineCreateRequest {
+  readonly reportPath: string;
+  readonly inventoryPath: string;
+  readonly outputPath: string;
+}
+
+export interface BaselineCompareRequest extends BaselineCreateRequest {
+  readonly baselinePath: string;
+}
+
+export interface BaselineCreateResult {
+  readonly issueCount: number;
+  readonly outputPath: string;
+}
+
+export interface BaselineCompareResult {
+  readonly status: "identical" | "changed" | "regressed" | "failed-closed";
+  readonly shouldFail: boolean;
+  readonly newIssues: number;
+  readonly resolvedIssues: number;
+  readonly unchangedIssues: number;
+  readonly structuralRegressions: number;
+  readonly blockers: readonly string[];
+  readonly outputPath: string;
+}
+
 export interface CliOperations {
   replayIssue(request: ReplayCommandRequest): Promise<ReplayCommandResult>;
   testTarget?(request: TestCommandRequest): Promise<TestCommandResult>;
@@ -106,6 +132,8 @@ export interface CliOperations {
   androidPreflight?(): Promise<AndroidPreflightResult>;
   inspectApk?(path: string): Promise<ApkMetadata>;
   scanAndroidApk?(request: AndroidScanOptions): Promise<AndroidScanResult>;
+  createBaseline?(request: BaselineCreateRequest): Promise<BaselineCreateResult>;
+  compareBaseline?(request: BaselineCompareRequest): Promise<BaselineCompareResult>;
 }
 
 export interface WebsiteStartupDetection {
@@ -159,6 +187,8 @@ Usage:
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
   tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
   tvdoctor ci URL --fail-on LEVEL [test options]
+  tvdoctor baseline create --report PATH [--inventory PATH] [--output PATH]
+  tvdoctor baseline compare --baseline PATH --report PATH [--inventory PATH] [--output PATH]
   tvdoctor setup
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
@@ -171,6 +201,7 @@ Commands:
   start     Open the guided product flow.
   test      Run a bounded local audit and write a report bundle.
   ci        Run an audit with an explicit failure policy and CI exports.
+  baseline  Create or compare a semantic regression baseline.
   setup     Install the Chromium runtime matched to this TVDoctor version.
   doctor    Diagnose the installed runtime and browser environment.
   replay    Re-run one deterministic issue from a V1 report.
@@ -216,6 +247,13 @@ export const CI_HELP_TEXT = `Usage:
 Run the same bounded web audit as tvdoctor test and write exports/ci-summary.md
 plus exports/junit.xml. LEVEL is any, critical, high, medium, low, info, or never.
 A partial or failed audit remains non-successful regardless of the finding policy.`;
+
+export const BASELINE_HELP_TEXT = `Usage:
+  tvdoctor baseline create --report PATH [--inventory PATH] [--output PATH]
+  tvdoctor baseline compare --baseline PATH --report PATH [--inventory PATH] [--output PATH]
+
+Create a reviewed semantic baseline from a complete report, or compare a current
+complete report with it. Inventory defaults to inventory.json beside the report.`;
 
 export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
@@ -464,6 +502,57 @@ function parseTestArguments(
     ...(startupActions === undefined ? {} : { startupActions }),
     ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
     ...(ciFailOn === undefined ? {} : { ciFailOn }),
+  };
+}
+
+type ParsedBaselineCommand =
+  | ({ readonly action: "create" } & BaselineCreateRequest)
+  | ({ readonly action: "compare" } & BaselineCompareRequest);
+
+function parseBaselineArguments(argumentsAfterCommand: readonly string[]): ParsedBaselineCommand | string {
+  const [action, ...options] = argumentsAfterCommand;
+  if (action !== "create" && action !== "compare") {
+    return "baseline requires create or compare";
+  }
+  let reportPath: string | undefined;
+  let inventoryPath: string | undefined;
+  let outputPath: string | undefined;
+  let baselinePath: string | undefined;
+  for (let index = 0; index < options.length; index += 1) {
+    const option = options[index];
+    if (option === undefined) continue;
+    if (!["--report", "--inventory", "--output", "--baseline"].includes(option)) {
+      return `unknown baseline option: ${option}`;
+    }
+    if (action === "create" && option === "--baseline") {
+      return "baseline create does not accept --baseline";
+    }
+    const value = options[index + 1];
+    if (value === undefined || value.startsWith("--")) return `${option} requires a value`;
+    if (value.trim().length === 0 || value.length > 1_024) return `${option} requires a bounded non-empty path`;
+    if (option === "--report") reportPath = value;
+    else if (option === "--inventory") inventoryPath = value;
+    else if (option === "--output") outputPath = value;
+    else baselinePath = value;
+    index += 1;
+  }
+  if (reportPath === undefined) return "baseline requires --report PATH";
+  const resolvedInventory = inventoryPath ?? join(dirname(reportPath), "inventory.json");
+  if (action === "create") {
+    return {
+      action,
+      reportPath,
+      inventoryPath: resolvedInventory,
+      outputPath: outputPath ?? "tvdoctor-baseline.json",
+    };
+  }
+  if (baselinePath === undefined) return "baseline compare requires --baseline PATH";
+  return {
+    action,
+    baselinePath,
+    reportPath,
+    inventoryPath: resolvedInventory,
+    outputPath: outputPath ?? join(dirname(reportPath), "baseline-comparison.json"),
   };
 }
 
@@ -773,6 +862,64 @@ async function runDoctor(
     : EXIT_CODES.environmentFailure;
 }
 
+async function runBaseline(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  if (argumentsAfterCommand.length === 1
+    && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")) {
+    writeBlock(context.io.writeStdout, BASELINE_HELP_TEXT);
+    return EXIT_CODES.success;
+  }
+  const request = parseBaselineArguments(argumentsAfterCommand);
+  if (typeof request === "string") return usageError(context, request);
+  try {
+    if (request.action === "create") {
+      if (context.operations?.createBaseline === undefined) {
+        writeLine(context.io.writeStderr, "Baseline creation is unavailable in this CLI host.");
+        return EXIT_CODES.executionError;
+      }
+      const result = await context.operations.createBaseline({
+        reportPath: request.reportPath,
+        inventoryPath: request.inventoryPath,
+        outputPath: request.outputPath,
+      });
+      writeLine(context.io.writeStdout, `Baseline created from ${String(result.issueCount)} findings.`);
+      writeLine(context.io.writeStdout, `Baseline: ${result.outputPath}`, 1_024);
+      return EXIT_CODES.success;
+    }
+    if (context.operations?.compareBaseline === undefined) {
+      writeLine(context.io.writeStderr, "Baseline comparison is unavailable in this CLI host.");
+      return EXIT_CODES.executionError;
+    }
+    const result = await context.operations.compareBaseline({
+      baselinePath: request.baselinePath,
+      reportPath: request.reportPath,
+      inventoryPath: request.inventoryPath,
+      outputPath: request.outputPath,
+    });
+    writeLine(context.io.writeStdout, `Baseline result: ${result.status.toUpperCase()}`);
+    writeLine(
+      context.io.writeStdout,
+      `${String(result.newIssues)} new, ${String(result.resolvedIssues)} resolved, ${String(result.unchangedIssues)} unchanged findings.`,
+    );
+    if (result.structuralRegressions > 0) {
+      writeLine(context.io.writeStdout, `${String(result.structuralRegressions)} structural or latency regressions.`);
+    }
+    for (const blocker of result.blockers) writeLine(context.io.writeStdout, `Blocked: ${blocker}`, 1_024);
+    writeLine(context.io.writeStdout, `Comparison: ${result.outputPath}`, 1_024);
+    return result.shouldFail ? EXIT_CODES.environmentFailure : EXIT_CODES.success;
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const firstLine = raw.split(/\r?\n/u, 1)[0] ?? "Unknown error";
+    writeLine(
+      context.io.writeStderr,
+      `Baseline failed: ${sanitizeTerminalText(firstLine, { maximumLength: 500 })}`,
+    );
+    return EXIT_CODES.executionError;
+  }
+}
+
 async function runSetup(
   argumentsAfterCommand: readonly string[],
   context: CliContext,
@@ -852,6 +999,7 @@ export async function runCli(
       (argumentsAfterCommand[0] === "test" ||
         argumentsAfterCommand[0] === "doctor" ||
         argumentsAfterCommand[0] === "ci" ||
+        argumentsAfterCommand[0] === "baseline" ||
         argumentsAfterCommand[0] === "setup" ||
         argumentsAfterCommand[0] === "replay")
     ) {
@@ -861,6 +1009,8 @@ export async function runCli(
           ? TEST_HELP_TEXT
           : argumentsAfterCommand[0] === "ci"
             ? CI_HELP_TEXT
+            : argumentsAfterCommand[0] === "baseline"
+              ? BASELINE_HELP_TEXT
           : argumentsAfterCommand[0] === "doctor"
             ? DOCTOR_HELP_TEXT
             : argumentsAfterCommand[0] === "setup"
@@ -898,6 +1048,10 @@ export async function runCli(
 
   if (command === "replay") {
     return await runReplay(argumentsAfterCommand, context);
+  }
+
+  if (command === "baseline") {
+    return await runBaseline(argumentsAfterCommand, context);
   }
 
   if ((command === "version" || command === "--version" || command === "-V")

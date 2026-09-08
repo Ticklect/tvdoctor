@@ -1,4 +1,5 @@
 export {
+  BASELINE_HELP_TEXT,
   CI_HELP_TEXT,
   DOCTOR_HELP_TEXT,
   EXIT_CODES,
@@ -12,6 +13,10 @@ export {
   type CliContext,
   type CliIO,
   type CliOperations,
+  type BaselineCompareRequest,
+  type BaselineCompareResult,
+  type BaselineCreateRequest,
+  type BaselineCreateResult,
   type ReportActionHandlers,
   type RuntimeProbeResult,
   type ReplayCommandRequest,
@@ -49,6 +54,7 @@ export {
   type NodeReplayDependencies,
 } from "./node-replay.js";
 export { defaultOutputDirectory } from "./product-output.js";
+export { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
 export {
   androidPreflight,
   checkApkCompatibility,

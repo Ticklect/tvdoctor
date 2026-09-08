@@ -33,6 +33,7 @@ import {
   inspectApk,
   scanAndroidApk,
 } from "./android-product.js";
+import { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
 
 async function detectWebsiteStartup(target: string): Promise<WebsiteStartupDetection> {
   const driver = new PlaywrightWebDriver();
@@ -308,6 +309,8 @@ export function createNodeCliOperations(
     androidPreflight: () => androidPreflight(),
     inspectApk,
     scanAndroidApk,
+    createBaseline: createBaselineFromFiles,
+    compareBaseline: compareBaselineFromFiles,
     async replayIssue(request) {
       return await replayIssue(request, createDriver, createAndroidDriver);
     },

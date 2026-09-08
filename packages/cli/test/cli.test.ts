@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 
 import {
+  BASELINE_HELP_TEXT,
   CI_HELP_TEXT,
   CLI_VERSION,
   DOCTOR_HELP_TEXT,
@@ -193,6 +194,70 @@ describe("TVDoctor CLI", () => {
       stderr: "",
       stdout: `${CI_HELP_TEXT}\n`,
     });
+  });
+
+  it.each<readonly [readonly string[]]>([
+    [["baseline", "--help"]],
+    [["baseline", "-h"]],
+    [["help", "baseline"]],
+  ])("prints baseline-specific help for %j", async (arguments_) => {
+    await expect(captureRun(arguments_)).resolves.toEqual({
+      code: EXIT_CODES.success,
+      stderr: "",
+      stdout: `${BASELINE_HELP_TEXT}\n`,
+    });
+  });
+
+  it("creates a baseline with an inventory beside the report by default", async () => {
+    let stdout = "";
+    let request: import("../src/index.js").BaselineCreateRequest | undefined;
+    const code = await runCli([
+      "baseline", "create", "--report", join("scan", "report.json"), "--output", "baseline.json",
+    ], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: (text) => { stdout += text; }, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        createBaseline: async (value) => {
+          request = value;
+          return { issueCount: 4, outputPath: "baseline.json" };
+        },
+      },
+    });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(request).toEqual({
+      reportPath: join("scan", "report.json"),
+      inventoryPath: join("scan", "inventory.json"),
+      outputPath: "baseline.json",
+    });
+    expect(stdout).toContain("Baseline created from 4 findings.");
+  });
+
+  it("prints baseline finding counts and fails only for a regressed comparison", async () => {
+    let stdout = "";
+    const context: CliContext = {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: (text) => { stdout += text; }, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        compareBaseline: async () => ({
+          status: "regressed",
+          shouldFail: true,
+          newIssues: 2,
+          resolvedIssues: 1,
+          unchangedIssues: 4,
+          structuralRegressions: 1,
+          blockers: [],
+          outputPath: "comparison.json",
+        }),
+      },
+    };
+    const code = await runCli([
+      "baseline", "compare", "--baseline", "baseline.json", "--report", join("scan", "report.json"),
+    ], context);
+    expect(code).toBe(EXIT_CODES.environmentFailure);
+    expect(stdout).toContain("2 new, 1 resolved, 4 unchanged findings.");
+    expect(stdout).toContain("1 structural or latency regressions.");
   });
 
   it("requires an explicit CI failure policy", async () => {

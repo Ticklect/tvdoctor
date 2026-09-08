@@ -13,9 +13,8 @@ and the required `fail-on` input. The action appends the summary to the job,
 uploads the report bundle, and exposes `report` and `junit` outputs.
 
 `@tvdoctor/baseline` compares one complete semantic audit with a compatible
-complete current audit. It is an Experimental library surface with a controlled
-real-Chromium lifecycle proof and earlier successful hosted CI runs. It is not a
-standalone baseline CLI workflow.
+complete current audit. The same fail-closed comparison is available through
+the Experimental `tvdoctor baseline` CLI.
 
 ## Baseline contents
 
@@ -33,6 +32,19 @@ It does not use traversal-order IDs as semantic identity and does not copy
 screenshots or report prose into the comparison model.
 
 ## Create and compare
+
+For normal use:
+
+```sh
+tvdoctor baseline create --report tvdoctor-report/report.json --output tvdoctor-baseline.json
+tvdoctor baseline compare --baseline tvdoctor-baseline.json --report current-report/report.json
+```
+
+The CLI finds `inventory.json` beside each report by default, refuses to
+overwrite an existing baseline or comparison, writes the full versioned JSON,
+and prints new, resolved, and unchanged finding counts.
+
+For library integrations:
 
 ```ts
 import {
