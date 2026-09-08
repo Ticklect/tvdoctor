@@ -254,6 +254,13 @@ async function main() {
       throw new Error("The installed CLI setup help is incomplete.");
     }
 
+    const ciHelp = runNpx(["--no-install", "tvdoctor", "ci", "--help"], {
+      cwd: consumerDirectory,
+    });
+    if (!ciHelp.stdout.includes("--fail-on LEVEL") || !ciHelp.stdout.includes("junit.xml")) {
+      throw new Error("The installed CLI CI help is incomplete.");
+    }
+
     const testHelp = runNpx(["--no-install", "tvdoctor", "test", "--help"], { cwd: consumerDirectory });
     if (!testHelp.stdout.includes("--apk PATH") || !testHelp.stdout.includes("--device SERIAL")) {
       throw new Error("The installed CLI Android test help is incomplete.");
@@ -305,7 +312,7 @@ async function main() {
       process.stdout.write(`installed Android path and replay: PASS (${android.stdout.match(/Result:\s+([^\r\n]+)/u)?.[1] ?? "report written"})\n`);
     }
 
-    process.stdout.write("installed CLI start, test, replay, setup, --help, --version, and doctor: PASS\n");
+    process.stdout.write("installed CLI start, test, replay, setup, ci, --help, --version, and doctor: PASS\n");
     process.stdout.write("package smoke: PASS\n");
   } finally {
     await rm(resolvedTemporaryRoot, { recursive: true, force: true });

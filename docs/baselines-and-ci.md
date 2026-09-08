@@ -1,5 +1,17 @@
 # Baselines and CI
 
+## Ready-made audit output
+
+`tvdoctor ci URL --fail-on LEVEL` runs the normal bounded audit and adds two
+files under `exports/`: `ci-summary.md` for pull-request/job summaries and
+`junit.xml` for CI test-result viewers. The required policy level is `any`,
+`critical`, `high`, `medium`, `low`, `info`, or `never`. A partial or failed run
+is always non-successful, even with `--fail-on never`.
+
+GitHub Actions users can run `Ticklect/tvdoctor@v0.1.0` with `target`, `mode`,
+and the required `fail-on` input. The action appends the summary to the job,
+uploads the report bundle, and exposes `report` and `junit` outputs.
+
 `@tvdoctor/baseline` compares one complete semantic audit with a compatible
 complete current audit. It is an Experimental library surface with a controlled
 real-Chromium lifecycle proof and earlier successful hosted CI runs. It is not a

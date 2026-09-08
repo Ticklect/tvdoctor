@@ -1,4 +1,5 @@
 export {
+  CI_HELP_TEXT,
   DOCTOR_HELP_TEXT,
   EXIT_CODES,
   HELP_TEXT,

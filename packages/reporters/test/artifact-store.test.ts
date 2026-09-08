@@ -279,6 +279,20 @@ describe("secure artifact storage", () => {
     expect(parsed.schemaVersion).toBe("tvdoctor.report/v1");
   });
 
+  it("writes CI exports only when an explicit failure policy is supplied", async () => {
+    const root = await temporaryDirectory("ci-bundle");
+    const store = await createArtifactStore(root);
+    const report = await materialiseSampleReport(store);
+    const bundle = await writeReportBundle(store, report, { ci: { failOn: "high" } });
+
+    expect(bundle.ciSummaryMarkdown?.relativePath).toBe("exports/ci-summary.md");
+    expect(bundle.junitXml?.relativePath).toBe("exports/junit.xml");
+    expect(await readFile(bundle.ciSummaryMarkdown?.absolutePath ?? "", "utf8"))
+      .toContain("Policy: fail on **high**");
+    expect(await readFile(bundle.junitXml?.absolutePath ?? "", "utf8"))
+      .toContain('<testsuite name="TVDoctor"');
+  });
+
   it("publishes non-overwrite files with atomic no-clobber semantics", async () => {
     const root = await temporaryDirectory("concurrent-no-clobber");
     const first = await createArtifactStore(root);

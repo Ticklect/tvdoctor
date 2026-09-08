@@ -100,7 +100,11 @@ export async function writeFailedRunReport(
     artifacts: [],
     replays: [],
   });
-  const bundle = await writeReportBundle(store, report);
+  const bundle = await writeReportBundle(
+    store,
+    report,
+    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+  );
   return {
     status: "failed",
     issueCount: 0,
@@ -173,7 +177,11 @@ export async function writeSetupNotStartedReport(
     artifacts: [],
     replays: [],
   });
-  const bundle = await writeReportBundle(store, report);
+  const bundle = await writeReportBundle(
+    store,
+    report,
+    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+  );
   const changedNothing = startup.status === "setup-blocker";
   return {
     status: startup.status === "setup-blocker" ? "partial" : "failed",

@@ -1,0 +1,77 @@
+name: TVDoctor web audit
+description: Run a bounded TV web-app audit with an explicit failure policy, JUnit, and a GitHub job summary.
+branding:
+  icon: tv
+  color: blue
+inputs:
+  target:
+    description: Absolute HTTP(S) URL that the runner can reach.
+    required: true
+  fail-on:
+    description: "Finding threshold: any, critical, high, medium, low, info, or never."
+    required: true
+  mode:
+    description: "Audit mode: quick or deep."
+    default: quick
+  pack:
+    description: One test pack, or all.
+    default: all
+outputs:
+  report:
+    description: Path to the HTML report.
+    value: ${{ steps.paths.outputs.report }}
+  junit:
+    description: Path to the JUnit XML export.
+    value: ${{ steps.paths.outputs.junit }}
+runs:
+  using: composite
+  steps:
+    - name: Configure Node.js 24
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: "24"
+        cache: npm
+        cache-dependency-path: ${{ github.action_path }}/package-lock.json
+    - name: Install TVDoctor dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+    - name: Build TVDoctor
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm run build:packages
+    - name: Install Chromium
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npx playwright install chromium --with-deps
+    - name: Resolve output paths
+      id: paths
+      shell: bash
+      run: |
+        echo "report=${GITHUB_WORKSPACE}/tvdoctor-report/report.html" >> "$GITHUB_OUTPUT"
+        echo "junit=${GITHUB_WORKSPACE}/tvdoctor-report/exports/junit.xml" >> "$GITHUB_OUTPUT"
+    - name: Run TVDoctor
+      shell: bash
+      env:
+        TVDOCTOR_TARGET: ${{ inputs.target }}
+        TVDOCTOR_FAIL_ON: ${{ inputs.fail-on }}
+        TVDOCTOR_MODE: ${{ inputs.mode }}
+        TVDOCTOR_PACK: ${{ inputs.pack }}
+      run: >-
+        node "${GITHUB_ACTION_PATH}/packages/cli/dist/bin.js" ci "$TVDOCTOR_TARGET"
+        --fail-on "$TVDOCTOR_FAIL_ON" --mode "$TVDOCTOR_MODE" --pack "$TVDOCTOR_PACK"
+        --output "${GITHUB_WORKSPACE}/tvdoctor-report"
+    - name: Add TVDoctor job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        summary="${GITHUB_WORKSPACE}/tvdoctor-report/exports/ci-summary.md"
+        if [[ -f "$summary" ]]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+    - name: Upload TVDoctor report
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: tvdoctor-report-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ github.workspace }}/tvdoctor-report/
+        if-no-files-found: warn
+        retention-days: 14

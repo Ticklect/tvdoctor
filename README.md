@@ -275,6 +275,25 @@ tokens, session IDs, or personal data in that URL.
 
 ## CI and release checks
 
+Use the bundled GitHub Action after starting your application in the workflow:
+
+```yaml
+- name: Audit the TV interface
+  uses: Ticklect/tvdoctor@v0.1.0
+  with:
+    target: http://127.0.0.1:3000
+    mode: quick
+    fail-on: high
+```
+
+The action uploads the complete report, adds a concise job summary, exposes the
+JUnit path, and fails on findings at or above the chosen threshold. Partial and
+failed audits always remain non-successful. The equivalent local command is:
+
+```sh
+tvdoctor ci http://127.0.0.1:3000 --mode quick --fail-on high
+```
+
 The repository workflow uses Node 24, installs Playwright Chromium, runs build,
 lint, typecheck, unit and real-browser integration gates, executes the exact CLI
 M7 integration, performs clean tarball/consumer smoke testing, and uploads useful

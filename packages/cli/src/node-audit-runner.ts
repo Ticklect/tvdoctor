@@ -358,7 +358,11 @@ export async function runAudit(
     artifacts: [...globalArtifacts, ...captured.flatMap((entry) => entry.artifacts)],
     replays: captured.flatMap((entry) => entry.replay === null ? [] : [entry.replay]),
   });
-  const bundle = await writeReportBundle(store, report);
+  const bundle = await writeReportBundle(
+    store,
+    report,
+    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+  );
   const evidenceFailureCount = captured.filter((entry) => entry.failed).length;
   return {
     status: report.run.status,

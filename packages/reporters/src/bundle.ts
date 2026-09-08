@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import type { TVDoctorReportV1 } from "@tvdoctor/protocol";
 import type { ArtifactStore } from "./artifact-store.js";
 import { renderAiCoderReport } from "./render-ai.js";
+import { renderCiSummary, renderJunitReport, type CiFailureThreshold } from "./render-ci.js";
 import { renderReportHtml } from "./render-html.js";
 import { renderReportMarkdown } from "./render-markdown.js";
 import { renderReportJson, sanitiseReportForOutput } from "./report-builder.js";
@@ -20,6 +21,12 @@ export interface ReportBundle {
   readonly reportHtml: ReportBundleOutput;
   readonly reportMarkdown: ReportBundleOutput;
   readonly aiReportMarkdown: ReportBundleOutput;
+  readonly ciSummaryMarkdown?: ReportBundleOutput;
+  readonly junitXml?: ReportBundleOutput;
+}
+
+export interface ReportBundleOptions {
+  readonly ci?: { readonly failOn: CiFailureThreshold };
 }
 
 interface PendingBundleFile {
@@ -47,6 +54,7 @@ async function writeOutput(store: ArtifactStore, file: PendingBundleFile): Promi
 export async function writeReportBundle(
   store: ArtifactStore,
   report: TVDoctorReportV1,
+  options: ReportBundleOptions = {},
 ): Promise<ReportBundle> {
   const safe = sanitiseReportForOutput(report);
   // Do not publish a report which advertises missing, redirected, or mutated
@@ -71,6 +79,16 @@ export async function writeReportBundle(
     mediaType: "text/markdown",
     content: renderAiCoderReport(safe),
   });
+  const ciSummary = options.ci === undefined ? undefined : await writeOutput(store, {
+    relativePath: "exports/ci-summary.md",
+    mediaType: "text/markdown",
+    content: renderCiSummary(safe, options.ci.failOn),
+  });
+  const junit = options.ci === undefined ? undefined : await writeOutput(store, {
+    relativePath: "exports/junit.xml",
+    mediaType: "application/xml",
+    content: renderJunitReport(safe, options.ci.failOn),
+  });
   const json = await writeOutput(store, {
     relativePath: "report.json",
     mediaType: "application/json",
@@ -81,5 +99,7 @@ export async function writeReportBundle(
     reportHtml: html,
     reportMarkdown: markdown,
     aiReportMarkdown: aiMarkdown,
+    ...(ciSummary === undefined ? {} : { ciSummaryMarkdown: ciSummary }),
+    ...(junit === undefined ? {} : { junitXml: junit }),
   };
 }

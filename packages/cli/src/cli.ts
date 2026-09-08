@@ -24,6 +24,11 @@ import type {
 } from "./android-product.js";
 import { CLI_VERSION } from "./version.js";
 import { REMOTE_KEYS, type RemoteKey } from "@tvdoctor/protocol";
+import {
+  CI_FAILURE_THRESHOLDS,
+  issueViolatesPolicy,
+  type CiFailureThreshold,
+} from "@tvdoctor/reporters";
 
 export const EXIT_CODES = {
   success: 0,
@@ -61,6 +66,7 @@ export interface TestCommandRequest {
   readonly startupActions?: readonly RemoteKey[];
   readonly startupDecision?: "reject" | "accept";
   readonly maxDurationMs?: number;
+  readonly ciFailOn?: CiFailureThreshold;
   readonly signal?: AbortSignal;
 }
 
@@ -152,6 +158,7 @@ Usage:
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
   tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
+  tvdoctor ci URL --fail-on LEVEL [test options]
   tvdoctor setup
   tvdoctor doctor
   tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
@@ -163,6 +170,7 @@ Usage:
 Commands:
   start     Open the guided product flow.
   test      Run a bounded local audit and write a report bundle.
+  ci        Run an audit with an explicit failure policy and CI exports.
   setup     Install the Chromium runtime matched to this TVDoctor version.
   doctor    Diagnose the installed runtime and browser environment.
   replay    Re-run one deterministic issue from a V1 report.
@@ -201,6 +209,13 @@ Android CI options:
   --adb PATH      Optional explicit adb executable path.
   --mode MODE     quick or deep. Defaults to quick.
   --output PATH   Report bundle directory.`;
+
+export const CI_HELP_TEXT = `Usage:
+  tvdoctor ci URL --fail-on LEVEL [test options]
+
+Run the same bounded web audit as tvdoctor test and write exports/ci-summary.md
+plus exports/junit.xml. LEVEL is any, critical, high, medium, low, info, or never.
+A partial or failed audit remains non-successful regardless of the finding policy.`;
 
 export const DOCTOR_HELP_TEXT = `Usage: tvdoctor doctor
 
@@ -374,6 +389,7 @@ export function safeTarget(value: string): string | null {
 
 function parseTestArguments(
   argumentsAfterCommand: readonly string[],
+  ciMode = false,
 ): TestCommandRequest | string {
   let target: string | undefined;
   const packs: TestPackName[] = [];
@@ -382,11 +398,14 @@ function parseTestArguments(
   let searchQuery = "N";
   let startupActions: RemoteKey[] | undefined;
   let maxDurationMs: number | undefined;
+  let ciFailOn: CiFailureThreshold | undefined;
 
   for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
     const argument = argumentsAfterCommand[index];
     if (argument === undefined) continue;
-    if (["--pack", "--mode", "--output", "--query", "--startup-actions", "--max-duration-ms"].includes(argument)) {
+    const options = ["--pack", "--mode", "--output", "--query", "--startup-actions", "--max-duration-ms"];
+    if (ciMode) options.push("--fail-on");
+    if (options.includes(argument)) {
       const value = argumentsAfterCommand[index + 1];
       if (value === undefined || value.startsWith("--")) return `${argument} requires a value`;
       if (argument === "--pack") {
@@ -410,6 +429,11 @@ function parseTestArguments(
           return "--max-duration-ms must be a positive safe integer no greater than 2147483647";
         }
         maxDurationMs = parsed;
+      } else if (argument === "--fail-on") {
+        if (!(CI_FAILURE_THRESHOLDS as readonly string[]).includes(value)) {
+          return "--fail-on must be any, critical, high, medium, low, info, or never";
+        }
+        ciFailOn = value as CiFailureThreshold;
       } else {
         const safe = sanitizeTerminalText(value, { maximumLength: 64 });
         if (safe.length === 0 || safe !== value.trim()) {
@@ -426,6 +450,7 @@ function parseTestArguments(
   }
 
   if (target === undefined) return "test requires a URL";
+  if (ciMode && ciFailOn === undefined) return "ci requires --fail-on LEVEL";
   const parsedTarget = safeTarget(target);
   if (parsedTarget === null) return "test target must be an absolute HTTP(S) URL without credentials";
   const selected = packs.length === 0 ? ["all" as const] : [...new Set(packs)];
@@ -438,6 +463,7 @@ function parseTestArguments(
     searchQuery,
     ...(startupActions === undefined ? {} : { startupActions }),
     ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
+    ...(ciFailOn === undefined ? {} : { ciFailOn }),
   };
 }
 
@@ -553,6 +579,30 @@ async function runTest(
   }
   const request = parseTestArguments(argumentsAfterCommand);
   if (typeof request === "string") return usageError(context, request);
+  return await runWebTestRequest(request, context);
+}
+
+async function runCi(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  if (argumentsAfterCommand.length === 1
+    && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")) {
+    writeBlock(context.io.writeStdout, CI_HELP_TEXT);
+    return EXIT_CODES.success;
+  }
+  if (argumentsAfterCommand.includes("--apk")) {
+    return usageError(context, "ci currently accepts web URLs; use tvdoctor test for Android APKs");
+  }
+  const request = parseTestArguments(argumentsAfterCommand, true);
+  if (typeof request === "string") return usageError(context, request);
+  return await runWebTestRequest(request, context);
+}
+
+async function runWebTestRequest(
+  request: TestCommandRequest,
+  context: CliContext,
+): Promise<number> {
   if (context.operations?.testTarget === undefined) {
     writeLine(context.io.writeStderr, "Web audit is unavailable in this CLI host.");
     return EXIT_CODES.executionError;
@@ -601,6 +651,10 @@ async function runTest(
   if (result.reportPath !== null) {
     const bundleDirectory = dirname(result.reportPath);
     writeLine(context.io.writeStdout, `Open report: ${join(bundleDirectory, "report.html")}`, 1_024);
+    if (request.ciFailOn !== undefined) {
+      writeLine(context.io.writeStdout, `CI summary: ${join(bundleDirectory, "exports", "ci-summary.md")}`, 1_024);
+      writeLine(context.io.writeStdout, `JUnit: ${join(bundleDirectory, "exports", "junit.xml")}`, 1_024);
+    }
   }
   if (result.status === "failed") return EXIT_CODES.executionError;
   if (result.status === "partial") {
@@ -610,7 +664,13 @@ async function runTest(
     );
     return EXIT_CODES.inconclusive;
   }
-  if (result.issueCount > 0) {
+  const violatesPolicy = request.ciFailOn === undefined
+    ? result.issueCount > 0
+    : request.ciFailOn === "any"
+      ? result.issueCount > 0
+      : result.highestSeverity !== null
+        && issueViolatesPolicy(result.highestSeverity, request.ciFailOn);
+  if (violatesPolicy) {
     return EXIT_CODES.environmentFailure;
   }
   return EXIT_CODES.success;
@@ -791,6 +851,7 @@ export async function runCli(
       argumentsAfterCommand.length === 1 &&
       (argumentsAfterCommand[0] === "test" ||
         argumentsAfterCommand[0] === "doctor" ||
+        argumentsAfterCommand[0] === "ci" ||
         argumentsAfterCommand[0] === "setup" ||
         argumentsAfterCommand[0] === "replay")
     ) {
@@ -798,6 +859,8 @@ export async function runCli(
         context.io.writeStdout,
         argumentsAfterCommand[0] === "test"
           ? TEST_HELP_TEXT
+          : argumentsAfterCommand[0] === "ci"
+            ? CI_HELP_TEXT
           : argumentsAfterCommand[0] === "doctor"
             ? DOCTOR_HELP_TEXT
             : argumentsAfterCommand[0] === "setup"
@@ -827,6 +890,10 @@ export async function runCli(
 
   if (command === "test") {
     return await runTest(argumentsAfterCommand, context);
+  }
+
+  if (command === "ci") {
+    return await runCi(argumentsAfterCommand, context);
   }
 
   if (command === "replay") {

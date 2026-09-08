@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 
 import {
+  CI_HELP_TEXT,
   CLI_VERSION,
   DOCTOR_HELP_TEXT,
   EXIT_CODES,
@@ -180,6 +181,35 @@ describe("TVDoctor CLI", () => {
       stderr: "",
       stdout: `${SETUP_HELP_TEXT}\n`,
     });
+  });
+
+  it.each<readonly [readonly string[]]>([
+    [["ci", "--help"]],
+    [["ci", "-h"]],
+    [["help", "ci"]],
+  ])("prints CI-specific help for %j", async (arguments_) => {
+    await expect(captureRun(arguments_)).resolves.toEqual({
+      code: EXIT_CODES.success,
+      stderr: "",
+      stdout: `${CI_HELP_TEXT}\n`,
+    });
+  });
+
+  it("requires an explicit CI failure policy", async () => {
+    await expect(captureRun(["ci", "https://example.test"])).resolves.toMatchObject({
+      code: EXIT_CODES.usageError,
+      stderr: expect.stringContaining("ci requires --fail-on LEVEL"),
+    });
+  });
+
+  it("applies the CI severity policy and identifies both CI exports", async () => {
+    const passing = await captureRun(["ci", "https://example.test", "--fail-on", "critical"]);
+    expect(passing.code).toBe(EXIT_CODES.success);
+    expect(passing.stdout).toContain(`CI summary: ${join("tvdoctor-report", "exports", "ci-summary.md")}\n`);
+    expect(passing.stdout).toContain(`JUnit: ${join("tvdoctor-report", "exports", "junit.xml")}\n`);
+
+    const failing = await captureRun(["ci", "https://example.test", "--fail-on", "high"]);
+    expect(failing.code).toBe(EXIT_CODES.environmentFailure);
   });
 
   it("installs and verifies the matched Chromium runtime", async () => {

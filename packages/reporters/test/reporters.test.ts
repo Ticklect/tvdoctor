@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildTVDoctorReportV1,
   renderAiCoderReport,
+  renderCiSummary,
+  renderJunitReport,
   renderReportHtml,
   renderReportJson,
   renderReportMarkdown,
@@ -16,6 +18,47 @@ function sha256(value: string): string {
 }
 
 describe("canonical report construction and rendering", () => {
+  it("renders deterministic policy-aware CI summary and JUnit output", () => {
+    const input = sampleReportInput();
+    const issue = input.issues[0];
+    if (issue === undefined) throw new Error("Expected sample issue.");
+    const report = buildTVDoctorReportV1({
+      ...input,
+      issues: [{
+        ...issue,
+        title: "Broken <focus> & controls\nfor TV",
+        observed: "Focus moved to <body> & stopped.",
+      }],
+    });
+
+    const passing = renderJunitReport(report, "critical");
+    const failing = renderJunitReport(report, "high");
+    expect(passing).toContain('tests="1" failures="0" errors="0"');
+    expect(passing).toContain("<system-out>HIGH: Focus moved to &lt;body&gt; &amp; stopped.</system-out>");
+    expect(failing).toContain('tests="1" failures="1" errors="0"');
+    expect(failing).toContain("Broken &lt;focus&gt; &amp; controls for TV");
+    expect(renderJunitReport(report, "high")).toBe(failing);
+
+    const summary = renderCiSummary(report, "high");
+    expect(summary).toContain("# TVDoctor CI: FAILED");
+    expect(summary).toContain("Policy: fail on **high**");
+    expect(summary).toContain(`\`${issue.id}\``);
+    expect(summary).toContain("Broken \\<focus\\> & controls for TV");
+  });
+
+  it("fails JUnit closed when the audit is partial even under a never-fail finding policy", () => {
+    const input = sampleReportInput();
+    const report = buildTVDoctorReportV1({
+      ...input,
+      run: { ...input.run, status: "partial" },
+      issues: [],
+      artifacts: [],
+      replays: [],
+    });
+    expect(renderJunitReport(report, "never")).toContain('tests="2" failures="0" errors="1"');
+    expect(renderCiSummary(report, "never")).toContain("# TVDoctor CI: INCONCLUSIVE");
+  });
+
   it("normalises unordered inputs into one deterministic V1 model", () => {
     const firstInput = sampleReportInput();
     const primaryBase = firstInput.issues[0];
