@@ -277,6 +277,37 @@ describe("TVDoctor CLI", () => {
     expect(failing.code).toBe(EXIT_CODES.environmentFailure);
   });
 
+  it("passes a custom journey to web audit and replay but rejects ambiguous startup preparation", async () => {
+    let testJourney: string | undefined;
+    let replayJourney: string | undefined;
+    const context: CliContext = {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: ignoreOutput, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async (request) => {
+          replayJourney = request.journeyPath;
+          return { status: "fixed", details: [] };
+        },
+        testTarget: async (request) => {
+          testJourney = request.journeyPath;
+          return { status: "completed", issueCount: 0, highestSeverity: null, reportPath: null, details: [] };
+        },
+      },
+    };
+    await expect(runCli(["test", "https://example.test", "--journey", "journey.json"], context))
+      .resolves.toBe(EXIT_CODES.success);
+    await expect(runCli(["replay", "TVDOCTOR-NAV-TEST", "--journey", "journey.json"], context))
+      .resolves.toBe(EXIT_CODES.success);
+    expect(testJourney).toBe("journey.json");
+    expect(replayJourney).toBe("journey.json");
+    await expect(captureRun([
+      "test", "https://example.test", "--journey", "journey.json", "--startup-actions", "SELECT",
+    ])).resolves.toMatchObject({
+      code: EXIT_CODES.usageError,
+      stderr: expect.stringContaining("--journey cannot be combined with --startup-actions"),
+    });
+  });
+
   it("installs and verifies the matched Chromium runtime", async () => {
     const events: string[] = [];
     let stdout = "";

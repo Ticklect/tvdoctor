@@ -56,6 +56,18 @@ export {
 export { defaultOutputDirectory } from "./product-output.js";
 export { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
 export {
+  JOURNEY_HASH_ENVIRONMENT_KEY,
+  JOURNEY_NAME_ENVIRONMENT_KEY,
+  JOURNEY_SCHEMA_VERSION_V1,
+  MAX_JOURNEY_ACTIONS,
+  executeJourney,
+  loadJourney,
+  parseJourney,
+  type JourneyExecutionResult,
+  type JourneyStep,
+  type JourneyV1,
+} from "./journey.js";
+export {
   androidPreflight,
   checkApkCompatibility,
   inspectApk,

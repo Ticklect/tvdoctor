@@ -7,6 +7,7 @@ import type {
 import type {
   PlaywrightWebDriver,
 } from "@tvdoctor/driver-web";
+import type { BrowserContext } from "playwright";
 import type {
   StreamingPackBudgets,
   StreamingPackResult,
@@ -138,6 +139,9 @@ export interface NavigationInventory {
   }[];
 }
 
+export type WebStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
+
 export interface NodeAuditDependencies {
   readonly createDriver?: () => PlaywrightWebDriver;
+  readonly createSessionDriver?: (storageState: WebStorageState) => PlaywrightWebDriver;
 }

@@ -33,7 +33,9 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 - Heuristic focus visibility is not deterministic visual truth. Theme,
   animation, HDR, device scaling, and platform rendering can change perception.
 - Packs avoid destructive, account, payment, and subscription actions. Those
-  journeys are not audited automatically.
+  journeys are not discovered automatically. A caller can supply a bounded
+  [custom web journey](custom-web-journeys.md), but must maintain that explicit
+  preparation path and its dedicated test account.
 - Controlled fixture recall is not a benchmark for arbitrary real applications.
 
 ## Web

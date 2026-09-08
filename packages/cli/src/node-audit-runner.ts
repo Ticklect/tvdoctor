@@ -35,6 +35,7 @@ import {
   STREAMING_BUDGETS,
   WEB_BUDGETS,
   type AuditRunProducts,
+  type WebStorageState,
 } from "./node-audit-contracts.js";
 import {
   captureIssue,
@@ -68,6 +69,14 @@ import {
   createWebAuditHooks,
 } from "./web-audit-hooks.js";
 import { CLI_VERSION } from "./version.js";
+import {
+  executeJourney,
+  JOURNEY_HASH_ENVIRONMENT_KEY,
+  JOURNEY_NAME_ENVIRONMENT_KEY,
+  loadJourney,
+  type JourneyExecutionResult,
+  type JourneyV1,
+} from "./journey.js";
 
 function asJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -76,6 +85,9 @@ function asJson(value: unknown): JsonValue {
 export async function runAudit(
   request: TestCommandRequest,
   createDriver: () => PlaywrightWebDriver,
+  createSessionDriver: (storageState: WebStorageState) => PlaywrightWebDriver = () => {
+    throw new Error("Prepared-session driver creation is unavailable.");
+  },
 ): Promise<TestCommandResult> {
   const store = await reserveAuditOutput(request.outputPath);
   const startedAt = new Date();
@@ -95,10 +107,21 @@ export async function runAudit(
   let streaming: StreamingPackResult | null = null;
   let web: WebPackResult | null = null;
   let runFailure: { readonly error: unknown } | null = null;
+  let journey: JourneyV1 | null = null;
+  let journeyExecution: JourneyExecutionResult | null = null;
+  let sessionState: WebStorageState | null = null;
+  const createIsolatedDriver = (): PlaywrightWebDriver => {
+    const preparedState = sessionState;
+    return preparedState === null ? createDriver() : createSessionDriver(preparedState);
+  };
   try {
     await driver.launch({ id: "cli-web-audit", launchUri: request.target });
+    if (request.journeyPath !== undefined) {
+      journey = await loadJourney(request.journeyPath);
+      journeyExecution = await executeJourney(driver, journey, process.env, request.signal);
+    }
     capabilities = await driver.capabilities();
-    if (packs.has("navigation")) {
+    if (packs.has("navigation") || journey !== null) {
       const preparationStartedAt = performance.now();
       navigationStartup = await prepareStartup(driver, {
         policy: request.startupActions === undefined
@@ -133,6 +156,9 @@ export async function runAudit(
             ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
             : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
         });
+      }
+      if (navigationStartup.status === "ready" && journey !== null) {
+        sessionState = await driver.getPage().context().storageState();
       }
     }
     if (packs.has("navigation")
@@ -197,7 +223,7 @@ export async function runAudit(
       ];
       navigationDiagnosticsMs = Math.max(0, performance.now() - diagnosticsStartedAt);
     }
-    if (packs.has("navigation") && navigationStartup?.status !== "ready") {
+    if ((packs.has("navigation") || journey !== null) && navigationStartup?.status !== "ready") {
       navigationFindings = startupFindings;
       if (navigationStartup !== null) {
         return await writeSetupNotStartedReport(
@@ -213,7 +239,10 @@ export async function runAudit(
       streaming = await runStreamingPack(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
         resetStrategy: "reload",
-        pointerProbe: createStreamingAuditPointerProbe(request.target, createDriver),
+        ...(navigationStartup?.restoreToPreparedState === undefined
+          ? {}
+          : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
+        pointerProbe: createStreamingAuditPointerProbe(request.target, createIsolatedDriver),
       });
     }
     if (request.signal?.aborted !== true && webStages.length > 0) {
@@ -222,12 +251,15 @@ export async function runAudit(
         stages: webStages,
         budgets: WEB_BUDGETS[request.mode],
         resetStrategy: "reload",
+        ...(navigationStartup?.restoreToPreparedState === undefined
+          ? {}
+          : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
         searchQuery: request.searchQuery,
         ...(playerSettingsSequence === undefined
           ? {}
           : { playerSettingsSequence }),
         ...(webStages.includes("performance") ? { menuResponseThresholdMs: 1_000 } : {}),
-        hooks: createWebAuditHooks({ target: request.target, driver, createDriver }),
+        hooks: createWebAuditHooks({ target: request.target, driver, createDriver: createIsolatedDriver }),
       });
     }
   } catch (error) {
@@ -262,7 +294,7 @@ export async function runAudit(
     request.target,
     products,
     uniqueIssues,
-    createDriver,
+    createIsolatedDriver,
     captureIssue,
     Date.now,
     request.signal,
@@ -282,6 +314,15 @@ export async function runAudit(
       blockers: navigationStartup.blockers,
       controls: navigationStartup.controls,
       steps: navigationStartup.steps,
+    },
+    journey: journey === null ? null : {
+      schemaVersion: journey.schemaVersion,
+      name: journey.name,
+      sha256: journey.sha256,
+      steps: journey.steps.map((step) => step.action === "type-from-env"
+        ? { action: step.action, source: "environment" }
+        : step),
+      execution: journeyExecution,
     },
     timings: {
       navigationExplorationMs,
@@ -320,6 +361,10 @@ export async function runAudit(
         browser: "chromium",
         viewport: "1280x720",
         orchestration: "bounded semantic local audit",
+        ...(journey === null ? {} : {
+          [JOURNEY_HASH_ENVIRONMENT_KEY]: journey.sha256,
+          [JOURNEY_NAME_ENVIRONMENT_KEY]: journey.name,
+        }),
         ...(targetRequiresReplayOverride(request.target)
           ? { [REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]: REPLAY_TARGET_OVERRIDE_REQUIRED }
           : {}),
@@ -330,13 +375,15 @@ export async function runAudit(
       focusStatesDiscovered: navigation?.statistics.focusStates
         ?? (streaming?.statistics.uniqueStates ?? 0) + (web?.statistics.uniqueStates ?? 0),
       transitionsTested: navigation?.graph.actions.length ?? 0,
-      actionsSent: (navigation?.statistics.physicalActions ?? 0)
+      actionsSent: (journeyExecution?.actions ?? 0)
+        + (navigation?.statistics.physicalActions ?? 0)
         + (streaming?.statistics.physicalActions ?? 0)
         + (web?.statistics.physicalActions ?? 0),
       capabilitiesObserved: [...capabilities],
       packs: coverage,
       budget: {
-        maxActions: (navigation?.budgets.maxActions ?? 0)
+        maxActions: (journeyExecution?.maxActions ?? 0)
+          + (navigation?.budgets.maxActions ?? 0)
           + (streaming?.budgets.maxActions ?? 0)
           + (web?.budgets.maxActions ?? 0),
         maxStates: (navigation?.budgets.maxStates ?? 0)
@@ -347,7 +394,8 @@ export async function runAudit(
           streaming?.budgets.maxLocalDepth ?? 0,
           web?.budgets.maxLocalDepth ?? 0,
         ),
-        maxDurationMs: (navigation?.budgets.maxDurationMs ?? 0)
+        maxDurationMs: (journeyExecution?.maxDurationMs ?? 0)
+          + (navigation?.budgets.maxDurationMs ?? 0)
           + (streaming?.budgets.maxDurationMs ?? 0)
           + (web?.budgets.maxDurationMs ?? 0),
         maxRepetitiveItems: request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,

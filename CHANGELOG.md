@@ -61,6 +61,8 @@ that `tvdoctor@0.1.0` has been published.
   new, resolved, and unchanged finding counts.
 - a physical Android TV/Fire TV proof runner that rejects emulators and accepts
   only complete bounded reports; hardware evidence remains pending.
+- bounded custom web preparation journeys with environment-only sensitive text,
+  persistent isolated sessions, redacted ledgers, and fingerprint-bound replay.
 
 ### Verification status
 

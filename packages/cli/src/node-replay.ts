@@ -34,6 +34,12 @@ import {
   scanAndroidApk,
 } from "./android-product.js";
 import { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
+import {
+  executeJourney,
+  JOURNEY_HASH_ENVIRONMENT_KEY,
+  loadJourney,
+  type JourneyV1,
+} from "./journey.js";
 
 async function detectWebsiteStartup(target: string): Promise<WebsiteStartupDetection> {
   const driver = new PlaywrightWebDriver();
@@ -206,6 +212,29 @@ async function replayIssue(
     `replay for ${terminalText(issue.id)}`,
   );
   const plan = compileStoredReplay(issue, replay);
+  const expectedJourneyHash = report.target.environment[JOURNEY_HASH_ENVIRONMENT_KEY];
+  let journey: JourneyV1 | null = null;
+  if (expectedJourneyHash !== undefined) {
+    if (request.journeyPath === undefined) {
+      return {
+        status: "inconclusive",
+        details: [
+          "Custom journey REQUIRED",
+          "The original audit used a secret-safe custom journey.",
+          "Run replay again with --journey and the same journey file and environment variables.",
+        ],
+      };
+    }
+    journey = await loadJourney(request.journeyPath);
+    if (journey.sha256 !== expectedJourneyHash) {
+      return {
+        status: "inconclusive",
+        details: ["Custom journey fingerprint MISMATCH", "Replay was not started."],
+      };
+    }
+  } else if (request.journeyPath !== undefined) {
+    throw new TypeError("The report does not declare a custom journey; --journey is not allowed.");
+  }
   if (report.target.platform === "web"
     && report.target.environment[REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]
       === REPLAY_TARGET_OVERRIDE_REQUIRED
@@ -226,6 +255,7 @@ async function replayIssue(
       throw new TypeError("Android replay requires --apk PATH and --device SERIAL.");
     }
     if (request.targetOverride !== undefined) throw new TypeError("--target is valid only for web replay.");
+    if (journey !== null) throw new TypeError("Custom journeys are currently supported only for web replay.");
     androidApk = await inspectApk(request.apkPath);
     const expectedPackage = report.target.environment["package"];
     if (androidApk.packageName === null || (typeof expectedPackage === "string" && androidApk.packageName !== expectedPackage)) {
@@ -257,6 +287,9 @@ async function replayIssue(
         id: `cli-${issue.id}`,
         launchUri: targetUrl(report.target.location, request.targetOverride),
       });
+      if (journey !== null) {
+        await executeJourney(driver as PlaywrightWebDriver, journey, process.env, request.signal);
+      }
     }
     const result = await executeReplay(driver, plan, {
       ...(request.signal === undefined ? {} : { signal: request.signal }),

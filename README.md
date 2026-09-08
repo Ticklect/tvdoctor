@@ -154,6 +154,7 @@ Until publication is verified, use the source-checkout commands above.
 ```text
 tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
 tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
+tvdoctor test URL --journey PATH
 tvdoctor setup
 tvdoctor doctor
 tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
@@ -170,6 +171,7 @@ tvdoctor --help
 | `--output PATH` | New report-bundle directory. Omit it to create a readable collision-safe bundle under `Tests\`. Choose a trusted, writable, non-existing path and do not reuse a bundle directory. |
 | `--query TEXT` | Printable, non-sensitive search text, at most 64 characters. Defaults to `N`. It may be entered into the target and retained as evidence. |
 | `--startup-actions KEY[,KEY...]` | Explicit caller-selected remote keys used only after TVDoctor detects a focused setup wall. Observation-only is the default; TVDoctor never chooses consent. |
+| `--journey PATH` | Run a bounded JSON preparation journey before the audit. Sensitive text can only come from `TVDOCTOR_JOURNEY_*` environment variables. See [Custom web journeys](docs/custom-web-journeys.md). |
 | `--max-duration-ms N` | Advanced navigation safety-ceiling override for CI or exhaustive runs. |
 
 `setup` installs the exact Chromium build required by TVDoctor and verifies that
@@ -177,6 +179,11 @@ it launches. `doctor` checks the declared Node runtime, host, installed Chromium
 and whether the audit host is available. Run it before a long audit.
 
 `version`, `--version`, and `-V` print the installed CLI package version.
+
+If the original audit used a custom journey, replay requires the same
+`--journey PATH`. TVDoctor verifies its SHA-256 fingerprint before constructing
+a browser driver so a different preparation path cannot weaken replay
+correlation.
 
 ### Exit codes
 

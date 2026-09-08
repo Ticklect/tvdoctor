@@ -41,5 +41,10 @@ export function createNodeAuditOperation(
     browserLaunchOptions: { handleSIGINT: false },
     settle: { ambientChurnEscape: true },
   }));
-  return async (request) => runAudit(request, createDriver);
+  const createSessionDriver = dependencies.createSessionDriver ?? ((storageState) => new PlaywrightWebDriver({
+    browserLaunchOptions: { handleSIGINT: false },
+    contextOptions: { storageState },
+    settle: { ambientChurnEscape: true },
+  }));
+  return async (request) => runAudit(request, createDriver, createSessionDriver);
 }

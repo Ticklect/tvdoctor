@@ -67,6 +67,7 @@ export interface TestCommandRequest {
   readonly startupDecision?: "reject" | "accept";
   readonly maxDurationMs?: number;
   readonly ciFailOn?: CiFailureThreshold;
+  readonly journeyPath?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -85,6 +86,7 @@ export interface ReplayCommandRequest {
   readonly apkPath?: string;
   readonly deviceSerial?: string;
   readonly adbPath?: string;
+  readonly journeyPath?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -185,6 +187,7 @@ Usage:
   tvdoctor start
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
+  tvdoctor test URL [--journey PATH]
   tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
   tvdoctor ci URL --fail-on LEVEL [test options]
   tvdoctor baseline create --report PATH [--inventory PATH] [--output PATH]
@@ -233,6 +236,8 @@ Options:
                  detected startup setup screen. Defaults to observation-only.
   --max-duration-ms N
                  Navigation safety-ceiling override for advanced/CI runs.
+  --journey PATH  Safe custom web journey; secret values come only from
+                 TVDOCTOR_JOURNEY_* environment variables.
 
 Android CI options:
   --apk PATH      Local APK to install and test without prompts.
@@ -269,7 +274,8 @@ export const REPLAY_HELP_TEXT = `Usage: tvdoctor replay ISSUE_ID [--report PATH]
 
 Replay one deterministic issue stored in a tvdoctor.report/v1 report. PATH
 defaults to tvdoctor-report/report.json. --target overrides the recorded web URL.
-For Android reports, pass --apk PATH --device SERIAL and optionally --adb PATH.`;
+For Android reports, pass --apk PATH --device SERIAL and optionally --adb PATH.
+For a journey-prepared web report, pass the same --journey PATH.`;
 
 const PORTABLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const TEST_PACK_SET: ReadonlySet<string> = new Set(TEST_PACK_NAMES);
@@ -357,12 +363,13 @@ function parseReplayArguments(
   let apkPath: string | undefined;
   let deviceSerial: string | undefined;
   let adbPath: string | undefined;
+  let journeyPath: string | undefined;
 
   for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
     const argument = argumentsAfterCommand[index];
     if (argument === undefined) continue;
 
-    if (["--report", "--target", "--apk", "--device", "--adb"].includes(argument)) {
+    if (["--report", "--target", "--apk", "--device", "--adb", "--journey"].includes(argument)) {
       const value = argumentsAfterCommand[index + 1];
       if (value === undefined || value.startsWith("--")) {
         return `${argument} requires a value`;
@@ -376,6 +383,8 @@ function parseReplayArguments(
         deviceSerial = value;
       } else if (argument === "--adb") {
         adbPath = value;
+      } else if (argument === "--journey") {
+        journeyPath = value;
       } else {
         const override = safeTarget(value);
         if (override === null) return "--target must be an absolute HTTP(S) URL without credentials";
@@ -404,6 +413,7 @@ function parseReplayArguments(
     ...(apkPath === undefined ? {} : { apkPath }),
     ...(deviceSerial === undefined ? {} : { deviceSerial }),
     ...(adbPath === undefined ? {} : { adbPath }),
+    ...(journeyPath === undefined ? {} : { journeyPath }),
   };
 }
 
@@ -437,11 +447,12 @@ function parseTestArguments(
   let startupActions: RemoteKey[] | undefined;
   let maxDurationMs: number | undefined;
   let ciFailOn: CiFailureThreshold | undefined;
+  let journeyPath: string | undefined;
 
   for (let index = 0; index < argumentsAfterCommand.length; index += 1) {
     const argument = argumentsAfterCommand[index];
     if (argument === undefined) continue;
-    const options = ["--pack", "--mode", "--output", "--query", "--startup-actions", "--max-duration-ms"];
+    const options = ["--pack", "--mode", "--output", "--query", "--startup-actions", "--max-duration-ms", "--journey"];
     if (ciMode) options.push("--fail-on");
     if (options.includes(argument)) {
       const value = argumentsAfterCommand[index + 1];
@@ -472,6 +483,8 @@ function parseTestArguments(
           return "--fail-on must be any, critical, high, medium, low, info, or never";
         }
         ciFailOn = value as CiFailureThreshold;
+      } else if (argument === "--journey") {
+        journeyPath = value;
       } else {
         const safe = sanitizeTerminalText(value, { maximumLength: 64 });
         if (safe.length === 0 || safe !== value.trim()) {
@@ -488,6 +501,9 @@ function parseTestArguments(
   }
 
   if (target === undefined) return "test requires a URL";
+  if (journeyPath !== undefined && startupActions !== undefined) {
+    return "--journey cannot be combined with --startup-actions";
+  }
   if (ciMode && ciFailOn === undefined) return "ci requires --fail-on LEVEL";
   const parsedTarget = safeTarget(target);
   if (parsedTarget === null) return "test target must be an absolute HTTP(S) URL without credentials";
@@ -502,6 +518,7 @@ function parseTestArguments(
     ...(startupActions === undefined ? {} : { startupActions }),
     ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
     ...(ciFailOn === undefined ? {} : { ciFailOn }),
+    ...(journeyPath === undefined ? {} : { journeyPath }),
   };
 }
 

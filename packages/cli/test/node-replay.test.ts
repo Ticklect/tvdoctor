@@ -19,6 +19,7 @@ import {
   REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
   REPLAY_TARGET_OVERRIDE_REQUIRED,
 } from "../src/node-audit.js";
+import { JOURNEY_HASH_ENVIRONMENT_KEY, parseJourney } from "../src/journey.js";
 
 const ISSUE_ID = "TVDOCTOR-NAV-TEST000000000000000000000001";
 
@@ -156,6 +157,45 @@ async function writeReport(value: unknown): Promise<string> {
 }
 
 describe("Node replay operation", () => {
+  it("requires the exact correlated journey before constructing a replay driver", async () => {
+    const expectedJourney = parseJourney({
+      schemaVersion: "tvdoctor.journey/v1",
+      name: "Expected login",
+      steps: [{ action: "press", key: "SELECT" }],
+    });
+    const differentJourney = {
+      schemaVersion: "tvdoctor.journey/v1",
+      name: "Different login",
+      steps: [{ action: "press", key: "RIGHT" }],
+    };
+    const source = report();
+    const reportPath = await writeReport({
+      ...source,
+      target: {
+        ...source.target,
+        environment: {
+          [JOURNEY_HASH_ENVIRONMENT_KEY]: expectedJourney.sha256,
+        },
+      },
+    });
+    const journeyDirectory = await mkdtemp(join(tmpdir(), "tvdoctor replay journey "));
+    const journeyPath = join(journeyDirectory, "journey.json");
+    await writeFile(journeyPath, JSON.stringify(differentJourney));
+    let constructions = 0;
+    const operation = createNodeCliOperations({
+      createDriver: () => {
+        constructions += 1;
+        return new FakeReplayDriver();
+      },
+    });
+
+    await expect(operation.replayIssue({ issueId: ISSUE_ID, reportPath }))
+      .resolves.toMatchObject({ status: "inconclusive", details: expect.arrayContaining(["Custom journey REQUIRED"]) });
+    await expect(operation.replayIssue({ issueId: ISSUE_ID, reportPath, journeyPath }))
+      .resolves.toMatchObject({ status: "inconclusive", details: expect.arrayContaining(["Custom journey fingerprint MISMATCH"]) });
+    expect(constructions).toBe(0);
+  });
+
   it("returns inconclusive when a redacted route requires an explicit target override", async () => {
     const source = report();
     const path = await writeReport({

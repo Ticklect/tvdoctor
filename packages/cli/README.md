@@ -34,6 +34,17 @@ options to select `navigation`, `streaming`, `search`, `settings`,
 `accessibility`, `layout`, `performance`, or `crashes`; the default is `all`.
 Run `npx tvdoctor test --help` for the complete option reference.
 
+Targets that need a deterministic sign-in or profile-selection path can use a
+bounded journey file:
+
+```sh
+TVDOCTOR_JOURNEY_PASSWORD='test-account-password' npx tvdoctor test https://example.test/app --journey journey.json
+```
+
+Journey files cannot contain typed values. They may only name scoped
+`TVDOCTOR_JOURNEY_*` environment variables. A replay from that report requires
+the same journey file and verifies its fingerprint before browser startup.
+
 The output directory contains a human HTML report, portable Markdown, the
 versioned `tvdoctor.report/v1` JSON document, evidence files, and any available
 portable replay documents. A partial audit is inconclusive, not a clean pass.
