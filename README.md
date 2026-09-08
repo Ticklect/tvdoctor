@@ -155,6 +155,7 @@ Until publication is verified, use the source-checkout commands above.
 tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
 tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
 tvdoctor test URL --journey PATH
+tvdoctor accessibility URL [--mode quick|deep] [--output PATH] [--journey PATH]
 tvdoctor setup
 tvdoctor doctor
 tvdoctor replay ISSUE_ID [--report PATH] [--target URL]
@@ -179,6 +180,12 @@ it launches. `doctor` checks the declared Node runtime, host, installed Chromium
 and whether the audit host is available. Run it before a long audit.
 
 `version`, `--version`, and `-V` print the installed CLI package version.
+
+`accessibility` is the focused web profile. It runs the streaming and
+accessibility packs together so one report covers semantic labels, hidden
+focusable controls, focus visibility, and reachable caption controls. Browser
+evidence does not prove TalkBack, text scaling, audio-description preferences,
+autoplay behavior, or physical-TV rendering.
 
 If the original audit used a custom journey, replay requires the same
 `--journey PATH`. TVDoctor verifies its SHA-256 fingerprint before constructing

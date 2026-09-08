@@ -34,6 +34,16 @@ options to select `navigation`, `streaming`, `search`, `settings`,
 `accessibility`, `layout`, `performance`, or `crashes`; the default is `all`.
 Run `npx tvdoctor test --help` for the complete option reference.
 
+For a focused labels, remote-focus, and captions audit, run:
+
+```sh
+npx tvdoctor accessibility https://example.test/tv --mode quick
+```
+
+This profile selects the streaming and accessibility packs. Its browser result
+does not claim TalkBack, device text scaling, audio-description preference, or
+autoplay proof.
+
 Targets that need a deterministic sign-in or profile-selection path can use a
 bounded journey file:
 

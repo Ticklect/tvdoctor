@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 
 import {
+  ACCESSIBILITY_HELP_TEXT,
   BASELINE_HELP_TEXT,
   CI_HELP_TEXT,
   CLI_VERSION,
@@ -77,6 +78,58 @@ async function captureRun(
 }
 
 describe("TVDoctor CLI", () => {
+  it("runs the first-class web accessibility profile with caption and accessibility packs", async () => {
+    let received: import("../src/index.js").TestCommandRequest | null = null;
+    const code = await runCli([
+      "accessibility", "https://example.test/tv", "--mode", "deep", "--journey", "journey.json",
+    ], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: ignoreOutput, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        testTarget: async (request) => {
+          received = request;
+          return {
+            status: "completed",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: "accessibility-report/report.json",
+            details: [],
+          };
+        },
+      },
+    });
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(received).toMatchObject({
+      target: "https://example.test/tv",
+      mode: "deep",
+      journeyPath: "journey.json",
+      packs: ["streaming", "accessibility"],
+    });
+  });
+
+  it("keeps accessibility-profile pack selection fixed", async () => {
+    await expect(captureRun([
+      "accessibility", "https://example.test", "--pack", "layout",
+    ])).resolves.toMatchObject({
+      code: EXIT_CODES.usageError,
+      stderr: expect.stringContaining("accessibility selects its packs automatically"),
+    });
+  });
+
+  it.each<readonly [readonly string[]]>([
+    [["accessibility", "--help"]],
+    [["accessibility", "-h"]],
+    [["help", "accessibility"]],
+  ])("prints accessibility-specific help for %j", async (arguments_) => {
+    await expect(captureRun(arguments_)).resolves.toEqual({
+      code: EXIT_CODES.success,
+      stderr: "",
+      stdout: `${ACCESSIBILITY_HELP_TEXT}\n`,
+    });
+  });
+
   it("runs Android APK audits non-interactively with deterministic device selection", async () => {
     let received: { readonly apkPath: string; readonly serial: string; readonly mode: string } | null = null;
     let stdout = "";

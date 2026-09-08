@@ -65,6 +65,8 @@ that `tvdoctor@0.1.0` has been published.
   persistent isolated sessions, redacted ledgers, and fingerprint-bound replay.
 - actionable accessibility findings for unnamed interactive controls and hidden
   focusable controls, with confidence tied to the driver's observed tree.
+- `tvdoctor accessibility` as a bounded web profile combining semantic labels,
+  remote focus evidence, and caption-control coverage in one report.
 
 ### Verification status
 

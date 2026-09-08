@@ -188,6 +188,7 @@ Usage:
   tvdoctor test URL [--pack NAME] [--mode MODE] [--output PATH] [--query TEXT]
   tvdoctor test URL [--startup-actions KEY[,KEY...]] [--max-duration-ms N]
   tvdoctor test URL [--journey PATH]
+  tvdoctor accessibility URL [--mode MODE] [--output PATH] [--journey PATH]
   tvdoctor test --apk PATH --device SERIAL [--mode quick|deep] [--output PATH]
   tvdoctor ci URL --fail-on LEVEL [test options]
   tvdoctor baseline create --report PATH [--inventory PATH] [--output PATH]
@@ -203,6 +204,8 @@ Usage:
 Commands:
   start     Open the guided product flow.
   test      Run a bounded local audit and write a report bundle.
+  accessibility
+            Run the focused web accessibility and caption profile.
   ci        Run an audit with an explicit failure policy and CI exports.
   baseline  Create or compare a semantic regression baseline.
   setup     Install the Chromium runtime matched to this TVDoctor version.
@@ -276,6 +279,17 @@ Replay one deterministic issue stored in a tvdoctor.report/v1 report. PATH
 defaults to tvdoctor-report/report.json. --target overrides the recorded web URL.
 For Android reports, pass --apk PATH --device SERIAL and optionally --adb PATH.
 For a journey-prepared web report, pass the same --journey PATH.`;
+
+export const ACCESSIBILITY_HELP_TEXT = `Usage:
+  tvdoctor accessibility URL [--mode quick|deep] [--output PATH]
+  tvdoctor accessibility URL [--journey PATH]
+
+Run the bounded web accessibility profile. It selects the streaming and
+accessibility packs to inspect remote focus, semantic labels, hidden focusable
+controls, visible focus indication, and reachable caption controls.
+
+Browser evidence does not prove TalkBack, text scaling, audio-description
+preferences, autoplay behavior, or rendering on physical TV hardware.`;
 
 const PORTABLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
 const TEST_PACK_SET: ReadonlySet<string> = new Set(TEST_PACK_NAMES);
@@ -688,6 +702,32 @@ async function runTest(
   return await runWebTestRequest(request, context);
 }
 
+async function runAccessibility(
+  argumentsAfterCommand: readonly string[],
+  context: CliContext,
+): Promise<number> {
+  if (argumentsAfterCommand.length === 1
+    && (argumentsAfterCommand[0] === "--help" || argumentsAfterCommand[0] === "-h")) {
+    writeBlock(context.io.writeStdout, ACCESSIBILITY_HELP_TEXT);
+    return EXIT_CODES.success;
+  }
+  if (argumentsAfterCommand.includes("--pack")) {
+    return usageError(context, "accessibility selects its packs automatically; remove --pack");
+  }
+  if (argumentsAfterCommand.includes("--apk")) {
+    return usageError(context, "accessibility currently accepts web URLs; Android hardware proof is not yet available");
+  }
+  const request = parseTestArguments([
+    ...argumentsAfterCommand,
+    "--pack",
+    "streaming",
+    "--pack",
+    "accessibility",
+  ]);
+  if (typeof request === "string") return usageError(context, request);
+  return await runWebTestRequest(request, context);
+}
+
 async function runCi(
   argumentsAfterCommand: readonly string[],
   context: CliContext,
@@ -1014,6 +1054,7 @@ export async function runCli(
     if (
       argumentsAfterCommand.length === 1 &&
       (argumentsAfterCommand[0] === "test" ||
+        argumentsAfterCommand[0] === "accessibility" ||
         argumentsAfterCommand[0] === "doctor" ||
         argumentsAfterCommand[0] === "ci" ||
         argumentsAfterCommand[0] === "baseline" ||
@@ -1024,6 +1065,8 @@ export async function runCli(
         context.io.writeStdout,
         argumentsAfterCommand[0] === "test"
           ? TEST_HELP_TEXT
+          : argumentsAfterCommand[0] === "accessibility"
+            ? ACCESSIBILITY_HELP_TEXT
           : argumentsAfterCommand[0] === "ci"
             ? CI_HELP_TEXT
             : argumentsAfterCommand[0] === "baseline"
@@ -1057,6 +1100,10 @@ export async function runCli(
 
   if (command === "test") {
     return await runTest(argumentsAfterCommand, context);
+  }
+
+  if (command === "accessibility") {
+    return await runAccessibility(argumentsAfterCommand, context);
   }
 
   if (command === "ci") {
