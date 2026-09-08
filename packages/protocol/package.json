@@ -11,7 +11,7 @@
     "protocol",
     "remote-control"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "homepage": "https://github.com/Ticklect/tvdoctor#readme",
   "bugs": {
     "url": "https://github.com/Ticklect/tvdoctor/issues"

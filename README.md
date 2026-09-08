@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml"><img alt="TVDoctor CI" src="https://github.com/Ticklect/tvdoctor/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="MIT Licence" src="https://img.shields.io/badge/licence-MIT-36A3FF"></a>
+  <a href="LICENSE"><img alt="AGPL-3.0-only Licence" src="https://img.shields.io/badge/licence-AGPL--3.0--only-36A3FF"></a>
   <a href="package.json"><img alt="Node 24" src="https://img.shields.io/badge/Node-24-42E8E0"></a>
   <a href="package.json"><img alt="npm 11" src="https://img.shields.io/badge/npm-11-42E8E0"></a>
   <a href="RELEASE.md"><img alt="0.1.0 release candidate" src="https://img.shields.io/badge/0.1.0-release%20candidate-FFBE55"></a>
@@ -364,5 +364,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Do not put secrets, proprietary target
 data, or unredacted report bundles in an issue.
 
 Report suspected vulnerabilities through GitHub's private vulnerability-reporting
-flow described in [SECURITY.md](SECURITY.md). TVDoctor is available under the
-[MIT Licence](LICENSE).
+flow described in [SECURITY.md](SECURITY.md). TVDoctor source code is available under the [GNU Affero General Public License v3.0 only](LICENSE).
+See [LICENSING.md](LICENSING.md) for commercial-licensing information and
+[TRADEMARKS.md](TRADEMARKS.md) for use of the TVDoctor name and logo.

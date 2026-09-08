@@ -120,4 +120,7 @@ maintainer review.
 
 Use clear, imperative commit subjects. Reviewers may request a smaller change if
 protocol, driver, fixture, diagnostic, and release concerns are mixed together.
-Contributions are licensed under the repository's MIT Licence.
+Contributions are licensed under the repository's GNU Affero General Public
+License v3.0 only. A contribution intended for an alternatively licensed release
+requires a separate contributor agreement reviewed before the contribution is
+accepted.

@@ -20,7 +20,7 @@ that `tvdoctor@0.1.0` has been published.
 - deliberately broken Northstar web fixture with a machine-readable defect
   manifest;
 - public documentation, contribution guidance, security policy, issue forms,
-  and MIT Licence.
+  and GNU Affero General Public License v3.0 only.
 - complete controlled M7 multi-pack CLI audit and exact CLI integration gate;
 - priority-frontier/carousel stress coverage, fail-closed baseline lifecycle,
   and bounded production-site probes;
