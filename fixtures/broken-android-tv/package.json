@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Controlled native Android TV fixture with one seeded remote-focus defect.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1",

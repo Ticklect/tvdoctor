@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Automated QA for TV apps and 10-foot user interfaces.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "packageManager": "npm@11.16.0",
   "engines": {

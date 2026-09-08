@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Intentionally broken TV streaming fixture for TVDoctor integration tests.",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
