@@ -399,6 +399,29 @@ class UnsupportedLeftDriver extends FakeWebDriver {
   }
 }
 
+class AccessibilityDefectDriver extends FakeWebDriver {
+  private readonly defect: "hidden-focusable" | "missing-name";
+
+  public constructor(defect: "hidden-focusable" | "missing-name") {
+    super();
+    this.defect = defect;
+  }
+
+  public override async snapshot(): Promise<StateSnapshot> {
+    const base = await super.snapshot();
+    if (base.uiTree.status !== "available") return base;
+    const defect = this.defect === "missing-name"
+      ? uiNode("unnamed-action", "button", null, { focusable: false, text: null })
+      : uiNode("hidden-action", "button", "Hidden action", { focusable: true, visible: false });
+    const first = base.uiTree.value[0];
+    if (first === undefined) return base;
+    return {
+      ...base,
+      uiTree: availableObservation([{ ...first, children: [...first.children, defect] }]),
+    };
+  }
+}
+
 function fullOptions() {
   return {
     playerSettingsSequence: ["UP", "SELECT"] as const,
@@ -639,6 +662,63 @@ describe("M7 web pack", () => {
     });
     expect(result.status).toBe("partial");
     expect(result.observations.find((item) => item.kind === "accessibility-tree")?.status).toBe("partial");
+  });
+
+  test("reports a stable deterministic finding for a visible interactive control without a name", async () => {
+    const options = {
+      hooks: {
+        webFocusVisibility: {
+          probe: () => Promise.resolve({
+            status: "available" as const,
+            unfocused: visualSample(),
+            focused: visualSample({ backgroundColor: "white" }),
+            screenshotDifferenceRatio: 0.5,
+            detail: "Strong isolated proof.",
+          }),
+        },
+      },
+    };
+    const first = await runAccessibilityStage(new AccessibilityDefectDriver("missing-name"), options);
+    const second = await runAccessibilityStage(new AccessibilityDefectDriver("missing-name"), options);
+    const firstIssue = first.issues.find((issue) => issue.rule === "accessibility.name");
+    const secondIssue = second.issues.find((issue) => issue.rule === "accessibility.name");
+
+    expect(first.status).toBe("failed");
+    expect(firstIssue).toMatchObject({
+      severity: "high",
+      confidence: "deterministic",
+      pack: "accessibility",
+      reproduction: { status: "unavailable" },
+    });
+    expect(firstIssue?.id).toBe(secondIssue?.id);
+  });
+
+  test("reports a hidden focusable control without changing accessibility-stage ordering", async () => {
+    const result = await runAccessibilityStage(new AccessibilityDefectDriver("hidden-focusable"), {
+      hooks: {
+        webFocusVisibility: {
+          probe: () => Promise.resolve({
+            status: "available" as const,
+            unfocused: visualSample(),
+            focused: visualSample({ backgroundColor: "white" }),
+            screenshotDifferenceRatio: 0.5,
+            detail: "Strong isolated proof.",
+          }),
+        },
+      },
+    });
+
+    expect(result.stage).toBe("accessibility");
+    expect(result.status).toBe("failed");
+    expect(result.issues.map((issue) => issue.rule)).toContain("accessibility.hidden-focusable");
+  });
+
+  test("retains semantic accessibility findings when visual focus proof is unavailable", async () => {
+    const result = await runAccessibilityStage(new AccessibilityDefectDriver("missing-name"));
+
+    expect(result.status).toBe("failed");
+    expect(result.issues.map((issue) => issue.rule)).toEqual(["accessibility.name"]);
+    expect(result.observations.find((item) => item.kind === "focus-visibility")?.status).toBe("unavailable");
   });
 
   test("fails closed on invalid focus proof and never emits a heuristic issue from it", async () => {

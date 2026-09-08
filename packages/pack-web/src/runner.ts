@@ -27,8 +27,10 @@ import {
 import {
   consoleErrorIssue,
   focusVisibilityIssue,
+  hiddenFocusableIssue,
   logSemanticSignature,
   menuResponseIssue,
+  missingAccessibleNameIssue,
   searchRemoteFlowIssue,
   viewportClippingIssue,
 } from "./issues.js";
@@ -721,6 +723,21 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
   const hiddenFocusable = activeWebSurfaceEntries(initial).filter((entry) => (
     entry.node.focusable === true && entry.node.visible === false
   ));
+  const accessibilityTreeObserved = capabilities.has("accessibility-tree");
+  issues.push(...missingNames
+    .filter((entry) => entry.node.stableId !== null)
+    .map((entry) => missingAccessibleNameIssue(
+      describeWebElement(entry.node),
+      snapshotLocation(initial),
+      accessibilityTreeObserved,
+    )));
+  issues.push(...hiddenFocusable
+    .filter((entry) => entry.node.stableId !== null)
+    .map((entry) => hiddenFocusableIssue(
+      describeWebElement(entry.node),
+      snapshotLocation(initial),
+      accessibilityTreeObserved,
+    )));
   observations.push(observation(
     "accessibility-tree",
     capabilities.has("accessibility-tree") ? "available" : "partial",
@@ -732,9 +749,11 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
     observations.push(observation("focus-visibility", "unavailable", "No explicit web computed-style/crop focus proof hook was supplied."));
     return stage(
       "accessibility",
-      "partial",
-      "Semantic accessibility inventory completed, but visual focus visibility was unobservable.",
-      [],
+      issues.length > 0 ? "failed" : "partial",
+      issues.length > 0
+        ? `Semantic accessibility inspection produced ${String(issues.length)} finding(s); visual focus visibility was unobservable.`
+        : "Semantic accessibility inventory completed, but visual focus visibility was unobservable.",
+      issues,
       observations,
     );
   }
@@ -809,7 +828,7 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
   if (probeTruncated) {
     observations.push(observation("focus-visibility", "partial", "The explicit focus-probe cap was reached; unprobed controls were not classified."));
   }
-  const accessibilityTreeObservable = capabilities.has("accessibility-tree");
+  const accessibilityTreeObservable = accessibilityTreeObserved;
   const focusProofsComplete = availableFocusProofs === boundedStates.length
     && incompleteFocusProofs === 0;
   return stage(

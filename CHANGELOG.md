@@ -63,6 +63,8 @@ that `tvdoctor@0.1.0` has been published.
   only complete bounded reports; hardware evidence remains pending.
 - bounded custom web preparation journeys with environment-only sensitive text,
   persistent isolated sessions, redacted ledgers, and fingerprint-bound replay.
+- actionable accessibility findings for unnamed interactive controls and hidden
+  focusable controls, with confidence tied to the driver's observed tree.
 
 ### Verification status
 

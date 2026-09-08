@@ -145,6 +145,75 @@ export function focusVisibilityIssue(
   };
 }
 
+export function missingAccessibleNameIssue(
+  element: WebElementDescriptor,
+  screen: string | null,
+  accessibilityTreeObserved: boolean,
+): TVDoctorIssue {
+  const target = semanticTarget(element);
+  return {
+    id: issueId("accessibility.name", [
+      ["stableId", target.stableId],
+      ["role", target.role],
+      ["failure", "missing-accessible-name"],
+    ]),
+    rule: "accessibility.name",
+    title: "Interactive control has no accessible name",
+    description: "A visible interactive control had no usable name or text in the observed semantic tree.",
+    severity: "high",
+    confidence: accessibilityTreeObserved ? "deterministic" : "heuristic",
+    pack: "accessibility",
+    screen: safeScreen(screen),
+    expected: "Every visible interactive control should expose a concise name that identifies its purpose.",
+    observed: `${target.role || "Interactive control"} ${target.stableId} exposed no usable name or text.`,
+    transition: null,
+    evidence: [{
+      kind: accessibilityTreeObserved ? "deterministic-failure" : "heuristic-warning",
+      summary: `${target.stableId} was visible and interactive but unnamed in the ${accessibilityTreeObserved ? "accessibility" : "DOM-derived semantic"} tree.`,
+      source: accessibilityTreeObserved ? "accessibility-tree" : "ui-tree",
+      artifact: null,
+    }],
+    reproduction: unavailableReproduction(
+      "The finding comes from semantic-tree inspection and has no standalone remote-action replay.",
+    ),
+  };
+}
+
+export function hiddenFocusableIssue(
+  element: WebElementDescriptor,
+  screen: string | null,
+  accessibilityTreeObserved: boolean,
+): TVDoctorIssue {
+  const target = semanticTarget(element);
+  return {
+    id: issueId("accessibility.hidden-focusable", [
+      ["stableId", target.stableId],
+      ["role", target.role],
+      ["name", target.name],
+      ["failure", "hidden-focusable"],
+    ]),
+    rule: "accessibility.hidden-focusable",
+    title: "Hidden control remains focusable",
+    description: "A control marked as hidden remained focusable in the observed semantic tree, which can move remote or assistive focus off screen.",
+    severity: "high",
+    confidence: accessibilityTreeObserved ? "deterministic" : "heuristic",
+    pack: "accessibility",
+    screen: safeScreen(screen),
+    expected: "Controls hidden from the current screen should not remain in its focus order.",
+    observed: `${target.name || target.stableId} was hidden while its focusable state remained true.`,
+    transition: null,
+    evidence: [{
+      kind: accessibilityTreeObserved ? "deterministic-failure" : "heuristic-warning",
+      summary: `${target.stableId} was simultaneously hidden and focusable in the ${accessibilityTreeObserved ? "accessibility" : "DOM-derived semantic"} tree.`,
+      source: accessibilityTreeObserved ? "accessibility-tree" : "ui-tree",
+      artifact: null,
+    }],
+    reproduction: unavailableReproduction(
+      "The finding comes from semantic-tree inspection and has no standalone remote-action replay.",
+    ),
+  };
+}
+
 function boundsText(element: WebElementDescriptor): string {
   const bounds = element.bounds;
   return bounds === null

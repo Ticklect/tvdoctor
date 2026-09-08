@@ -7,7 +7,7 @@ orchestrates them without merging their issue domains:
 
 - search remote flow;
 - safe settings traversal;
-- accessibility and focus visibility;
+- accessible-name, hidden-focusable, and focus-visibility checks;
 - viewport layout;
 - menu response performance;
 - crash and console robustness.
@@ -17,6 +17,11 @@ computed focus styling, crop differences, viewport dimensions, pointer
 activation, and query entry are supplied through explicit hooks. When a fact is
 not observable the corresponding stage reports `unobservable` or `partial`; it
 does not silently pass.
+
+Accessible-name and hidden-focusable findings are deterministic when the driver
+advertises a real accessibility tree. A DOM-derived web tree can still surface
+them as heuristic findings, while the stage remains partial about screen-reader
+behavior.
 
 The layout and menu-response stages accept the reset-relative player-settings
 sequence discovered by the streaming pack at run time. The sequence must end in
