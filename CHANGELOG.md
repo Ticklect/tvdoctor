@@ -67,6 +67,8 @@ that `tvdoctor@0.1.0` has been published.
   focusable controls, with confidence tied to the driver's observed tree.
 - `tvdoctor accessibility` as a bounded web profile combining semantic labels,
   remote focus evidence, and caption-control coverage in one report.
+- a product-focused platform request form and public evidence criteria for
+  choosing the next Fire TV, Roku, Tizen, webOS, or tvOS driver.
 
 ### Verification status
 

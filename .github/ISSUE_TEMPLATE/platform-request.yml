@@ -1,0 +1,101 @@
+name: Platform request
+description: Tell us which TV platform would make TVDoctor useful to your team.
+title: "[Platform]: "
+labels:
+  - platform-request
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form measures real demand before TVDoctor invests in another device driver. Do not include credentials, private app links, customer data, or proprietary artifacts.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Fire TV
+        - Roku
+        - Samsung Tizen
+        - LG webOS
+        - Apple tvOS
+        - Other Android or Google TV hardware
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Devices and OS versions
+      description: List the oldest and newest versions your team must support.
+      placeholder: Roku OS 14-15 on Express 4K and Ultra
+    validations:
+      required: true
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Your role
+      options:
+        - TV app developer
+        - QA or test engineer
+        - Accessibility specialist
+        - Engineering manager
+        - Independent developer
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: Current testing pain
+      description: Which repeated manual work, missed defect, or release blocker should TVDoctor reduce?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: workflows
+    attributes:
+      label: Workflows you need
+      options:
+        - label: D-pad focus and navigation
+        - label: Playback controls and seeking
+        - label: Captions and accessibility
+        - label: Search and on-screen keyboard
+        - label: Performance and crash evidence
+        - label: CI regression checks
+        - label: Store certification evidence
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Can you help with real-device proof?
+      description: A driver cannot move beyond Experimental without repeatable real-platform evidence.
+      options:
+        - Yes, we can run a public redistributable fixture
+        - Maybe, contact us in this issue
+        - No, we only need the capability
+    validations:
+      required: true
+
+  - type: textarea
+    id: success
+    attributes:
+      label: What would make this useful?
+      description: Describe the smallest result you would adopt, including preferred local or CI workflow.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This request represents a real current or planned TV application.
+          required: true
+        - label: I removed secrets, private links, customer data, and proprietary artifacts.
+          required: true

@@ -387,6 +387,11 @@ Status words are deliberate:
 | [Physical Android/Google/Fire TV devices](docs/physical-device-proof.md) | Proof runner ready; hardware evidence pending | Emulator evidence never implies physical-device support. |
 | Fire TV, Roku, Tizen, and webOS | Planned | No adapters or compatibility commitments. |
 
+Building another driver depends on concrete app and hardware demand. If your
+team needs one of these platforms, submit a
+[platform request](https://github.com/Ticklect/tvdoctor/issues/new?template=platform-request.yml)
+with the versions, workflow, and real-device access you can provide.
+
 Read [current limitations](docs/limitations.md), the
 [architecture guide](docs/architecture.md), and [baselines and CI](docs/baselines-and-ci.md)
 before relying on a result.

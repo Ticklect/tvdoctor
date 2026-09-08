@@ -61,7 +61,8 @@ higher support level only after its complete gate is repeatable.
   services;
 - add safe opt-in configuration for authenticated synthetic test sessions;
 - investigate Android/Google TV physical-device evidence after emulator support;
-- evaluate community-maintained Fire TV, Roku, Tizen, and webOS adapters;
+- collect concrete [platform requests](platform-priority.md), then evaluate the
+  best-evidenced Fire TV, Roku, Tizen, webOS, or tvOS adapter;
 - develop larger redistributable fixture suites and publish measured recall,
   false-positive, runtime, and replay-reliability results.
 
