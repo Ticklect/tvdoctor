@@ -59,6 +59,8 @@ that `tvdoctor@0.1.0` has been published.
   concise Markdown and JUnit exports, plus a ready-made GitHub Action.
 - `tvdoctor baseline create` and `baseline compare` file workflows with concise
   new, resolved, and unchanged finding counts.
+- a physical Android TV/Fire TV proof runner that rejects emulators and accepts
+  only complete bounded reports; hardware evidence remains pending.
 
 ### Verification status
 

@@ -21,7 +21,10 @@ exploration, evidence, and cleanup.
 The automated release gate verifies a disposable Android TV API 36 x86_64
 emulator. API 23 is the observer's minimum SDK, not a claim that every vendor
 device between API 23 and API 36 has been validated. Physical Android TV and
-Google TV compatibility remains an explicit experimental limitation.
+Google TV compatibility remains an explicit experimental limitation. Use the
+[physical-device proof runner](../physical-device-proof.md) for reproducible
+hardware qualification; it rejects emulator serials and accepts only complete
+bounded scans.
 
 ## TVDoctor Observer setup
 

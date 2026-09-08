@@ -370,7 +370,7 @@ Status words are deliberate:
 | Linux hosted verification | Beta evidence | Earlier exact candidates passed on `ubuntu-latest`; every changed release candidate needs a new exact-SHA run. |
 | Windows development verification | Experimental evidence | Local release work has run on Windows; no hosted Windows matrix is claimed. |
 | macOS release verification | Planned | No hosted matrix is claimed. |
-| Physical Android/Google TV devices | Planned verification | Emulator evidence never implies physical-device support. |
+| [Physical Android/Google/Fire TV devices](docs/physical-device-proof.md) | Proof runner ready; hardware evidence pending | Emulator evidence never implies physical-device support. |
 | Fire TV, Roku, Tizen, and webOS | Planned | No adapters or compatibility commitments. |
 
 Read [current limitations](docs/limitations.md), the

@@ -60,6 +60,9 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 - The driver does not create, start, configure, stop, or delete emulators.
 - No physical Android TV, Google TV, vendor firmware, permission-dialog, DRM,
   launcher, or Fire TV compatibility is claimed.
+- A physical-device proof runner now rejects emulators and incomplete scans, but
+  no physical hardware was attached for the current candidate, so no hardware
+  compatibility claim has been recorded.
 - Android accessibility can omit semantic properties; missing values remain
   unavailable. Protected/secure surfaces may block state or screenshots.
 - HOME and media actions are supported only when explicitly requested in
@@ -103,8 +106,8 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 - Reports are local static artifacts, not an access-control system.
 - Baseline comparison requires equivalent complete observability. Missing packs,
   capabilities, inventory, or latency observations fail closed.
-- The baseline package has controlled lifecycle and hosted-example evidence, but
-  it is a library rather than a released standalone baseline CLI workflow.
+- The baseline package and CLI have controlled lifecycle evidence; registry
+  release and broader external-project evidence remain pending.
 
 If a limitation affects the reliability of a finding, retain it with the issue
 instead of weakening the run status.
