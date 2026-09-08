@@ -253,9 +253,7 @@ describe("TVDoctor CLI", () => {
         "Packs 6/6 completed\n" +
         "Actions 42/900\n" +
         "Issues: 2 issues; highest severity: high\n" +
-        "Bundle directory: tvdoctor-report\n" +
-        `Human report: ${join("tvdoctor-report", "report.html")}\n` +
-        "Canonical JSON: tvdoctor-report/report.json\n",
+        `Open report: ${join("tvdoctor-report", "report.html")}\n`,
     });
   });
 
@@ -549,9 +547,8 @@ describe("TVDoctor CLI", () => {
       .resolves.toBe(EXIT_CODES.inconclusive);
     expect(stdout).toContain("Result: PARTIAL-INCONCLUSIVE\n");
     expect(stdout).toContain("Issues: 1 issue; highest severity: medium\n");
-    expect(stdout).toContain("Bundle directory: output\n");
-    expect(stdout).toContain(`Human report: ${join("output", "report.html")}\n`);
-    expect(stdout).toContain(`Canonical JSON: ${join("output", "report.json")}\n`);
+    expect(stdout).toContain(`Open report: ${join("output", "report.html")}\n`);
+    expect(stdout).not.toContain("Canonical JSON:");
     expect(stdout).toContain("Next action: Review the partial report");
   });
 

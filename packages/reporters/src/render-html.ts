@@ -43,7 +43,7 @@ function renderTransition(issue: TVDoctorIssue): string {
   </tbody></table>`;
 }
 
-function renderIssue(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
+function renderIssue(report: TVDoctorReportV1, issue: TVDoctorIssue, expanded: boolean): string {
   const artifacts = artifactsForIssue(report, issue);
   const cliReplayable = hasDeterministicCliReplay(report, issue);
   const replayCommandMarkup = cliReplayable
@@ -59,19 +59,32 @@ function renderIssue(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
     : cliReplayable
       ? "Exact reproduction"
       : "Best-effort reproduction";
-  return `<details class="issue severity-${issue.severity}" id="${escapeHtml(issue.id)}">
-    <summary><span class="badge severity">${issue.severity.toUpperCase()}</span><span class="badge confidence">${issue.confidence.toUpperCase()}</span><code>${escapeHtml(issue.id)}</code><span>${escapeHtml(issue.title)}</span></summary>
+  return `<details class="issue severity-${issue.severity}" id="${escapeHtml(issue.id)}"${expanded ? " open" : ""}>
+    <summary><span class="badge severity">${issue.severity.toUpperCase()}</span><span>${escapeHtml(issue.title)}</span><span class="badge confidence">${issue.confidence.toUpperCase()}</span></summary>
     <div class="issue-body">
-      <dl><dt>Rule</dt><dd><code>${escapeHtml(issue.rule)}</code></dd><dt>Pack</dt><dd>${escapeHtml(issue.pack)}</dd><dt>Screen</dt><dd><pre>${escapeHtml(issue.screen ?? "unobserved")}</pre></dd></dl>
       <section><h4>Problem</h4><pre>${escapeHtml(issue.description)}</pre></section>
       <div class="expected-observed"><section><h4>Expected</h4><pre>${escapeHtml(issue.expected)}</pre></section><section><h4>Observed</h4><pre>${escapeHtml(issue.observed)}</pre></section></div>
-      <section><h4>Navigation transition</h4>${renderTransition(issue)}</section>
       <section><h4>${reproductionHeading}</h4>${reproduction}</section>
       ${renderScreenshotPair(issue, artifacts)}
-      <section><h4>Runtime evidence</h4><ul>${issue.evidence.map((evidence) => `<li><strong>${escapeHtml(evidence.kind)}</strong><pre>${escapeHtml(evidence.summary)}</pre><span class="meta">Source: ${escapeHtml(evidence.source ?? "unavailable")}</span></li>`).join("")}</ul></section>
-      <section><h4>Artifacts</h4>${artifacts.length === 0 ? "<p class=\"meta\">No artifacts were recorded.</p>" : `<ul>${artifacts.map((artifact) => renderArtifact(artifact)).join("")}</ul>`}</section>
+      <details class="technical-details"><summary>Technical details and evidence</summary><div class="technical-body">
+        <dl><dt>Issue ID</dt><dd><code>${escapeHtml(issue.id)}</code></dd><dt>Rule</dt><dd><code>${escapeHtml(issue.rule)}</code></dd><dt>Pack</dt><dd>${escapeHtml(issue.pack)}</dd><dt>Screen</dt><dd><pre>${escapeHtml(issue.screen ?? "unobserved")}</pre></dd></dl>
+        <section><h4>Navigation transition</h4>${renderTransition(issue)}</section>
+        <section><h4>Runtime evidence</h4><ul>${issue.evidence.map((evidence) => `<li><strong>${escapeHtml(evidence.kind)}</strong><pre>${escapeHtml(evidence.summary)}</pre><span class="meta">Source: ${escapeHtml(evidence.source ?? "unavailable")}</span></li>`).join("")}</ul></section>
+        <section><h4>Artifacts</h4>${artifacts.length === 0 ? "<p class=\"meta\">No artifacts were recorded.</p>" : `<ul>${artifacts.map((artifact) => renderArtifact(artifact)).join("")}</ul>`}</section>
+      </div></details>
     </div>
   </details>`;
+}
+
+function verdictText(report: TVDoctorReportV1): string {
+  if (report.run.status === "failed") return "Scan could not complete";
+  const fixNow = report.issues.filter((issue) => findingActionability(issue) === "FIX NOW").length;
+  if (report.run.status === "partial") {
+    return `${String(report.issues.length)} ${report.issues.length === 1 ? "finding" : "findings"}, but the scan was incomplete`;
+  }
+  if (fixNow > 0) return `${String(fixNow)} ${fixNow === 1 ? "issue needs" : "issues need"} fixing`;
+  if (report.issues.length > 0) return `${String(report.issues.length)} ${report.issues.length === 1 ? "finding needs" : "findings need"} review`;
+  return "No issues found in the completed coverage";
 }
 
 function renderRunWarning(report: TVDoctorReportV1): string {
@@ -103,11 +116,12 @@ export function renderReportHtml(report: TVDoctorReportV1): string {
   const severitySections = actionGroups.map(([label, description]) => {
     const issues = valid.issues.filter((issue) => findingActionability(issue) === label);
     if (issues.length === 0) return "";
-    return `<section class="issue-group"><h2>${label}</h2><p class="meta">${description}</p>${issues.map((issue) => renderIssue(valid, issue)).join("")}</section>`;
+    return `<section class="issue-group"><h2>${label}</h2><p class="meta">${description}</p>${issues.map((issue, index) => renderIssue(valid, issue, label === "FIX NOW" && index === 0)).join("")}</section>`;
   }).join("");
   const packRows = valid.coverage.packs.length === 0
     ? "<tr><td colspan=\"2\">No packs were assessed.</td></tr>"
     : valid.coverage.packs.map((pack) => `<tr><th>${escapeHtml(pack.pack)}</th><td>${escapeHtml(pack.status)}</td></tr>`).join("");
+  const nonZeroSeverities = ISSUE_SEVERITIES.filter((severity) => (counts[severity] ?? 0) > 0);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -116,14 +130,13 @@ export function renderReportHtml(report: TVDoctorReportV1): string {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <title>TVDoctor Report</title>
   <style>
-    :root{color-scheme:dark;--bg:#0a0f1b;--panel:#121a2b;--panel2:#19233a;--text:#f3f6ff;--muted:#9dabca;--line:#2a3857;--accent:#64e0c1;--critical:#ff667a;--high:#ff9d62;--medium:#ffd166;--low:#6fb5ff;--info:#a9b8d6}*{box-sizing:border-box;min-width:0}body{margin:0;background:linear-gradient(135deg,#080d17,#111a2c);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:42px 0 80px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:rgba(18,26,43,.94)}h1{margin:0;font-size:2.2rem}h2{margin-top:36px}h3,h4{margin-bottom:8px}.tagline,.meta{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:24px}.metric{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.metric strong{display:block;font-size:1.65rem}.run-warning{margin-top:18px;padding:18px 22px;border:2px solid var(--medium);border-radius:14px;background:#352d18}.run-warning h2{margin:0;color:#ffe59a}.run-warning p:last-child{margin-bottom:0}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:18px}.panel{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{color:var(--muted);width:34%}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit}code,kbd{font-family:ui-monospace,monospace}code,a,.meta,dd,li,summary span{overflow-wrap:anywhere;word-break:break-word}kbd{padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:#050913}ul{padding-left:1.35rem}.issue summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}.issue{margin:12px 0;border:1px solid var(--line);border-left:5px solid var(--info);border-radius:12px;background:var(--panel)}.severity-critical{border-left-color:var(--critical)}.severity-high{border-left-color:var(--high)}.severity-medium{border-left-color:var(--medium)}.severity-low{border-left-color:var(--low)}summary{display:flex;align-items:center;gap:10px;cursor:pointer;padding:16px}.issue-body{padding:4px 20px 22px;overflow-wrap:anywhere}.badge{padding:3px 7px;border-radius:999px;font-size:.72rem;font-weight:750;letter-spacing:.04em}.badge.severity{background:#342438}.badge.confidence{background:#183848;color:var(--accent)}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px 12px}dt{color:var(--muted)}dd{margin:0}.expected-observed,.screenshots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.expected-observed section,figure,.shot{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1322}figure{margin:0}img{display:block;width:100%;height:auto;border-radius:8px}figcaption{padding-top:8px;color:var(--muted)}a{color:var(--accent)}.status.failed{color:var(--critical)}.status.unavailable{color:var(--medium)}@media(max-width:680px){main{width:calc(100% - 20px);padding-top:18px}header{padding:18px}.panels,.expected-observed,.screenshots{grid-template-columns:minmax(0,1fr)}summary{align-items:flex-start;flex-wrap:wrap}.issue-body{padding-left:14px;padding-right:14px}dl{grid-template-columns:88px minmax(0,1fr)}}
+    :root{color-scheme:dark;--bg:#0a0f1b;--panel:#121a2b;--panel2:#19233a;--text:#f3f6ff;--muted:#9dabca;--line:#2a3857;--accent:#64e0c1;--critical:#ff667a;--high:#ff9d62;--medium:#ffd166;--low:#6fb5ff;--info:#a9b8d6}*{box-sizing:border-box;min-width:0}body{margin:0;background:linear-gradient(135deg,#080d17,#111a2c);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{width:min(1000px,calc(100% - 32px));margin:0 auto;padding:42px 0 80px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:rgba(18,26,43,.94)}h1{margin:0;font-size:1rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}h2{margin-top:36px}h3,h4{margin-bottom:8px}.tagline,.meta{color:var(--muted)}.verdict{margin:.35rem 0 0;font-size:clamp(1.8rem,5vw,3rem);line-height:1.1}.severity-summary{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.metric{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel2)}.metric strong{margin-right:5px}.run-warning{margin-top:18px;padding:18px 22px;border:2px solid var(--medium);border-radius:14px;background:#352d18}.run-warning h2{margin:0;color:#ffe59a}.run-warning p:last-child{margin-bottom:0}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:12px 0 18px}.panel{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{color:var(--muted);width:34%}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit}code,kbd{font-family:ui-monospace,monospace}code,a,.meta,dd,li,summary span{overflow-wrap:anywhere;word-break:break-word}kbd{padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:#050913}ul{padding-left:1.35rem}.issue summary:focus-visible,.technical-details summary:focus-visible,.scan-details>summary:focus-visible,.artifact-inventory>summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}.issue{margin:12px 0;border:1px solid var(--line);border-left:5px solid var(--info);border-radius:12px;background:var(--panel)}.severity-critical{border-left-color:var(--critical)}.severity-high{border-left-color:var(--high)}.severity-medium{border-left-color:var(--medium)}.severity-low{border-left-color:var(--low)}summary{display:flex;align-items:center;gap:10px;cursor:pointer;padding:16px}.issue-body{padding:4px 20px 22px;overflow-wrap:anywhere}.badge{padding:3px 7px;border-radius:999px;font-size:.72rem;font-weight:750;letter-spacing:.04em}.badge.severity{background:#342438}.badge.confidence{margin-left:auto;background:#183848;color:var(--accent)}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px 12px}dt{color:var(--muted)}dd{margin:0}.expected-observed,.screenshots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.expected-observed section,figure,.shot{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1322}figure{margin:0}img{display:block;width:100%;height:auto;border-radius:8px}figcaption{padding-top:8px;color:var(--muted)}a{color:var(--accent)}.status.failed{color:var(--critical)}.status.unavailable{color:var(--medium)}.technical-details,.scan-details,.artifact-inventory{margin-top:18px;border:1px solid var(--line);border-radius:12px;background:#0c1322}.technical-details>summary,.scan-details>summary,.artifact-inventory>summary{font-weight:700}.technical-body,.scan-body,.artifact-body{padding:0 18px 18px}.supporting{margin-top:14px;color:var(--muted);font-size:.92rem}@media(max-width:680px){main{width:calc(100% - 20px);padding-top:18px}header{padding:18px}.panels,.expected-observed,.screenshots{grid-template-columns:minmax(0,1fr)}summary{align-items:flex-start;flex-wrap:wrap}.badge.confidence{margin-left:0}.issue-body{padding-left:14px;padding-right:14px}dl{grid-template-columns:88px minmax(0,1fr)}}
   </style>
 </head>
 <body><main>
-  <header><h1>TVDoctor</h1><p class="tagline">Automated QA for TV apps — evidence-backed remote navigation diagnostics.</p>
-    <div class="summary">
-      <div class="metric"><strong>${String(valid.issues.length)}</strong><span>Findings</span></div>
-      ${ISSUE_SEVERITIES.map((severity) => `<div class="metric"><strong>${String(counts[severity] ?? 0)}</strong><span>${severity.toUpperCase()}</span></div>`).join("")}
+  <header><h1>TVDoctor</h1><p class="verdict">${escapeHtml(verdictText(valid))}</p><p class="tagline">Start with the findings below. Each one includes what happened, what should happen, and how to reproduce it.</p>
+    <div class="severity-summary">
+      ${nonZeroSeverities.map((severity) => `<span class="metric"><strong>${String(counts[severity] ?? 0)}</strong>${severity.toUpperCase()}</span>`).join("") || '<span class="metric"><strong>0</strong> findings</span>'}
     </div>
   </header>
   ${renderRunWarning(valid)}
@@ -131,14 +144,15 @@ export function renderReportHtml(report: TVDoctorReportV1): string {
     const patterns = issuePatterns(valid);
     return patterns.length === 0 ? "" : `<section><h2>Repeated patterns</h2><ul>${patterns.map((pattern) => `<li><strong>${escapeHtml(pattern.label)}</strong> — ${String(pattern.count)} related findings across ${String(pattern.stateCount)} screen(s); ${pattern.issueIds.map((id) => `<a href="#${escapeHtml(id)}"><code>${escapeHtml(id)}</code></a>`).join(", ")}</li>`).join("")}</ul></section>`;
   })()}
-  <div class="panels">
+  ${severitySections || "<section><h2>No findings</h2><p>No issues were reported for the observed coverage. This is not a claim of exhaustive testing.</p></section>"}
+  <details class="scan-details"><summary>Scan details</summary><div class="scan-body"><div class="panels">
     <section class="panel"><h2>Run</h2><table><tbody><tr><th>ID</th><td><code>${escapeHtml(valid.run.id)}</code></td></tr><tr><th>Status</th><td>${escapeHtml(valid.run.status)}</td></tr><tr><th>Mode</th><td>${escapeHtml(valid.run.mode)}</td></tr><tr><th>Duration</th><td>${formatDuration(valid.run.durationMs)}</td></tr><tr><th>Started</th><td>${escapeHtml(valid.run.startedAt)}</td></tr></tbody></table></section>
     <section class="panel"><h2>Target</h2><table><tbody><tr><th>Name</th><td><pre>${escapeHtml(valid.target.name)}</pre></td></tr><tr><th>Platform</th><td>${escapeHtml(valid.target.platform)}</td></tr><tr><th>Location</th><td><pre>${escapeHtml(valid.target.location)}</pre></td></tr>${environmentRows}</tbody></table></section>
     <section class="panel"><h2>Coverage</h2><table><tbody><tr><th>Screens</th><td>${String(valid.coverage.screenStatesDiscovered)}</td></tr><tr><th>Focus targets</th><td>${String(valid.coverage.focusStatesDiscovered)}</td></tr><tr><th>Transitions</th><td>${String(valid.coverage.transitionsTested)}</td></tr><tr><th>Actions</th><td>${String(valid.coverage.actionsSent)}</td></tr><tr><th>Exhausted budgets</th><td>${escapeHtml(exhaustedBudgetReasons(valid).join(" ") || "none")}</td></tr></tbody></table></section>
     <section class="panel"><h2>Pack coverage</h2><table><tbody>${packRows}</tbody></table></section>
-  </div>
-  ${severitySections || "<section><h2>No findings</h2><p>No issues were reported for the observed coverage. This is not a claim of exhaustive testing.</p></section>"}
-  <section><h2>Artifact inventory</h2>${valid.artifacts.length === 0 ? "<p>No artifacts were recorded.</p>" : `<ul>${valid.artifacts.map((artifact) => renderArtifact(artifact)).join("")}</ul>`}</section>
+  </div></div></details>
+  <details class="artifact-inventory"><summary>Artifact inventory</summary><div class="artifact-body">${valid.artifacts.length === 0 ? "<p>No artifacts were recorded.</p>" : `<ul>${valid.artifacts.map((artifact) => renderArtifact(artifact)).join("")}</ul>`}</div></details>
+  <p class="supporting">Supporting exports and machine data remain in this bundle for CI, replay, sharing, and coding tools.</p>
 </main></body></html>
 `;
 }

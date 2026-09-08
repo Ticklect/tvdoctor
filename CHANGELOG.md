@@ -51,6 +51,9 @@ that `tvdoctor@0.1.0` has been published.
 - safer structural identity for dynamic sites by ignoring explicitly invisible
   template/sprite state while preserving enabled, focusable, and modal
   distinctions.
+- a findings-first HTML report with one plain-language verdict, collapsed
+  technical evidence, one terminal report path, and clearly separated portable
+  and coding-agent exports.
 
 ### Verification status
 

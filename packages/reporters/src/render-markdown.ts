@@ -15,14 +15,14 @@ import {
   validReport,
 } from "./render-helpers.js";
 
-function artifactMarkdown(artifact: ArtifactDescriptor): string {
+function artifactMarkdown(artifact: ArtifactDescriptor, artifactPrefix = ""): string {
   if (artifact.status !== "available") {
     return `- \`${artifact.id}\` — ${artifact.status}\n\n${markdownDataBlock(artifact.reason)}`;
   }
-  return `- [\`${artifact.id}\`](${artifactHref(artifact.path)}) — ${artifact.mediaType}, ${String(artifact.byteLength)} bytes, SHA-256 \`${artifact.sha256 ?? "unavailable"}\``;
+  return `- [\`${artifact.id}\`](${artifactPrefix}${artifactHref(artifact.path)}) — ${artifact.mediaType}, ${String(artifact.byteLength)} bytes, SHA-256 \`${artifact.sha256 ?? "unavailable"}\``;
 }
 
-function issueMarkdown(report: TVDoctorReportV1, issue: TVDoctorIssue): string {
+function issueMarkdown(report: TVDoctorReportV1, issue: TVDoctorIssue, artifactPrefix = ""): string {
   const artifacts = artifactsForIssue(report, issue);
   const cliReplayable = hasDeterministicCliReplay(report, issue);
   const replayCommandMarkdown = cliReplayable
@@ -81,11 +81,11 @@ ${issue.evidence.map((evidence) => `- **${evidence.kind}**\n\n  Source (observed
 
 #### Artifacts
 
-${artifacts.map((artifact) => artifactMarkdown(artifact)).join("\n") || "No artifacts were recorded for this issue."}
+${artifacts.map((artifact) => artifactMarkdown(artifact, artifactPrefix)).join("\n") || "No artifacts were recorded for this issue."}
 `;
 }
 
-export function renderReportMarkdown(report: TVDoctorReportV1): string {
+export function renderReportMarkdown(report: TVDoctorReportV1, artifactPrefix = ""): string {
   const valid = validReport(report);
   const counts = issueCounts(valid);
   const incompleteCoverage = [
@@ -102,7 +102,7 @@ export function renderReportMarkdown(report: TVDoctorReportV1): string {
   const severitySummary = ISSUE_SEVERITIES.map((severity) => `| ${severity.toUpperCase()} | ${String(counts[severity] ?? 0)} |`).join("\n");
   const groups = (["FIX NOW", "REVIEW", "SETUP / INFO"] as const).map((label) => {
     const issues = valid.issues.filter((issue) => findingActionability(issue) === label);
-    return issues.length === 0 ? "" : `## ${label}\n\n${issues.map((issue) => issueMarkdown(valid, issue)).join("\n")}`;
+    return issues.length === 0 ? "" : `## ${label}\n\n${issues.map((issue) => issueMarkdown(valid, issue, artifactPrefix)).join("\n")}`;
   }).filter((group) => group.length > 0).join("\n");
   return `# TVDoctor Report
 
@@ -143,6 +143,6 @@ ${groups || "## Findings\n\nNo issues were reported for the observed coverage. T
 
 ## Artifact inventory
 
-${valid.artifacts.map((artifact) => artifactMarkdown(artifact)).join("\n") || "No artifacts were recorded."}
+${valid.artifacts.map((artifact) => artifactMarkdown(artifact, artifactPrefix)).join("\n") || "No artifacts were recorded."}
 `;
 }

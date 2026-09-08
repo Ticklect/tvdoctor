@@ -62,12 +62,12 @@ export async function writeReportBundle(
     content: renderReportHtml(safe),
   });
   const markdown = await writeOutput(store, {
-    relativePath: "report.md",
+    relativePath: "exports/portable-summary.md",
     mediaType: "text/markdown",
-    content: renderReportMarkdown(safe),
+    content: renderReportMarkdown(safe, "../"),
   });
   const aiMarkdown = await writeOutput(store, {
-    relativePath: "ai-report.md",
+    relativePath: "exports/agent-fix-tasks.md",
     mediaType: "text/markdown",
     content: renderAiCoderReport(safe),
   });

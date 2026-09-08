@@ -266,13 +266,14 @@ describe("secure artifact storage", () => {
 
     expect(bundle.reportJson.relativePath).toBe("report.json");
     expect(bundle.reportHtml.relativePath).toBe("report.html");
-    expect(bundle.reportMarkdown.relativePath).toBe("report.md");
-    expect(bundle.aiReportMarkdown.relativePath).toBe("ai-report.md");
+    expect(bundle.reportMarkdown.relativePath).toBe("exports/portable-summary.md");
+    expect(bundle.aiReportMarkdown.relativePath).toBe("exports/agent-fix-tasks.md");
     for (const output of Object.values(bundle)) {
       expect(output.byteLength).toBeGreaterThan(0);
       expect(output.sha256).toMatch(/^[0-9a-f]{64}$/u);
       expect(await readFile(output.absolutePath, "utf8")).not.toHaveLength(0);
     }
+    expect(await readFile(bundle.reportMarkdown.absolutePath, "utf8")).toContain("](../evidence/");
     expect((await readdir(root)).some((name) => name.endsWith(".tmp"))).toBe(false);
     const parsed = JSON.parse(await readFile(bundle.reportJson.absolutePath, "utf8")) as { schemaVersion: string };
     expect(parsed.schemaVersion).toBe("tvdoctor.report/v1");

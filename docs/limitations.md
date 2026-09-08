@@ -17,7 +17,7 @@ controlled fixtures designed to expose deterministic remote-navigation defects.
 - There is no Stable surface. Beta and Experimental APIs and formats can change
   before 1.0.
 - No package download count or external-adoption claim is made.
-- `ai-report.md` is a deterministic text view. TVDoctor does not call an AI model
+- `exports/agent-fix-tasks.md` is a deterministic text view. TVDoctor does not call an AI model
   or guarantee an automated fix.
 
 ## Detection and exploration

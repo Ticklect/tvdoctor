@@ -56,7 +56,7 @@ Home -> Details -> Play -> Controls -> Settings -> Captions -> Appearance
 TVDoctor  HIGH  remote.reachability
            |- before/after screenshots
            |- UI and navigation evidence
-           |- report.html / report.json / report.md
+           |- report.html / report.json
            `- portable focus-transition replay
 ```
 
@@ -211,21 +211,23 @@ still exist after a late failure; treat it as diagnostic material only.
 
 ```text
 tvdoctor-report/
-|- report.html       interactive human report
-|- report.md         portable human summary
-|- report.json       canonical tvdoctor.report/v1 document
-|- ai-report.md      deterministic evidence-linked work items
+|- report.html       start here: interactive human report
+|- report.json       canonical tvdoctor.report/v1 data for CI and replay
+|- exports/
+|  |- portable-summary.md  portable text summary
+|  `- agent-fix-tasks.md   evidence-linked coding-agent tasks
 |- stage-ledger.json internal stage/recovery record
 |- inventory.json    semantic baseline inventory
 |- evidence/         screenshots, UI excerpts, transitions, and logs
 `- replays/          available tvdoctor.replay/v1 documents
 ```
 
-Start with `report.html`. It shows run and pack status, target environment,
-coverage/budgets, issue severity and confidence, expected versus observed
-behaviour, exact steps, runtime evidence, artifact links, and replay availability.
-`report.json` is the canonical machine-readable result; Markdown is a portable
-view, not a second source of truth.
+Start with `report.html`. It leads with a plain verdict and the findings that need
+attention. Problem, expected and observed behaviour, exact steps, screenshots,
+and replay are shown first; run metadata, budgets, hashes, and raw evidence stay
+available in collapsed technical sections. `report.json` is the canonical
+machine-readable result. Files under `exports/` are derived views for sharing and
+coding tools, not additional sources of truth.
 
 Open the static HTML locally:
 

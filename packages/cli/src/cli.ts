@@ -524,9 +524,7 @@ async function runAndroidTest(
   writeLine(context.io.writeStdout, `Issues: ${String(result.issueCount)}; highest severity: ${result.highestSeverity ?? "none"}`);
   if (result.reportPath !== null) {
     const bundleDirectory = dirname(result.reportPath);
-    writeLine(context.io.writeStdout, `Bundle directory: ${bundleDirectory}`, 1_024);
-    writeLine(context.io.writeStdout, `Human report: ${join(bundleDirectory, "report.html")}`, 1_024);
-    writeLine(context.io.writeStdout, `Canonical JSON: ${result.reportPath}`, 1_024);
+    writeLine(context.io.writeStdout, `Open report: ${join(bundleDirectory, "report.html")}`, 1_024);
   }
   if (result.status === "failed") return EXIT_CODES.executionError;
   if (result.status === "partial" || result.status === "setup-blocker") return EXIT_CODES.inconclusive;
@@ -594,9 +592,7 @@ async function runTest(
   );
   if (result.reportPath !== null) {
     const bundleDirectory = dirname(result.reportPath);
-    writeLine(context.io.writeStdout, `Bundle directory: ${bundleDirectory}`, 1_024);
-    writeLine(context.io.writeStdout, `Human report: ${join(bundleDirectory, "report.html")}`, 1_024);
-    writeLine(context.io.writeStdout, `Canonical JSON: ${result.reportPath}`, 1_024);
+    writeLine(context.io.writeStdout, `Open report: ${join(bundleDirectory, "report.html")}`, 1_024);
   }
   if (result.status === "failed") return EXIT_CODES.executionError;
   if (result.status === "partial") {

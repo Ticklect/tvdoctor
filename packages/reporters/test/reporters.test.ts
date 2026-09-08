@@ -175,7 +175,7 @@ describe("canonical report construction and rendering", () => {
       ai: sha256(renderAiCoderReport(report)),
     }).toEqual({
       json: "e9d77eeebb61760b7a9d42eb291586189295bfd07201cddbf79e357696aca2b1",
-      html: "bd66942cb6ea0caadbf33c4f8b44d21c35752f2a697958261c512d1c4ffaa632",
+      html: "f8f19bd4879924e62812d51b70aa3b1c898603bcc133c3a276078cca7dcbe300",
       markdown: "96cef62e78b0a2adcd1a9133c0ced8d3de9b4379e05522a508f860b379d11df7",
       ai: "4fed90657910e9a6de4562a4f246966c6af576802e3fb15b171df0cee02783a1",
     });
@@ -496,6 +496,19 @@ describe("canonical report construction and rendering", () => {
     expect(html).toContain("grid-template-columns:minmax(0,1fr)");
     expect(markdown).toContain("INCONCLUSIVE — PARTIAL RUN");
     expect(markdown).toContain("Navigation exploration duration budget exhausted: 120 seconds.");
+  });
+
+  it("presents one plain-language verdict before findings and collapses technical detail", () => {
+    const report = buildTVDoctorReportV1(sampleReportInput());
+    const html = renderReportHtml(report);
+
+    expect(html).toContain("1 issue needs fixing");
+    expect(html.indexOf("1 issue needs fixing")).toBeLessThan(html.indexOf("FIX NOW"));
+    expect(html.indexOf("FIX NOW")).toBeLessThan(html.indexOf("Scan details"));
+    expect(html).toContain('<details class="technical-details">');
+    expect(html).toContain('<details class="scan-details">');
+    expect(html).toContain('<details class="artifact-inventory">');
+    expect(html).toContain("Supporting exports and machine data remain in this bundle");
   });
 
   it("requires an explicit original target in every replay-capable renderer after route redaction", () => {

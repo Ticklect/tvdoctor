@@ -76,8 +76,9 @@ const descriptor = await store.describeExistingIssueArtifact({
 });
 ```
 
-The resulting bundle contains `report.json`, `report.html`, `report.md`,
-`ai-report.md`, issue evidence, and optional portable replay YAML files. Target
+The resulting bundle contains the primary `report.html`, canonical `report.json`,
+`exports/portable-summary.md`, `exports/agent-fix-tasks.md`, issue evidence, and
+optional portable replay YAML files. Target
 application strings are treated as untrusted data, redacted where practical,
 HTML-escaped, and placed in inert Markdown data blocks.
 

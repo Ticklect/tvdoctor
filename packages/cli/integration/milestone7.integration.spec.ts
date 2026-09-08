@@ -143,7 +143,7 @@ test("M7 runs six independent web stages and proves exactly the five remaining f
     }
   }
 
-  for (const file of ["report.html", "report.md", "ai-report.md", "stage-ledger.json", "inventory.json"]) {
+  for (const file of ["report.html", "exports/portable-summary.md", "exports/agent-fix-tasks.md", "stage-ledger.json", "inventory.json"]) {
     const metadata = await stat(resolve(artifactRoot, file));
     expect(metadata.isFile(), file).toBe(true);
     expect(metadata.size, file).toBeGreaterThan(0);
