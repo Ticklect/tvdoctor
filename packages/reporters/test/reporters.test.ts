@@ -218,7 +218,7 @@ describe("canonical report construction and rendering", () => {
       ai: sha256(renderAiCoderReport(report)),
     }).toEqual({
       json: "e9d77eeebb61760b7a9d42eb291586189295bfd07201cddbf79e357696aca2b1",
-      html: "f8f19bd4879924e62812d51b70aa3b1c898603bcc133c3a276078cca7dcbe300",
+      html: "9c275cf2bbda1b9776be9829404296d241bc68dfd1f4ff97a444d8935469f1be",
       markdown: "96cef62e78b0a2adcd1a9133c0ced8d3de9b4379e05522a508f860b379d11df7",
       ai: "4fed90657910e9a6de4562a4f246966c6af576802e3fb15b171df0cee02783a1",
     });
@@ -552,6 +552,72 @@ describe("canonical report construction and rendering", () => {
     expect(html).toContain('<details class="scan-details">');
     expect(html).toContain('<details class="artifact-inventory">');
     expect(html).toContain("Supporting exports and machine data remain in this bundle");
+  });
+
+  it("separates automated proof from physical-TV checks and gives one next action", () => {
+    const report = buildTVDoctorReportV1(sampleReportInput());
+    const html = renderReportHtml(report);
+
+    expect(html).toContain("What this scan proved");
+    expect(html).toContain("Completed automated checks: navigation");
+    expect(html).not.toContain("Completed automated checks: navigation, streaming");
+    expect(html).toContain("Still verify on real TV hardware");
+    expect(html).toContain("screen reader");
+    expect(html).toContain("text scaling");
+    expect(html).toContain("audio-description preferences");
+    expect(html).toContain("autoplay and playback interruptions");
+    expect(html.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
+    expect(html).toContain(`href="#${ISSUE_ID}"`);
+    expect(html).toContain("Fix the first deterministic finding");
+    expect(html.indexOf("What this scan proved")).toBeLessThan(html.indexOf("FIX NOW"));
+  });
+
+  it("changes the single next action for partial and clean reports without changing report data", () => {
+    const input = sampleReportInput();
+    const partial = buildTVDoctorReportV1({
+      ...input,
+      run: { ...input.run, status: "partial" },
+      coverage: {
+        ...input.coverage,
+        packs: [{ pack: "navigation", status: "partial" }],
+      },
+    });
+    const clean = buildTVDoctorReportV1({
+      ...input,
+      issues: [],
+      artifacts: [],
+      replays: [],
+    });
+
+    const cleanBeforeRendering = JSON.stringify(clean);
+    const partialHtml = renderReportHtml(partial);
+    const cleanHtml = renderReportHtml(clean);
+    expect(partialHtml.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
+    expect(partialHtml).toContain("Resolve the recorded blocker or exhausted budget, then run the scan again.");
+    expect(cleanHtml.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
+    expect(cleanHtml).toContain("Complete the real-TV hardware checks before release.");
+    expect(clean.issues).toEqual([]);
+    expect(JSON.stringify(clean)).toBe(cleanBeforeRendering);
+  });
+
+  it("prioritises failed runs and review-only findings in the single next action", () => {
+    const input = sampleReportInput();
+    const failed = buildTVDoctorReportV1({
+      ...input,
+      run: { ...input.run, status: "failed" },
+    });
+    const reviewOnly = buildTVDoctorReportV1({
+      ...input,
+      issues: [sampleIssue(ISSUE_ID, "low")],
+    });
+
+    const failedHtml = renderReportHtml(failed);
+    const reviewHtml = renderReportHtml(reviewOnly);
+    expect(failedHtml.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
+    expect(failedHtml).toContain("Resolve the recorded run failure, then run the scan again.");
+    expect(reviewHtml.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
+    expect(reviewHtml).toContain("Review the first finding:");
+    expect(reviewHtml).toContain("Caption Text Colour is remote-unreachable");
   });
 
   it("requires an explicit original target in every replay-capable renderer after route redaction", () => {
