@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AndroidTvDriver,
@@ -193,6 +196,25 @@ class GatedObserver extends FakeObserver {
       this.gateStarted?.();
       await new Promise<void>((resolve) => { this.releaseGate = resolve; });
     }
+    return await super.request(request);
+  }
+}
+
+class AbortAwareObserver extends FakeObserver {
+  beginStarted: (() => void) | null = null;
+  beginSignal: AbortSignal | undefined;
+
+  override async request(
+    request: ObserverRequestPayload,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<ObserverResponse> {
+    if (request.type !== "begin_action") return await super.request(request);
+    this.beginSignal = options?.signal;
+    this.beginStarted?.();
+    if (options?.signal === undefined) return await super.request(request);
+    await new Promise<void>((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+    });
     return await super.request(request);
   }
 }
@@ -409,6 +431,114 @@ describe("Android V2 observer-backed driver", () => {
     await expect(reset).resolves.toBeUndefined();
     await driver.close();
     expect(crossedBoundary).toBe(false);
+  });
+
+  it("honors a per-operation signal during an active observer request", async () => {
+    const observer = new AbortAwareObserver();
+    const driver = createDriver(new FakeExecutor(), observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    const beginStarted = new Promise<void>((resolve) => { observer.beginStarted = resolve; });
+    const controller = new AbortController();
+
+    const press = driver.press("RIGHT", { signal: controller.signal });
+    await beginStarted;
+    controller.abort();
+
+    await expect(press).rejects.toMatchObject({ name: "AbortError" });
+    expect(observer.beginSignal?.aborted).toBe(true);
+    await driver.close();
+  });
+
+  it("serializes force-stop after an active press settles", async () => {
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.gateType = "begin_action";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const press = driver.press("RIGHT");
+    await gateStarted;
+    const forceStop = driver.forceStop();
+    await Promise.resolve();
+    expect(executor.calls.some((call) => call.join(" ").includes("am force-stop org.example.tv"))).toBe(false);
+
+    observer.releaseGate?.();
+    await expect(press).resolves.toMatchObject({ outcome: "applied" });
+    await expect(forceStop).resolves.toBeUndefined();
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands.indexOf("-s emulator-5554 shell input keyevent KEYCODE_DPAD_RIGHT"))
+      .toBeLessThan(commands.indexOf("-s emulator-5554 shell am force-stop org.example.tv"));
+    await driver.close();
+  });
+
+  it("serializes screenshots after an active snapshot completes", async () => {
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.gateType = "current_state";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const snapshot = driver.snapshot();
+    await gateStarted;
+    const screenshot = driver.captureScreenshot("artifacts/queued-screenshot.png");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(executor.calls.some((call) => call.join(" ").includes("exec-out screencap -p"))).toBe(false);
+
+    observer.releaseGate?.();
+    await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
+    await expect(screenshot).rejects.toThrow(/valid PNG/u);
+    await driver.close();
+  });
+
+  it("serializes metadata collection after an active snapshot completes", async () => {
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    const metadataCallsBefore = executor.calls.filter((call) => call.join(" ").includes("ro.product.manufacturer")).length;
+    observer.gateType = "current_state";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const snapshot = driver.snapshot();
+    await gateStarted;
+    const metadata = driver.getDeviceMetadata(true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(executor.calls.filter((call) => call.join(" ").includes("ro.product.manufacturer"))).toHaveLength(metadataCallsBefore);
+
+    observer.releaseGate?.();
+    await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
+    await expect(metadata).resolves.toMatchObject({ manufacturer: "Google" });
+    await driver.close();
+  });
+
+  it("serializes installs after an active snapshot completes", async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "tvdoctor-android-driver-"));
+    const apkPath = join(temporaryDirectory, "fixture.apk");
+    await writeFile(apkPath, "fixture");
+    const executor = new FakeExecutor();
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    try {
+      await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+      observer.gateType = "current_state";
+      const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+      const snapshot = driver.snapshot();
+      await gateStarted;
+      const install = driver.install(apkPath);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(executor.calls.some((call) => call.includes(apkPath))).toBe(false);
+
+      observer.releaseGate?.();
+      await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
+      await expect(install).resolves.toBeUndefined();
+      expect(executor.calls.some((call) => call.includes(apkPath))).toBe(true);
+    } finally {
+      await driver.close();
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   it("captures only target-PID logs from the current launch-time boundary", async () => {
