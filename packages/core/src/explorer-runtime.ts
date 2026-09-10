@@ -1,4 +1,10 @@
-import type { ActionResult, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
+import type {
+  ActionResult,
+  DriverOperationOptions,
+  RemoteKey,
+  StateSnapshot,
+  TVDoctorDriver,
+} from "@tvdoctor/protocol";
 import { pressAndObserve } from "./action-settling.js";
 import { PreparedStateDivergenceError } from "./errors.js";
 import {
@@ -16,6 +22,10 @@ import type {
 import type { ExplorerOptions, ExplorationResult, ExplorationTermination } from "./explorer-contracts.js";
 import { takeFrontier as selectFrontier, type QueueEntry } from "./explorer-frontier.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
+import {
+  OperationDeadlineExceeded,
+  runWithOperationDeadline,
+} from "./operation-deadline.js";
 import {
   createExplorerRestorer,
   DurationBudgetExceeded,
@@ -107,21 +117,21 @@ export async function explore(
     phaseTimings.screenSettlingMs += screenAt - focusAt;
   };
   const measuredDriver: TVDoctorDriver = {
-    capabilities: async () => driver.capabilities(),
-    press: async (key) => {
+    capabilities: async (operationOptions) => driver.capabilities(operationOptions),
+    press: async (key, operationOptions) => {
       const pressStartedAt = monotonicNow();
       try {
-        const result = await driver.press(key);
+        const result = await driver.press(key, operationOptions);
         recordActionTiming(result);
         return result;
       } finally {
         phaseTimings.driverPressMs += durationSince(pressStartedAt);
       }
     },
-    snapshot: async () => {
+    snapshot: async (operationOptions) => {
       const snapshotStartedAt = monotonicNow();
       try {
-        return await driver.snapshot();
+        return await driver.snapshot(operationOptions);
       } finally {
         phaseTimings.snapshotCaptureMs += durationSince(snapshotStartedAt);
       }
@@ -151,23 +161,20 @@ export async function explore(
   };
 
   const elapsed = (): number => Math.max(0, monotonicNow() - startedAtMs);
-  const withinDurationBudget = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const withinDurationBudget = async <T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
     const remainingMs = budgets.maxDurationMs - elapsed();
     if (remainingMs <= 0) throw new DurationBudgetExceeded();
-
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const operationResult = operation().then(
-      (value) => ({ status: "fulfilled" as const, value }),
-      (error: unknown) => ({ status: "rejected" as const, error }),
-    );
-    const timeoutResult = new Promise<{ readonly status: "timed-out" }>((resolve) => {
-      timeout = setTimeout(() => resolve({ status: "timed-out" }), remainingMs);
-    });
-    const result = await Promise.race([operationResult, timeoutResult]);
-    if (timeout !== undefined) clearTimeout(timeout);
-    if (result.status === "timed-out") throw new DurationBudgetExceeded();
-    if (result.status === "rejected") throw result.error;
-    return result.value;
+    try {
+      return await runWithOperationDeadline({
+        timeoutMs: Math.max(1, Math.ceil(remainingMs)),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }, operation);
+    } catch (error) {
+      if (error instanceof OperationDeadlineExceeded) throw new DurationBudgetExceeded();
+      throw error;
+    }
   };
   const graph = (): ExplorationGraph => ({
     screens: {
@@ -253,7 +260,7 @@ export async function explore(
 
   let capabilities: ReadonlySet<string>;
   try {
-    capabilities = await withinDurationBudget(() => driver.capabilities());
+    capabilities = await withinDurationBudget((signal) => driver.capabilities({ signal }));
   } catch (error) {
     if (signalAborted()) return finish(incomplete("interrupted"));
     if (error instanceof DurationBudgetExceeded) return finish(incomplete("max-duration"));
@@ -265,16 +272,20 @@ export async function explore(
 
   const restoreInitialState = options.restoreInitialState ?? (driver.reset === undefined
     ? undefined
-    : async () => driver.reset?.(options.resetStrategy ?? "reload"));
+    : async (operationOptions?: DriverOperationOptions) => driver.reset?.(
+      options.resetStrategy ?? "reload",
+      operationOptions,
+    ));
   const restoreInitialSnapshot = options.restoreInitialSnapshot;
   if (restoreInitialState === undefined && restoreInitialSnapshot === undefined) {
     return finish(incomplete("restoration-unavailable"));
   }
 
-  const restoreAndCapture = async (): Promise<StateSnapshot> => {
-    if (restoreInitialSnapshot !== undefined) return await restoreInitialSnapshot();
-    await restoreInitialState?.();
-    return await measuredDriver.snapshot();
+  const restoreAndCapture = async (signal: AbortSignal): Promise<StateSnapshot> => {
+    const operationOptions = { signal };
+    if (restoreInitialSnapshot !== undefined) return await restoreInitialSnapshot(operationOptions);
+    await restoreInitialState?.(operationOptions);
+    return await measuredDriver.snapshot(operationOptions);
   };
 
   const workBudgetTermination = (): ExplorationTermination | null => {
@@ -457,9 +468,10 @@ export async function explore(
       explorationActions += 1;
       let actionObservation: Awaited<ReturnType<typeof pressAndObserve>>;
       try {
-        actionObservation = await withinDurationBudget(() => pressAndObserve(measuredDriver, key, {
+        actionObservation = await withinDurationBudget((signal) => pressAndObserve(measuredDriver, key, {
           ...settling,
           allowUnsettledActions: options.allowUnsettledActions === true,
+          signal,
         }));
         settlingPolls += actionObservation.snapshotsObserved - 1;
         if (!actionObservation.settled) unsettledActions += 1;
