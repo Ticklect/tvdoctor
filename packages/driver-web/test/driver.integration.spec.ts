@@ -91,6 +91,17 @@ test("reports an exact, deliberately limited capability set", async () => {
   expect(capabilities).not.toContain("video-capture");
 });
 
+test("retires the browser session after a cancelled operation", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "broken-streaming", launchUri: requireBaseURL(baseURL) });
+  const controller = new AbortController();
+  controller.abort();
+
+  await expect(driver.snapshot({ signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+  await expect(driver.snapshot()).rejects.toThrow(/unusable after cancellation/u);
+  await driver.close();
+});
+
 test("maps explicit HOME and media controls to Playwright-supported keyboard keys", () => {
   expect(WEB_REMOTE_KEYBOARD_MAP).toMatchObject({
     HOME: "Home",
