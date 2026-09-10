@@ -25,7 +25,7 @@
     "test:cli-integration": "npm run test:integration --workspace tvdoctor",
     "test:core-integration": "npm run test:integration --workspace @tvdoctor/core",
     "test:driver": "npm test --workspace @tvdoctor/driver-web",
-    "test:device-proof": "node --test scripts/physical-device-proof.test.mjs",
+    "test:device-proof": "node --test scripts/physical-device-proof.test.mjs scripts/android-security-preflight.test.mjs",
     "test:fixture": "npm test --workspace @tvdoctor/broken-streaming-web",
     "test:package-smoke": "node scripts/package-smoke.mjs",
     "test:presentation": "node --test scripts/repository-presentation.test.mjs && node scripts/check-repository-presentation.mjs",
