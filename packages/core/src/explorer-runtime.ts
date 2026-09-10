@@ -1,10 +1,4 @@
-import type {
-  ActionResult,
-  DriverOperationOptions,
-  RemoteKey,
-  StateSnapshot,
-  TVDoctorDriver,
-} from "@tvdoctor/protocol";
+import type { ActionResult, DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
 import { pressAndObserve } from "./action-settling.js";
 import { PreparedStateDivergenceError } from "./errors.js";
 import {
