@@ -1,6 +1,7 @@
 import type {
   ActionResult,
   Capability,
+  DriverOperationOptions,
   LogEntry,
   RemoteKey,
   StateSnapshot,
@@ -520,13 +521,23 @@ describe("M7 web pack", () => {
   });
 
   test("returns a truthful partial max-duration result for a never-settling hook", async () => {
+    let hookSignal: AbortSignal | undefined;
+    let abortedBeforeReturn = false;
     const result = await runWebPack(new FakeWebDriver(), {
       stages: ["layout"],
       playerSettingsSequence: ["UP", "SELECT"],
       budgets: { maxDurationMs: 30 },
       hooks: {
         viewport: {
-          observe: () => new Promise(() => undefined),
+          observe: (_snapshot, options?: DriverOperationOptions) => {
+            hookSignal = options?.signal;
+            return new Promise((_resolve, reject) => {
+              options?.signal?.addEventListener("abort", () => {
+                abortedBeforeReturn = options.signal?.aborted === true;
+                reject(options.signal?.reason);
+              }, { once: true });
+            });
+          },
         },
       },
     });
@@ -538,6 +549,8 @@ describe("M7 web pack", () => {
     expect(result.stages).toEqual([
       expect.objectContaining({ stage: "layout", status: "partial" }),
     ]);
+    expect(hookSignal?.aborted).toBe(true);
+    expect(abortedBeforeReturn).toBe(true);
   });
 
   test("keeps six stages independent and reports exactly the five intended defect domains", async () => {

@@ -1,11 +1,16 @@
 import type {
   ActionResult,
   Capability,
+  DriverOperationOptions,
   RemoteKey,
   ResetStrategy,
   StateSnapshot,
   TVDoctorDriver,
 } from "@tvdoctor/protocol";
+import {
+  OperationDeadlineExceeded,
+  runWithOperationDeadline,
+} from "@tvdoctor/core";
 import {
   describeStreamingElement,
   focusedEntry,
@@ -63,7 +68,7 @@ export class StreamingSession {
   private readonly driver: TVDoctorDriver;
   readonly budgets: StreamingPackBudgets;
   private readonly resetStrategy: ResetStrategy;
-  private readonly restoreInitialState: (() => Promise<void>) | undefined;
+  private readonly restoreInitialState: ((options?: DriverOperationOptions) => Promise<void>) | undefined;
   private readonly monotonicNow: () => number;
   private physicalActions = 0;
   private discoveryActions = 0;
@@ -75,12 +80,13 @@ export class StreamingSession {
   private readonly uniqueStates = new Set<string>();
   private readonly selectCheckpoints = new Map<string, SelectCheckpoint>();
   private readonly startedAtMs: number;
+  private terminal = false;
 
   constructor(
     driver: TVDoctorDriver,
     budgets: StreamingPackBudgets,
     resetStrategy: ResetStrategy,
-    restoreInitialState: (() => Promise<void>) | undefined,
+    restoreInitialState: ((options?: DriverOperationOptions) => Promise<void>) | undefined,
     monotonicNow: () => number,
   ) {
     this.driver = driver;
@@ -111,29 +117,27 @@ export class StreamingSession {
     return Math.max(0, this.budgets.maxDurationMs - this.elapsed());
   }
 
-  async operation<T>(operation: () => Promise<T>): Promise<T> {
+  async operation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (this.terminal) {
+      throw new PackStop("max-duration", "The streaming pack session is unusable after its duration deadline.");
+    }
     const remainingMs = this.remainingDuration();
     if (remainingMs <= 0) throw new PackStop("max-duration", "The streaming pack duration budget was exhausted.");
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const operationResult = operation().then(
-      (value) => ({ status: "fulfilled" as const, value }),
-      (error: unknown) => ({ status: "rejected" as const, error }),
-    );
-    const timeoutResult = new Promise<{ readonly status: "timed-out" }>((resolve) => {
-      timeout = setTimeout(() => resolve({ status: "timed-out" }), remainingMs);
-    });
-    const result = await Promise.race([operationResult, timeoutResult]);
-    if (timeout !== undefined) clearTimeout(timeout);
-    if (result.status === "timed-out") {
+    try {
+      return await runWithOperationDeadline(
+        { timeoutMs: Math.max(1, Math.ceil(remainingMs)) },
+        operation,
+      );
+    } catch (error) {
+      if (!(error instanceof OperationDeadlineExceeded)) throw error;
+      this.terminal = true;
       throw new PackStop("max-duration", "The streaming pack duration budget was exhausted during a driver operation.");
     }
-    if (result.status === "rejected") throw result.error;
-    return result.value;
   }
 
   async capabilities(): Promise<ReadonlySet<Capability>> {
     try {
-      return await this.operation(() => this.driver.capabilities());
+      return await this.operation((signal) => this.driver.capabilities({ signal }));
     } catch (error) {
       if (error instanceof PackStop) throw error;
       throw new PackStop("driver-error", `Driver capabilities failed: ${safeErrorMessage(error)}`);
@@ -142,7 +146,7 @@ export class StreamingSession {
 
   async snapshot(): Promise<StateSnapshot> {
     try {
-      const snapshot = await this.operation(() => this.driver.snapshot());
+      const snapshot = await this.operation((signal) => this.driver.snapshot({ signal }));
       this.snapshots += 1;
       const identity = semanticStateIdentity(snapshot);
       if (identity !== null) {
@@ -161,12 +165,12 @@ export class StreamingSession {
   async restore(): Promise<void> {
     const restore = this.restoreInitialState ?? (this.driver.reset === undefined
       ? undefined
-      : async () => this.driver.reset?.(this.resetStrategy));
+      : async (options?: DriverOperationOptions) => this.driver.reset?.(this.resetStrategy, options));
     if (restore === undefined) {
       throw new PackStop("restoration-unavailable", "The driver has no reset method and no restoration hook was supplied.");
     }
     try {
-      await this.operation(restore);
+      await this.operation((signal) => restore({ signal }));
       this.resets += 1;
     } catch (error) {
       if (error instanceof PackStop) throw error;
@@ -257,7 +261,7 @@ export class StreamingSession {
     if (kind === "replay") this.replayActions += 1;
     let result: ActionResult;
     try {
-      result = await this.operation(() => this.driver.press(key));
+      result = await this.operation((signal) => this.driver.press(key, { signal }));
     } catch (error) {
       if (error instanceof PackStop) throw error;
       throw new PackStop("driver-error", `Remote input ${key} failed: ${safeErrorMessage(error)}`);

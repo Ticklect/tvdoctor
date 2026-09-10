@@ -85,7 +85,9 @@ export async function runIsolatedPointerProbe(
   let result: StreamingPointerProbeResult;
   session.recordPointerProbe();
   try {
-    result = normalisePointerProbeResult(await session.operation(() => probe.probe(request)));
+    result = normalisePointerProbeResult(await session.operation(
+      (signal) => probe.probe({ ...request, signal }),
+    ));
   } catch (error) {
     result = {
       status: "error",

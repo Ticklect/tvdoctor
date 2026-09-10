@@ -32,14 +32,13 @@ export async function runWithOperationDeadline<T>(
   signal.throwIfAborted();
 
   const deadlineError = new OperationDeadlineExceeded();
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let removeAbortListener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     const onAbort = (): void => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
     removeAbortListener = () => signal.removeEventListener("abort", onAbort);
   });
-  timer = setTimeout(() => deadlineController.abort(deadlineError), options.timeoutMs);
+  const timer = setTimeout(() => deadlineController.abort(deadlineError), options.timeoutMs);
 
   try {
     return await Promise.race([
@@ -47,7 +46,7 @@ export async function runWithOperationDeadline<T>(
       aborted,
     ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
     removeAbortListener?.();
   }
 }
