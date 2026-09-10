@@ -10,11 +10,15 @@ import {
   validateSvg,
 } from './lib/repository-presentation.mjs';
 
-test('root lint ignores nested git worktrees', async () => {
+test('root lint ignores nested generated workspace trees', async () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const eslint = new ESLint({ cwd: repositoryRoot });
   assert.equal(
     await eslint.isPathIgnored(path.join(repositoryRoot, '.worktrees', 'example', 'src', 'bad.ts')),
+    true,
+  );
+  assert.equal(
+    await eslint.isPathIgnored(path.join(repositoryRoot, 'artifacts', 'fresh-clone', 'src', 'bad.ts')),
     true,
   );
 });
