@@ -3,7 +3,6 @@ import {
   type ActionResult,
   type Capability,
   type RemoteKey,
-  type ResetStrategy,
   type StateSnapshot,
   type TVDoctorDriver,
   type UiNodeSnapshot,
@@ -61,7 +60,7 @@ class SelfLoopDriver implements TVDoctorDriver {
     return snapshot("root");
   }
 
-  async reset(_strategy: ResetStrategy): Promise<void> {
+  async reset(): Promise<void> {
     this.resets += 1;
   }
 }
@@ -93,7 +92,7 @@ class OneShotDriftDriver implements TVDoctorDriver {
     return snapshot(this.state);
   }
 
-  async reset(_strategy: ResetStrategy): Promise<void> {
+  async reset(): Promise<void> {
     this.resets += 1;
     this.state = "a";
   }
