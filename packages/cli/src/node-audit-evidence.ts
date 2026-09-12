@@ -34,6 +34,8 @@ function asJson(value: unknown): import("@tvdoctor/reporters").JsonValue {
 
 export const EVIDENCE_EXCERPT_MAX_NODES = 150;
 
+type EvidenceDriverSource = PlaywrightWebDriver | (() => PlaywrightWebDriver);
+
 /**
  * Bounded excerpt of a snapshot's UI tree for report embedding. Complex real
  * pages can produce trees whose serialised form would exceed the reporters'
@@ -93,7 +95,7 @@ async function withinDeadline<T>(
 async function captureContext(
   target: string,
   sequence: readonly RemoteKey[],
-  createDriver: () => PlaywrightWebDriver,
+  driver: PlaywrightWebDriver,
   maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
 ): Promise<{
   readonly before: StateSnapshot;
@@ -103,47 +105,38 @@ async function captureContext(
   readonly action: ActionResult | null;
   readonly logs: readonly WebLogEntry[];
 }> {
-  const driver = createDriver();
   const deadlineMs = Date.now() + maximumDurationMs;
-  try {
-    await withinDeadline(
-      driver.launch({ id: "cli-issue-evidence", launchUri: target }),
-      deadlineMs,
-      "Evidence browser launch",
-    );
-    const setup = sequence.length === 0 ? [] : sequence.slice(0, -1);
-    for (const key of setup) {
-      const result = await withinDeadline(driver.press(key), deadlineMs, `Evidence setup ${key}`);
-      if (result.outcome !== "applied") throw new Error(`Evidence setup ${key} was ${result.outcome}.`);
-    }
-    const before = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence before snapshot");
-    const beforePng = await withinDeadline(
-      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-      deadlineMs,
-      "Evidence before screenshot",
-    );
-    const assertion = sequence.at(-1);
-    const action = assertion === undefined
-      ? null
-      : await withinDeadline(driver.press(assertion), deadlineMs, `Evidence assertion ${assertion}`);
-    if (action !== null && action.outcome !== "applied") {
-      throw new Error(`Evidence assertion ${assertion} was ${action.outcome}.`);
-    }
-    const after = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence after snapshot");
-    const afterPng = await withinDeadline(
-      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-      deadlineMs,
-      "Evidence after screenshot",
-    );
-    const logs = await withinDeadline(driver.getLogs(), deadlineMs, "Evidence log capture");
-    return { before, after, beforePng, afterPng, action, logs };
-  } finally {
-    await withinDeadline(
-      driver.close(),
-      Date.now() + 5_000,
-      "Evidence browser cleanup",
-    ).catch(() => undefined);
+  await withinDeadline(
+    driver.launch({ id: "cli-issue-evidence", launchUri: target }),
+    deadlineMs,
+    "Evidence browser launch",
+  );
+  const setup = sequence.length === 0 ? [] : sequence.slice(0, -1);
+  for (const key of setup) {
+    const result = await withinDeadline(driver.press(key), deadlineMs, `Evidence setup ${key}`);
+    if (result.outcome !== "applied") throw new Error(`Evidence setup ${key} was ${result.outcome}.`);
   }
+  const before = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence before snapshot");
+  const beforePng = await withinDeadline(
+    driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+    deadlineMs,
+    "Evidence before screenshot",
+  );
+  const assertion = sequence.at(-1);
+  const action = assertion === undefined
+    ? null
+    : await withinDeadline(driver.press(assertion), deadlineMs, `Evidence assertion ${assertion}`);
+  if (action !== null && action.outcome !== "applied") {
+    throw new Error(`Evidence assertion ${assertion} was ${action.outcome}.`);
+  }
+  const after = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence after snapshot");
+  const afterPng = await withinDeadline(
+    driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+    deadlineMs,
+    "Evidence after screenshot",
+  );
+  const logs = await withinDeadline(driver.getLogs(), deadlineMs, "Evidence log capture");
+  return { before, after, beforePng, afterPng, action, logs };
 }
 
 function focusedIdentity(snapshot: StateSnapshot): string | null {
@@ -251,7 +244,7 @@ export async function captureIssue(
   target: string,
   products: AuditRunProducts,
   sourceIssue: TVDoctorIssue,
-  createDriver: () => PlaywrightWebDriver,
+  driverSource: EvidenceDriverSource,
 ): Promise<CapturedIssue> {
   const sequence = sequenceForIssue(products, sourceIssue);
   const compiled = sourceIssue.reproduction.status === "available" ? compileIssueReplay(sourceIssue) : null;
@@ -260,9 +253,11 @@ export async function captureIssue(
     slot: slot as IssueEvidenceSlot,
     capture: { status: "failed", reason },
   });
+  const ownsDriver = typeof driverSource === "function";
+  const driver = ownsDriver ? driverSource() : driverSource;
   let context: Awaited<ReturnType<typeof captureContext>>;
   try {
-    context = await captureContext(target, sequence, createDriver);
+    context = await captureContext(target, sequence, driver);
     const driftReason = freshEvidenceDriftReason(sourceIssue, context);
     if (driftReason !== null) throw new Error(driftReason);
   } catch (error) {
@@ -272,6 +267,14 @@ export async function captureIssue(
       sequence,
       `Evidence capture was inconclusive: ${error instanceof Error ? error.message : String(error)}`,
     );
+  } finally {
+    if (ownsDriver) {
+      await withinDeadline(
+        driver.close(),
+        Date.now() + 5_000,
+        "Evidence browser cleanup",
+      ).catch(() => undefined);
+    }
   }
 
   try {
@@ -415,29 +418,45 @@ export async function captureIssuesWithinBudget(
 ): Promise<readonly CapturedIssue[]> {
   const startedAtMs = now();
   const captured: CapturedIssue[] = [];
-  for (const [index, issue] of issues.entries()) {
-    if (signal?.aborted === true) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        "Fresh evidence was not recaptured because the scan was interrupted.",
-      ));
-      continue;
+  const usePooledDriver = capture === captureIssue;
+  let pooledDriver: PlaywrightWebDriver | null = null;
+  try {
+    for (const [index, issue] of issues.entries()) {
+      if (signal?.aborted === true) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          "Fresh evidence was not recaptured because the scan was interrupted.",
+        ));
+        continue;
+      }
+      if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
+        ));
+        continue;
+      }
+      if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
+        ));
+        continue;
+      }
+      const driverSource: EvidenceDriverSource = usePooledDriver
+        ? (pooledDriver ??= createDriver())
+        : createDriver;
+      const result = await capture(store, target, products, issue, driverSource);
+      captured.push(result);
+      if (usePooledDriver && result.failed && pooledDriver !== null) {
+        await pooledDriver.close().catch(() => undefined);
+        pooledDriver = null;
+      }
     }
-    if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
-      ));
-      continue;
+    return captured;
+  } finally {
+    if (pooledDriver !== null) {
+      await pooledDriver.close().catch(() => undefined);
     }
-    if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
-      ));
-      continue;
-    }
-    captured.push(await capture(store, target, products, issue, createDriver));
   }
-  return captured;
 }
