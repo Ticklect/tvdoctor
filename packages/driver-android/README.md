@@ -15,6 +15,12 @@ ADB remains responsible for device discovery, observer/target installation,
 launch, reset, input, screenshots, port forwarding, and cleanup. UIAutomator
 hierarchy dumping is not part of the production action loop.
 
+All public device operations share one FIFO queue, including discovery,
+installation, metadata collection, force-stop, and screenshots. This gives
+screenshots and lifecycle changes a defined boundary relative to input and
+observer requests. Operations that accept `DriverOperationOptions` also pass
+its `AbortSignal` through observer and ADB work for cooperative cancellation.
+
 ```ts
 import { AndroidTvDriver } from "@tvdoctor/driver-android";
 

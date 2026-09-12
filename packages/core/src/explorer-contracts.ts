@@ -1,4 +1,5 @@
 import type {
+  DriverOperationOptions,
   RemoteKey,
   ResetStrategy,
   StateSnapshot,
@@ -86,13 +87,13 @@ export interface ExplorerOptions {
   /** Used when restoreInitialState is absent. */
   readonly resetStrategy?: ResetStrategy;
   /** Allows adapters to supply an equivalent deterministic root restoration. */
-  readonly restoreInitialState?: () => Promise<void>;
+  readonly restoreInitialState?: (options?: DriverOperationOptions) => Promise<void>;
   /**
    * Restores the prepared root and returns its verified semantic snapshot.
    * When supplied, this replaces the default reset-plus-snapshot boundary for
    * both startup and replay reconstruction.
    */
-  readonly restoreInitialSnapshot?: () => Promise<StateSnapshot>;
+  readonly restoreInitialSnapshot?: (options?: DriverOperationOptions) => Promise<StateSnapshot>;
   /** Injectable monotonic clock for deterministic hosts/tests. */
   readonly monotonicNow?: () => number;
   /** Legacy calls remain BFS; explicit profiles default to deterministic priority. */

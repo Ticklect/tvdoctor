@@ -1,4 +1,5 @@
 import type {
+  DriverOperationOptions,
   ElementBounds,
   FocusTarget,
   RemoteKey,
@@ -98,6 +99,8 @@ export interface StreamingPointerProbeRequest {
   readonly snapshot: StateSnapshot;
   /** The exact remote-only route that reached the containing semantic surface. */
   readonly surfaceSequence: readonly RemoteKey[];
+  /** Aborted when the pack-wide deadline expires. */
+  readonly signal?: AbortSignal;
 }
 
 export interface StreamingPointerObservedChange {
@@ -141,7 +144,7 @@ export interface StreamingPointerProbe {
 export interface StreamingPackOptions {
   readonly budgets?: Partial<StreamingPackBudgets>;
   readonly resetStrategy?: ResetStrategy;
-  readonly restoreInitialState?: () => Promise<void>;
+  readonly restoreInitialState?: (options?: DriverOperationOptions) => Promise<void>;
   readonly pointerProbe?: StreamingPointerProbe;
   readonly monotonicNow?: () => number;
 }

@@ -474,7 +474,7 @@ export async function prepareStartup(
       };
     }
 
-    if (policy.kind === "remote-sequence") {
+    if (blockers.length > 0 && policy.kind === "remote-sequence") {
       const settling = normaliseActionSettlingOptions({
         strategy: "stable-snapshot",
         maxSnapshots: Math.min(stability.maxSnapshots, 6),

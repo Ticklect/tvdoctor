@@ -532,6 +532,36 @@ class StartupConsentDriver implements TVDoctorDriver {
   }
 }
 
+class CleanStartupDriver implements TVDoctorDriver {
+  readonly pressed: RemoteKey[] = [];
+
+  async capabilities() {
+    return new Set<Capability>(["remote-input", "ui-tree"]);
+  }
+
+  async reset() {
+    return undefined;
+  }
+
+  async press(key: RemoteKey) {
+    this.pressed.push(key);
+    return { key, outcome: "applied" as const, timing: { inputSentAtMs: this.pressed.length } };
+  }
+
+  async snapshot() {
+    return {
+      ...startupSnapshot("catalogue-home"),
+      uiTree: availableObservation([startupControl("catalogue", "Catalogue", false)]),
+      focusedElement: availableObservation({
+        stableId: "catalogue-home",
+        role: "button",
+        name: "Catalogue",
+        bounds: { x: 10, y: 10, width: 100, height: 40 },
+      }),
+    };
+  }
+}
+
 describe("startup preparation", () => {
   const stability = {
     maxSnapshots: 3,
@@ -573,6 +603,20 @@ describe("startup preparation", () => {
     expect(driver.pressed).toEqual(["RIGHT", "SELECT"]);
     expect(driver.resetCount).toBeGreaterThanOrEqual(3);
     await expect(result.restoreToPreparedState?.()).resolves.toBeTruthy();
+  });
+
+  it("ignores startup policy actions when the stable screen has no blocker", async () => {
+    const driver = new CleanStartupDriver();
+    const result = await prepareStartup(driver, {
+      policy: { kind: "remote-sequence", actions: ["SELECT"] },
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe("ready");
+    expect(driver.pressed).toEqual([]);
+    expect(result.steps.some((step) => step.operation === "policy-action")).toBe(false);
   });
 
   it("fails closed when startup never reaches canonical stability", async () => {

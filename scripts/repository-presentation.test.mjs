@@ -3,11 +3,25 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { ESLint } from 'eslint';
 import {
   extractLocalReferences,
   validateLocalReferences,
   validateSvg,
 } from './lib/repository-presentation.mjs';
+
+test('root lint ignores nested generated workspace trees', async () => {
+  const repositoryRoot = path.resolve(import.meta.dirname, '..');
+  const eslint = new ESLint({ cwd: repositoryRoot });
+  assert.equal(
+    await eslint.isPathIgnored(path.join(repositoryRoot, '.worktrees', 'example', 'src', 'bad.ts')),
+    true,
+  );
+  assert.equal(
+    await eslint.isPathIgnored(path.join(repositoryRoot, 'artifacts', 'fresh-clone', 'src', 'bad.ts')),
+    true,
+  );
+});
 
 test('extractLocalReferences keeps repository files and ignores remote and anchor links', () => {
   const markdown = '[docs](docs/demo.md) ![hero](docs/assets/hero.svg) [web](https://example.com) [section](#demo)';

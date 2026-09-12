@@ -3,6 +3,7 @@ import {
   type ActionOutcome,
   type ActionResult,
   type Capability,
+  type DriverOperationOptions,
   type RemoteKey,
   type ResetStrategy,
   type StateSnapshot,
@@ -505,20 +506,35 @@ describe("bounded deterministic explorer", () => {
   });
 
   it("returns at the duration deadline when a driver call never settles", async () => {
-    const never = new Promise<void>(() => undefined);
+    let pressSignal: AbortSignal | undefined;
+    let abortedBeforeReturn = false;
+    let resetCount = 0;
+    let snapshotCount = 0;
+    let resetCountAtPress = 0;
+    let snapshotCountAtPress = 0;
     const driver: TVDoctorDriver = {
       async capabilities() {
         return new Set<Capability>(["remote-input", "ui-tree"]);
       },
-      async press(key) {
-        await never;
+      async press(key, options?: DriverOperationOptions) {
+        pressSignal = options?.signal;
+        resetCountAtPress = resetCount;
+        snapshotCountAtPress = snapshotCount;
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            abortedBeforeReturn = options.signal?.aborted === true;
+            reject(options.signal?.reason);
+          }, { once: true });
+        });
         return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
       },
       async snapshot() {
+        snapshotCount += 1;
         return stateSnapshot(MACHINE_STATES["homeNav"] as MachineState);
       },
       async reset(strategy) {
         void strategy;
+        resetCount += 1;
       },
     };
     const startedAt = performance.now();
@@ -530,6 +546,10 @@ describe("bounded deterministic explorer", () => {
     expect(result.termination).toMatchObject({ reason: "max-duration", complete: false });
     expect(result.statistics.physicalActions).toBe(1);
     expect(performance.now() - startedAt).toBeLessThan(250);
+    expect(pressSignal?.aborted).toBe(true);
+    expect(abortedBeforeReturn).toBe(true);
+    expect(resetCount).toBe(resetCountAtPress);
+    expect(snapshotCount).toBe(snapshotCountAtPress);
   });
 
   it("waits for the driver settling boundary before taking a snapshot", async () => {

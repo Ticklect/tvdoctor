@@ -7,6 +7,7 @@ import {
   unavailableObservation,
   type ActionResult,
   type Capability,
+  type DriverOperationOptions,
   type RemoteKey,
   type ResetStrategy,
   type ScreenshotArtifact,
@@ -243,6 +244,15 @@ function delay(durationMs: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function combinedSignal(
+  shared: AbortSignal | undefined,
+  operation: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (shared === undefined) return operation;
+  if (operation === undefined || operation === shared) return shared;
+  return AbortSignal.any([shared, operation]);
+}
+
 export class AndroidTvDriver implements TVDoctorDriver {
   readonly #options: NormalisedOptions;
   #resolvedSerial: string | null;
@@ -265,17 +275,32 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#options = normaliseOptions(options);
     this.#resolvedSerial = this.#options.serial ?? null;
   }
-  async capabilities(): Promise<ReadonlySet<Capability>> { this.#ensureOpen(); return CAPABILITIES; }
-  async listDevices(): Promise<readonly AndroidDeviceListEntry[]> {
+  async capabilities(options?: DriverOperationOptions): Promise<ReadonlySet<Capability>> {
+    this.#ensureOpen();
+    combinedSignal(this.#options.signal, options?.signal)?.throwIfAborted();
+    return CAPABILITIES;
+  }
+  async listDevices(options?: DriverOperationOptions): Promise<readonly AndroidDeviceListEntry[]> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#listDevices(signal), signal);
+  }
+  async #listDevices(signal?: AbortSignal): Promise<readonly AndroidDeviceListEntry[]> {
     this.#ensureOpen();
     return parseDevices(utf8((await this.#options.executor.execute(
       ["devices", "-l"], {
         timeoutMs: this.#options.commandTimeoutMs,
-        ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       },
     )).stdout));
   }
-  async waitForDeviceReady(timeoutMs = 180_000): Promise<AndroidDeviceMetadata> {
+  async waitForDeviceReady(
+    timeoutMs = 180_000,
+    options?: DriverOperationOptions,
+  ): Promise<AndroidDeviceMetadata> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#waitForDeviceReady(timeoutMs, signal), signal);
+  }
+  async #waitForDeviceReady(timeoutMs: number, signal?: AbortSignal): Promise<AndroidDeviceMetadata> {
     this.#ensureOpen();
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
       throw new TypeError("timeoutMs must be a positive safe integer duration.");
@@ -288,46 +313,56 @@ export class AndroidTvDriver implements TVDoctorDriver {
         if (state !== "device") throw new Error("Device is not online.");
         const boot = (await this.#deviceText(["shell", "getprop", "sys.boot_completed"], commandOptions)).trim();
         if (boot !== "1") throw new Error("Device has not completed boot.");
-        return await this.getDeviceMetadata(true);
-      } catch { await delay(Math.min(250, Math.max(1, deadline - performance.now())), this.#options.signal); }
+        return await this.#getDeviceMetadata(true, signal);
+      } catch {
+        if (signal?.aborted === true) throw signal.reason;
+        await delay(Math.min(250, Math.max(1, deadline - performance.now())), signal);
+      }
     }
     throw new Error(`Android device did not become ready within ${String(timeoutMs)} ms.`);
   }
-  async install(artifactPath: string): Promise<void> {
+  async install(artifactPath: string, options?: DriverOperationOptions): Promise<void> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#install(artifactPath, signal), signal);
+  }
+  async #install(artifactPath: string, signal?: AbortSignal): Promise<void> {
     this.#ensureOpen(); const absolutePath = resolve(artifactPath);
     if (!isAbsolute(absolutePath)) throw new TypeError("Android APK path could not be resolved.");
     const metadata = await stat(absolutePath);
     if (!metadata.isFile()) throw new TypeError("Android APK path is not a regular file.");
     await this.#deviceCommand(["install", "-r", absolutePath], {
       timeoutMs: Math.max(this.#options.commandTimeoutMs, 120_000), maxOutputBytes: this.#options.maxCommandOutputBytes,
+      ...(signal === undefined ? {} : { signal }),
     });
   }
-  async launch(app: AndroidAppReference): Promise<void> {
-    return await this.#enqueueOperation(() => this.#launch(app));
+  async launch(app: AndroidAppReference, options?: DriverOperationOptions): Promise<void> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#launch(app, signal), signal);
   }
-  async #launch(app: AndroidAppReference): Promise<void> {
+  async #launch(app: AndroidAppReference, signal?: AbortSignal): Promise<void> {
     this.#ensureOpen(); const packageName = validatePackage(app.id);
     const component = app.launchUri === undefined ? null : componentName(packageName, app.launchUri);
     if (this.#currentApp !== null && this.#currentApp.id !== packageName) await this.#disconnectObserver();
     this.#currentApp = { ...app, id: packageName }; this.#component = component;
-    await this.getDeviceMetadata(false); await this.#ensureObserver();
-    await this.#launchPackage(packageName, component);
+    await this.#getDeviceMetadata(false, signal); await this.#ensureObserver(signal);
+    await this.#launchPackage(packageName, component, signal);
     this.#appMetadata = null; this.#cachedTree = null;
-    await this.#stabilizeTargetLaunch(packageName, true);
-    await this.getAppMetadata();
+    await this.#stabilizeTargetLaunch(packageName, true, signal);
+    await this.#getAppMetadata(signal);
   }
 
-  async press(key: RemoteKey): Promise<ActionResult> {
-    return await this.#enqueueOperation(() => this.#press(key));
+  async press(key: RemoteKey, options?: DriverOperationOptions): Promise<ActionResult> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#press(key, signal), signal);
   }
-  async #press(key: RemoteKey): Promise<ActionResult> {
-    this.#ensureOpen(); const observer = await this.#requiredObserver();
+  async #press(key: RemoteKey, signal?: AbortSignal): Promise<ActionResult> {
+    this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
     const totalStarted = performance.now(); const inputSentAtMs = Date.now();
     let inputDelivered = false; let beginRoundTripMs = 0;
     try {
       const beginStarted = performance.now();
       const begin = await observer.request({ type: "begin_action", key }, {
-        ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       });
       beginRoundTripMs = performance.now() - beginStarted;
       if (begin.actionId === undefined) throw new Error("Android observer did not return an action identity.");
@@ -337,6 +372,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       // a reset boundary and mutating the next activity instance.
       await this.#deviceCommand(["shell", "input", "keyevent", KEY_CODES[key]], {
         timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: 4_096,
+        ...(signal === undefined ? {} : { signal }),
       });
       const inputDispatchMs = performance.now() - inputStarted; inputDelivered = true;
       const settleRoundTripStarted = performance.now();
@@ -345,7 +381,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
         quietWindowMs: this.#options.quietWindowMs, noResponseGraceMs: this.#options.noResponseGraceMs,
       }, {
         timeoutMs: this.#options.settleTimeoutMs + 1_000,
-        ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       });
       const settleRoundTripMs = performance.now() - settleRoundTripStarted;
       const timing = parseSettleTiming(settled.timing);
@@ -376,6 +412,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
         postActionSnapshot: snapshot,
       };
     } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
       if (error instanceof Error && error.name === "AbortError") throw error;
       return {
         key, outcome: inputDelivered ? "inconclusive" : "failed",
@@ -388,61 +425,83 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
   }
 
-  async snapshot(): Promise<AndroidStateSnapshot> {
-    return await this.#enqueueOperation(() => this.#snapshot());
+  async snapshot(options?: DriverOperationOptions): Promise<AndroidStateSnapshot> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#snapshot(signal), signal);
   }
-  async #snapshot(): Promise<AndroidStateSnapshot> {
-    this.#ensureOpen(); const observer = await this.#requiredObserver();
+  async #snapshot(signal?: AbortSignal): Promise<AndroidStateSnapshot> {
+    this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
     const response = await observer.request({ type: "current_state", forceFull: this.#cachedTree === null }, {
-      ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+      ...(signal === undefined ? {} : { signal }),
     });
     return this.#snapshotFromState(parseObserverState(response.state));
   }
-  async reset(strategy: ResetStrategy): Promise<void> {
-    return await this.#enqueueOperation(() => this.#reset(strategy));
+  async reset(strategy: ResetStrategy, options?: DriverOperationOptions): Promise<void> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#reset(strategy, signal), signal);
   }
-  async #reset(strategy: ResetStrategy): Promise<void> {
+  async #reset(strategy: ResetStrategy, signal?: AbortSignal): Promise<void> {
     this.#ensureOpen(); const current = this.#currentApp;
     if (current === null) throw new Error("No Android app has been launched.");
-    if (strategy === "clear-data") await this.#deviceCommand(["shell", "pm", "clear", current.id], { timeoutMs: 30_000 });
-    await this.#deviceCommand(["shell", "am", "force-stop", current.id]);
-    await this.#launchPackage(current.id, this.#component);
+    if (strategy === "clear-data") await this.#deviceCommand(["shell", "pm", "clear", current.id], { timeoutMs: 30_000, ...(signal === undefined ? {} : { signal }) });
+    await this.#deviceCommand(["shell", "am", "force-stop", current.id], signal === undefined ? {} : { signal });
+    await this.#launchPackage(current.id, this.#component, signal);
     this.#appMetadata = null; this.#cachedTree = null;
-    await this.#stabilizeTargetLaunch(current.id, true);
-    await this.getAppMetadata();
+    await this.#stabilizeTargetLaunch(current.id, true, signal);
+    await this.#getAppMetadata(signal);
   }
-  async forceStop(packageName = this.#currentApp?.id): Promise<void> {
+  async forceStop(
+    packageName = this.#currentApp?.id,
+    options?: DriverOperationOptions,
+  ): Promise<void> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#forceStop(packageName, signal), signal);
+  }
+  async #forceStop(packageName: string | undefined, signal?: AbortSignal): Promise<void> {
+    this.#ensureOpen();
     if (packageName === undefined) return;
-    const serial = await this.#serial();
-    await this.#adbTail;
-    await this.#options.executor.execute(
-      ["-s", serial, "shell", "am", "force-stop", validatePackage(packageName)],
-      { timeoutMs: 5_000, maxOutputBytes: 4_096 },
+    await this.#deviceCommand(
+      ["shell", "am", "force-stop", validatePackage(packageName)],
+      { timeoutMs: 5_000, maxOutputBytes: 4_096, ...(signal === undefined ? {} : { signal }) },
     );
   }
-  async captureScreenshot(artifactPath: string): Promise<ScreenshotArtifact> {
+  async captureScreenshot(
+    artifactPath: string,
+    options?: DriverOperationOptions,
+  ): Promise<ScreenshotArtifact> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#captureScreenshot(artifactPath, signal), signal);
+  }
+  async #captureScreenshot(artifactPath: string, signal?: AbortSignal): Promise<ScreenshotArtifact> {
     this.#ensureOpen();
     if (!/\.png$/iu.test(artifactPath)) throw new TypeError("Android screenshots require a .png artifact path.");
     const absolutePath = resolve(artifactPath); const capturedAt = new Date().toISOString();
     const result = await this.#deviceCommand(["exec-out", "screencap", "-p"], {
       timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: this.#options.maxScreenshotBytes,
+      ...(signal === undefined ? {} : { signal }),
     });
     const dimensions = pngDimensions(result.stdout);
+    signal?.throwIfAborted();
     await mkdir(dirname(absolutePath), { recursive: true }); await writeFile(absolutePath, result.stdout);
     return { path: absolutePath, mediaType: "image/png", ...dimensions, capturedAt };
   }
-  async getLogs(): Promise<readonly AndroidLogEntry[]> {
-    return await this.#enqueueOperation(() => this.#getLogs());
+  async getLogs(options?: DriverOperationOptions): Promise<readonly AndroidLogEntry[]> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#getLogs(signal), signal);
   }
-  async #getLogs(): Promise<readonly AndroidLogEntry[]> {
+  async #getLogs(signal?: AbortSignal): Promise<readonly AndroidLogEntry[]> {
     this.#ensureOpen();
     const pid = this.#appMetadata?.pid;
     const current = this.#currentApp;
     if (current === null || pid === null || pid === undefined || pid <= 0 || this.#logStart === null) return [];
-    const currentPid = async () => optionalInteger((await this.#deviceText(["shell", "pidof", "-s", current.id]).catch(() => "")).trim());
+    const currentPid = async () => optionalInteger((await this.#deviceText(
+      ["shell", "pidof", "-s", current.id],
+      signal === undefined ? {} : { signal },
+    ).catch(() => "")).trim());
     if (await currentPid() !== pid) return [];
     const output = await this.#deviceText(["logcat", "-d", "-v", "epoch", `--pid=${String(pid)}`, "-T", this.#logStart], {
       timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: this.#options.maxCommandOutputBytes,
+      ...(signal === undefined ? {} : { signal }),
     }).catch(() => "");
     if (await currentPid() !== pid) return [];
     return parseLogcat(output, this.#options.maxLogEntries, pid, Number(this.#logStart));
@@ -458,17 +517,25 @@ export class AndroidTvDriver implements TVDoctorDriver {
     };
   }
 
-  async getDeviceMetadata(refresh = false): Promise<AndroidDeviceMetadata> {
+  async getDeviceMetadata(
+    refresh = false,
+    options?: DriverOperationOptions,
+  ): Promise<AndroidDeviceMetadata> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#getDeviceMetadata(refresh, signal), signal);
+  }
+  async #getDeviceMetadata(refresh: boolean, signal?: AbortSignal): Promise<AndroidDeviceMetadata> {
     this.#ensureOpen(); if (!refresh && this.#deviceMetadata !== null) return this.#deviceMetadata;
-    const serial = await this.#serial();
-    const manufacturer = await this.#deviceText(["shell", "getprop", "ro.product.manufacturer"]);
-    const model = await this.#deviceText(["shell", "getprop", "ro.product.model"]);
-    const sdk = await this.#deviceText(["shell", "getprop", "ro.build.version.sdk"]);
-    const release = await this.#deviceText(["shell", "getprop", "ro.build.version.release"]);
-    const fingerprint = await this.#deviceText(["shell", "getprop", "ro.build.fingerprint"]);
-    const characteristics = await this.#deviceText(["shell", "getprop", "ro.build.characteristics"]);
-    const abis = await this.#deviceText(["shell", "getprop", "ro.product.cpu.abilist"]);
-    const display = await this.#deviceText(["shell", "wm", "size"]);
+    const commandOptions = signal === undefined ? {} : { signal };
+    const serial = await this.#serial(signal);
+    const manufacturer = await this.#deviceText(["shell", "getprop", "ro.product.manufacturer"], commandOptions);
+    const model = await this.#deviceText(["shell", "getprop", "ro.product.model"], commandOptions);
+    const sdk = await this.#deviceText(["shell", "getprop", "ro.build.version.sdk"], commandOptions);
+    const release = await this.#deviceText(["shell", "getprop", "ro.build.version.release"], commandOptions);
+    const fingerprint = await this.#deviceText(["shell", "getprop", "ro.build.fingerprint"], commandOptions);
+    const characteristics = await this.#deviceText(["shell", "getprop", "ro.build.characteristics"], commandOptions);
+    const abis = await this.#deviceText(["shell", "getprop", "ro.product.cpu.abilist"], commandOptions);
+    const display = await this.#deviceText(["shell", "wm", "size"], commandOptions);
     const sizeMatch = /(\d+)x(\d+)/u.exec(display); const semantic = `${characteristics} ${model} ${fingerprint}`.toLowerCase();
     this.#deviceMetadata = {
       serial, manufacturer: optionalText(manufacturer), model: optionalText(model),
@@ -481,11 +548,16 @@ export class AndroidTvDriver implements TVDoctorDriver {
     };
     return this.#deviceMetadata;
   }
-  async getAppMetadata(): Promise<AndroidAppMetadata> {
+  async getAppMetadata(options?: DriverOperationOptions): Promise<AndroidAppMetadata> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#getAppMetadata(signal), signal);
+  }
+  async #getAppMetadata(signal?: AbortSignal): Promise<AndroidAppMetadata> {
     this.#ensureOpen(); if (this.#appMetadata !== null) return this.#appMetadata;
     const current = this.#currentApp; if (current === null) throw new Error("No Android app has been launched.");
-    const pidText = await this.#deviceText(["shell", "pidof", "-s", current.id]).catch(() => "");
-    const packageText = await this.#deviceText(["shell", "dumpsys", "package", current.id]);
+    const commandOptions = signal === undefined ? {} : { signal };
+    const pidText = await this.#deviceText(["shell", "pidof", "-s", current.id], commandOptions).catch(() => "");
+    const packageText = await this.#deviceText(["shell", "dumpsys", "package", current.id], commandOptions);
     this.#appMetadata = {
       packageName: current.id, component: this.#component, pid: optionalInteger(cleanText(pidText)),
       versionName: optionalText(/\bversionName=([^\s]+)/u.exec(packageText)?.[1]),
@@ -549,18 +621,20 @@ export class AndroidTvDriver implements TVDoctorDriver {
     };
   }
 
-  async #ensureObserver(): Promise<void> {
+  async #ensureObserver(signal?: AbortSignal): Promise<void> {
     if (this.#observer !== null) return;
     const target = this.#currentApp?.id;
     if (target === undefined) throw new Error("No Android app has been launched.");
     const asset = this.#options.observerAsset ?? await resolveAndroidObserverAsset();
-    await this.#deviceCommand(["install", "-r", asset.apkPath], { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes });
-    const installedPath = (await this.#deviceText(["shell", "pm", "path", asset.packageName])).trim();
+    const commandOptions = signal === undefined ? {} : { signal };
+    await this.#deviceCommand(["install", "-r", asset.apkPath], { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes, ...commandOptions });
+    const installedPath = (await this.#deviceText(["shell", "pm", "path", asset.packageName], commandOptions)).trim();
     if (!/^package:\/data\/app\/[A-Za-z0-9_./=+~-]+\.apk$/u.test(installedPath)) {
       throw new Error("Installed Android observer identity could not be verified.");
     }
     const installedApk = await this.#deviceCommand(["exec-out", "cat", installedPath.slice("package:".length)], {
       maxOutputBytes: 25 * 1024 * 1024,
+      ...commandOptions,
     });
     if (createHash("sha256").update(installedApk.stdout).digest("hex") !== asset.sha256) {
       throw new Error("Installed Android observer identity does not match the packaged APK.");
@@ -570,20 +644,21 @@ export class AndroidTvDriver implements TVDoctorDriver {
     await this.#deviceCommand([
       "shell", "content", "call", "--uri", `content://${asset.packageName}.provisioning`, "--method", "provision",
       "--extra", `token:s:${token}`, "--extra", `target_package:s:${target}`,
-    ], { timeoutMs: 15_000 });
+    ], { timeoutMs: 15_000, ...commandOptions });
     const [enabledFlag, enabledServices] = await Promise.all([
-      this.#deviceText(["shell", "settings", "get", "secure", "accessibility_enabled"]).catch(() => "0"),
-      this.#deviceText(["shell", "settings", "get", "secure", "enabled_accessibility_services"]).catch(() => ""),
+      this.#deviceText(["shell", "settings", "get", "secure", "accessibility_enabled"], commandOptions).catch(() => "0"),
+      this.#deviceText(["shell", "settings", "get", "secure", "enabled_accessibility_services"], commandOptions).catch(() => ""),
     ]);
     if (cleanText(enabledFlag) !== "1" || !enabledServices.toLowerCase().includes(asset.packageName.toLowerCase())) {
       throw new Error([
-        `TVDoctor could not connect to the Android observer on ${await this.#serial()}.`,
+        `TVDoctor could not connect to the Android observer on ${await this.#serial(signal)}.`,
         "Observer APK: installed", "ADB: authorized", "Port forwarding: not started", "Observer service: not enabled",
         "Enable TVDoctor Observer accessibility access on the Android device and retry.",
       ].join("\n"));
     }
     const forwardText = await this.#deviceText(["forward", "tcp:0", `tcp:${String(ANDROID_OBSERVER_DEVICE_PORT)}`], {
       timeoutMs: 10_000, maxOutputBytes: 4_096,
+      ...commandOptions,
     });
     const port = Number(cleanText(forwardText));
     if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) throw new Error("ADB did not return a valid local observer forwarding port.");
@@ -595,29 +670,31 @@ export class AndroidTvDriver implements TVDoctorDriver {
           port, token, hostVersion: "0.1.0",
           connectTimeoutMs: Math.min(1_000, this.#options.observerConnectTimeoutMs),
           requestTimeoutMs: this.#options.observerRequestTimeoutMs,
-          ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+          ...(signal === undefined ? {} : { signal }),
         });
         return;
       } catch (error) {
         lastError = error;
-        await delay(Math.min(100, Math.max(1, connectionDeadline - performance.now())), this.#options.signal);
+        if (signal?.aborted === true) throw signal.reason;
+        await delay(Math.min(100, Math.max(1, connectionDeadline - performance.now())), signal);
       }
     }
     throw new Error([
-      `TVDoctor could not connect to the Android observer on ${await this.#serial()}.`,
+      `TVDoctor could not connect to the Android observer on ${await this.#serial(signal)}.`,
       "Observer APK: installed", "ADB: authorized", "Port forwarding: active",
       "Observer service: enabled but not accepting the local connection",
       cleanText(lastError instanceof Error ? lastError.message : String(lastError)),
     ].join("\n"));
   }
-  async #requiredObserver(): Promise<AndroidObserverConnection> {
-    await this.#ensureObserver(); if (this.#observer === null) throw new Error("Android observer is unavailable."); return this.#observer;
+  async #requiredObserver(signal?: AbortSignal): Promise<AndroidObserverConnection> {
+    await this.#ensureObserver(signal); if (this.#observer === null) throw new Error("Android observer is unavailable."); return this.#observer;
   }
-  async #launchPackage(packageName: string, component: string | null): Promise<void> {
-    const start = (await this.#deviceText(["shell", "date", "+%s.%3N"]).catch(() => "")).trim();
+  async #launchPackage(packageName: string, component: string | null, signal?: AbortSignal): Promise<void> {
+    const commandOptions = signal === undefined ? {} : { signal };
+    const start = (await this.#deviceText(["shell", "date", "+%s.%3N"], commandOptions).catch(() => "")).trim();
     this.#logStart = /^\d+\.\d{3}$/u.test(start) ? start : null;
     if (component === null) {
-      await this.#deviceCommand(["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"], { timeoutMs: 30_000 });
+      await this.#deviceCommand(["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"], { timeoutMs: 30_000, ...commandOptions });
     } else {
       // Permission-controller activities can remain attached to the app's task
       // after force-stop. Without a clean task, Android may deliver this launch
@@ -626,34 +703,34 @@ export class AndroidTvDriver implements TVDoctorDriver {
       // deterministic launch boundary.
       await this.#deviceCommand([
         "shell", "am", "start", "-W", "-f", "0x10008000", "-n", component,
-      ], { timeoutMs: 30_000 });
+      ], { timeoutMs: 30_000, ...commandOptions });
     }
   }
-  async #waitForTargetState(packageName: string, forceFull: boolean): Promise<AndroidStateSnapshot> {
-    const observer = await this.#requiredObserver(); const deadline = performance.now() + 8_000; let latestPackage: string | null = null;
+  async #waitForTargetState(packageName: string, forceFull: boolean, signal?: AbortSignal): Promise<AndroidStateSnapshot> {
+    const observer = await this.#requiredObserver(signal); const deadline = performance.now() + 8_000; let latestPackage: string | null = null;
     while (performance.now() < deadline) {
       const response = await observer.request({ type: "current_state", forceFull }, {
         timeoutMs: this.#options.observerRequestTimeoutMs,
-        ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       });
       const state = parseObserverState(response.state); latestPackage = state.packageName;
       if (state.packageName === packageName) return this.#snapshotFromState(state);
-      await delay(75, this.#options.signal);
+      await delay(75, signal);
     }
     throw new Error(`Android observer did not observe ${packageName}; current window package is ${latestPackage ?? "unknown"}.`);
   }
-  async #waitForStableTargetState(packageName: string): Promise<AndroidStateSnapshot> {
+  async #waitForStableTargetState(packageName: string, signal?: AbortSignal): Promise<AndroidStateSnapshot> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let previousFingerprint: string | null = null;
     let stableSince = performance.now();
     while (performance.now() < deadline) {
-      const observer = await this.#requiredObserver();
+      const observer = await this.#requiredObserver(signal);
       const response = await observer.request({ type: "resync" }, {
         timeoutMs: Math.max(1, Math.min(
           this.#options.observerRequestTimeoutMs,
           Math.ceil(deadline - performance.now()),
         )),
-        ...(this.#options.signal === undefined ? {} : { signal: this.#options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       });
       const state = parseObserverState(response.state);
       if (state.packageName !== packageName) {
@@ -669,11 +746,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
       }
       const remainingMs = deadline - performance.now();
       if (remainingMs <= 0) break;
-      await delay(Math.min(this.#options.quietWindowMs, remainingMs), this.#options.signal);
+      await delay(Math.min(this.#options.quietWindowMs, remainingMs), signal);
     }
     throw new Error(`Android target ${packageName} did not remain stable before the deadline.`);
   }
-  async #waitForFocusedTargetWindow(packageName: string): Promise<void> {
+  async #waitForFocusedTargetWindow(packageName: string, signal?: AbortSignal): Promise<void> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let latestPackage: string | null = null;
     let focusedSince: number | null = null;
@@ -684,6 +761,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
           Math.ceil(deadline - performance.now()),
         )),
         maxOutputBytes: this.#options.maxCommandOutputBytes,
+        ...(signal === undefined ? {} : { signal }),
       });
       latestPackage = focusedWindowPackage(output);
       const observedAt = performance.now();
@@ -696,35 +774,36 @@ export class AndroidTvDriver implements TVDoctorDriver {
       }
       const remainingMs = deadline - performance.now();
       if (remainingMs <= 0) break;
-      await delay(Math.min(this.#options.quietWindowMs, remainingMs), this.#options.signal);
+      await delay(Math.min(this.#options.quietWindowMs, remainingMs), signal);
     }
     throw new Error(
       `Android did not focus a window owned by ${packageName}; current focused window package is ${latestPackage ?? "unknown"}.`,
     );
   }
-  async #stabilizeTargetLaunch(packageName: string, forceFull: boolean): Promise<void> {
+  async #stabilizeTargetLaunch(packageName: string, forceFull: boolean, signal?: AbortSignal): Promise<void> {
     let latestError: unknown;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await this.#waitForTargetState(packageName, forceFull);
-        await this.#waitForFocusedTargetWindow(packageName);
-        await this.#waitForStableTargetState(packageName);
-        await this.#waitForFocusedTargetWindow(packageName);
+        await this.#waitForTargetState(packageName, forceFull, signal);
+        await this.#waitForFocusedTargetWindow(packageName, signal);
+        await this.#waitForStableTargetState(packageName, signal);
+        await this.#waitForFocusedTargetWindow(packageName, signal);
         return;
       } catch (error) {
         latestError = error;
         if (attempt < 2) {
           this.#cachedTree = null;
-          await this.#launchPackage(packageName, this.#component);
+          if (signal?.aborted === true) throw signal.reason;
+          await this.#launchPackage(packageName, this.#component, signal);
         }
       }
     }
     const detail = cleanText(latestError instanceof Error ? latestError.message : String(latestError));
     throw new Error(`Android could not establish a stable focused launch for ${packageName}. ${detail}`);
   }
-  async #serial(): Promise<string> {
+  async #serial(signal?: AbortSignal): Promise<string> {
     if (this.#resolvedSerial !== null) return this.#resolvedSerial;
-    const devices = await this.listDevices(); const online = devices.filter((device) => device.state === "device");
+    const devices = await this.#listDevices(signal); const online = devices.filter((device) => device.state === "device");
     if (online.length !== 1 || online[0] === undefined) {
       const states = devices.map((device) => `${device.serial}:${device.state}`).join(", ");
       throw new Error(`Exactly one online Android device is required when serial is omitted; found ${String(online.length)}${states.length === 0 ? "" : ` (${cleanText(states)})`}.`);
@@ -732,9 +811,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#resolvedSerial = validateSerial(online[0].serial); return this.#resolvedSerial;
   }
   async #deviceCommand(arguments_: readonly string[], options: AdbCommandOptions = {}) {
-    const serial = await this.#serial();
+    const signal = combinedSignal(this.#options.signal, options.signal);
+    const serial = await this.#serial(signal);
     const run = async () => {
-      const signal = options.signal ?? this.#options.signal;
       return await this.#options.executor.execute(["-s", serial, ...arguments_], {
         ...options,
         ...(signal === undefined ? {} : { signal }),
@@ -747,8 +826,12 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #deviceText(arguments_: readonly string[], options: AdbCommandOptions = {}): Promise<string> {
     return utf8((await this.#deviceCommand(arguments_, options)).stdout);
   }
-  async #enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#operationTail.then(operation, operation);
+  async #enqueueOperation<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const run = async (): Promise<T> => {
+      signal?.throwIfAborted();
+      return await operation();
+    };
+    const result = this.#operationTail.then(run, run);
     this.#operationTail = result.then(() => undefined, () => undefined);
     return await result;
   }

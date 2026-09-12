@@ -2,6 +2,7 @@ import {
   availableObservation,
   unavailableObservation,
   type ActionResult,
+  type DriverOperationOptions,
   type FocusTarget,
   type RemoteKey,
   type StateSnapshot,
@@ -1017,6 +1018,41 @@ describe("streaming semantic hardening", () => {
 });
 
 describe("streaming budget boundaries", () => {
+  it("aborts a timed-out driver operation before ending the streaming session", async () => {
+    let operationSignal: AbortSignal | undefined;
+    let abortedBeforeReturn = false;
+    let laterOperations = 0;
+    const driver: TVDoctorDriver = {
+      async capabilities(options?: DriverOperationOptions) {
+        operationSignal = options?.signal;
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            abortedBeforeReturn = options.signal?.aborted === true;
+            reject(options.signal?.reason);
+          }, { once: true });
+        });
+        return new Set();
+      },
+      async press(key) {
+        laterOperations += 1;
+        return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+      },
+      async snapshot() {
+        laterOperations += 1;
+        throw new Error("snapshot must not start after a timed-out capability call");
+      },
+    };
+
+    const result = await runStreamingPack(driver, {
+      budgets: { maxDurationMs: 25 },
+    });
+
+    expect(result.termination.reason).toBe("max-duration");
+    expect(operationSignal?.aborted).toBe(true);
+    expect(abortedBeforeReturn).toBe(true);
+    expect(laterOperations).toBe(0);
+  });
+
   it.each([
     ["maxActions", 0],
     ["maxActions", -1],

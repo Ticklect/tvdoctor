@@ -1,6 +1,7 @@
 import {
   isRemoteKey,
   type ActionResult,
+  type DriverOperationOptions,
   type RemoteKey,
   type StateSnapshot,
   type TVDoctorDriver,
@@ -44,6 +45,8 @@ export interface ActionSettlingOptions {
   readonly equivalent?: (previous: StateSnapshot, current: StateSnapshot) => boolean;
   /** Experimental Android surfaces may report transient input-observation loss. */
   readonly allowUnsettledActions?: boolean;
+  /** Cooperative cancellation for the active press/snapshot sequence. */
+  readonly signal?: AbortSignal;
 }
 
 export interface NormalisedActionSettlingOptions {
@@ -205,7 +208,11 @@ export async function pressAndObserve(
   options: ActionSettlingOptions = {},
 ): Promise<SettledActionObservation> {
   const settling = normaliseActionSettlingOptions(options);
-  const actionResult = await driver.press(key);
+  const operationOptions: DriverOperationOptions | undefined = options.signal === undefined
+    ? undefined
+    : { signal: options.signal };
+  options.signal?.throwIfAborted();
+  const actionResult = await driver.press(key, operationOptions);
 
   if (actionResult.outcome === "failed" || actionResult.outcome === "inconclusive") {
     if (actionResult.outcome !== "inconclusive" || options.allowUnsettledActions !== true) {
@@ -217,7 +224,7 @@ export async function pressAndObserve(
   }
 
   if (actionResult.outcome === "inconclusive") {
-    const snapshot = actionResult.postActionSnapshot ?? await driver.snapshot();
+    const snapshot = actionResult.postActionSnapshot ?? await driver.snapshot(operationOptions);
     return {
       actionResult,
       snapshot,
@@ -236,7 +243,7 @@ export async function pressAndObserve(
       snapshot = actionResult.postActionSnapshot;
       reusedDriverObservation = true;
     } else {
-      snapshot = await driver.snapshot();
+      snapshot = await driver.snapshot(operationOptions);
       snapshotsCaptured = 1;
     }
     return {
@@ -257,14 +264,15 @@ export async function pressAndObserve(
     snapshot = actionResult.postActionSnapshot;
     reusedDriverObservation = true;
   } else {
-    snapshot = await driver.snapshot();
+    snapshot = await driver.snapshot(operationOptions);
     snapshotsCaptured = 1;
   }
   let snapshotsObserved = 1;
   while (snapshotsObserved < keyLimits.maxSnapshots
     && stableSnapshots < keyLimits.requiredStableSnapshots) {
     await settling.wait(settling.pollIntervalMs);
-    const nextSnapshot = await driver.snapshot();
+    options.signal?.throwIfAborted();
+    const nextSnapshot = await driver.snapshot(operationOptions);
     snapshotsCaptured += 1;
     snapshotsObserved += 1;
     stableSnapshots = settling.equivalent(snapshot, nextSnapshot)

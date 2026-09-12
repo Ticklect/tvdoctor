@@ -129,6 +129,11 @@ export interface AppReference {
   readonly launchUri?: string;
 }
 
+/** Cooperative cancellation supplied for one driver operation. */
+export interface DriverOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface LogEntry {
   readonly timestamp: string;
   readonly level: "debug" | "info" | "warning" | "error";
@@ -136,12 +141,12 @@ export interface LogEntry {
 }
 
 export interface TVDoctorDriver {
-  capabilities(): Promise<ReadonlySet<Capability>>;
-  press(key: RemoteKey): Promise<ActionResult>;
-  snapshot(): Promise<StateSnapshot>;
-  captureScreenshot?(artifactPath: string): Promise<ScreenshotArtifact>;
-  reset?(strategy: ResetStrategy): Promise<void>;
-  install?(artifactPath: string): Promise<void>;
-  launch?(app: AppReference): Promise<void>;
-  getLogs?(): Promise<readonly LogEntry[]>;
+  capabilities(options?: DriverOperationOptions): Promise<ReadonlySet<Capability>>;
+  press(key: RemoteKey, options?: DriverOperationOptions): Promise<ActionResult>;
+  snapshot(options?: DriverOperationOptions): Promise<StateSnapshot>;
+  captureScreenshot?(artifactPath: string, options?: DriverOperationOptions): Promise<ScreenshotArtifact>;
+  reset?(strategy: ResetStrategy, options?: DriverOperationOptions): Promise<void>;
+  install?(artifactPath: string, options?: DriverOperationOptions): Promise<void>;
+  launch?(app: AppReference, options?: DriverOperationOptions): Promise<void>;
+  getLogs?(options?: DriverOperationOptions): Promise<readonly LogEntry[]>;
 }

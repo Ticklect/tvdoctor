@@ -23,6 +23,11 @@ Screenshot paths are explicit, trusted caller input; they are never derived
 from target-page content. The driver accepts only `.png`, `.jpg`, and `.jpeg`
 artifact paths.
 
+Driver operations accept an optional per-operation `AbortSignal`. Because
+Playwright cannot cancel every in-flight browser command cooperatively, an
+aborted operation closes and permanently retires that driver instance before
+the caller regains control. Create a new driver for subsequent work.
+
 ```ts
 import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
 

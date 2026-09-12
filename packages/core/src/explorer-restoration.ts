@@ -44,8 +44,8 @@ export function incomplete(
 }
 
 interface ExplorerRestorationContext {
-  readonly restoreAndCapture: () => Promise<StateSnapshot>;
-  readonly withinDurationBudget: <T>(operation: () => Promise<T>) => Promise<T>;
+  readonly restoreAndCapture: (signal: AbortSignal) => Promise<StateSnapshot>;
+  readonly withinDurationBudget: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   readonly signalAborted: () => boolean;
   readonly monotonicNow: () => number;
   readonly durationSince: (startedAt: number) => number;
@@ -112,7 +112,10 @@ export function createExplorerRestorer(
         context.onReplayAction();
         try {
           const observation = await context.withinDurationBudget(
-            () => pressAndObserve(context.measuredDriver, key, context.settling),
+            (signal) => pressAndObserve(context.measuredDriver, key, {
+              ...context.settling,
+              signal,
+            }),
           );
           context.onSettlingObservation(observation.snapshotsObserved, observation.settled);
           if (!observation.settled) {

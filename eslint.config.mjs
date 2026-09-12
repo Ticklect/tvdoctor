@@ -9,6 +9,8 @@ export default tseslint.config(
       "**/dist/**",
       "**/node_modules/**",
       "**/test-results/**",
+      "**/.worktrees/**",
+      "**/artifacts/**",
     ],
   },
   eslint.configs.recommended,

@@ -278,11 +278,12 @@ async function enterQueryWithRemote(
 
   const runHook = async (): Promise<{ readonly result: SearchQueryEntryResult; readonly snapshot: StateSnapshot }> => {
     const base = await session.restoreAndReplay(searchSequence, "probe");
-    const result = await session.withinDuration(() => hook.enter({
+    const result = await session.withinDuration((signal) => hook.enter({
       query: config.searchQuery,
       input,
       snapshot: base,
       inputSequence: searchSequence,
+      signal,
     }));
     validateQueryHookResult(result, config.searchQuery);
     return { result, snapshot: await session.snapshot() };
@@ -400,11 +401,12 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
     } else {
       session.recordPointerProbe();
       try {
-        const pointer = await session.withinDuration(() => options.hooks?.pointerProbe?.probe({
+        const pointer = await session.withinDuration((signal) => options.hooks?.pointerProbe?.probe({
           kind: "search-submit",
           element: submit.descriptor,
           snapshot: opened.snapshot,
           surfaceSequence: opened.sequence,
+          signal,
         }));
         if (pointer === undefined) throw new TypeError("Pointer hook became unavailable during the stage.");
         validateHookText(pointer.detail, "Pointer hook detail");
@@ -769,10 +771,11 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
     const element = describeWebElement(focused.node);
     session.recordFocusProbe();
     try {
-      const result = await session.withinDuration(() => hook.probe({
+      const result = await session.withinDuration((signal) => hook.probe({
         element,
         snapshot: restored,
         focusSequence: probeState.exactPath,
+        signal,
       }));
       validateHookText(result.detail, "Focus hook detail");
       if (result.status !== "available") {
@@ -892,7 +895,9 @@ async function runLayoutInternal(context: StageContext): Promise<WebStageResult>
   }
   let viewportResult;
   try {
-    viewportResult = await context.session.withinDuration(() => hook.observe(snapshot));
+    viewportResult = await context.session.withinDuration(
+      (signal) => hook.observe(snapshot, { signal }),
+    );
     if (viewportResult.status !== "available") {
       validateHookText(viewportResult.detail, "Viewport hook detail");
       return stage("layout", "unobservable", `Viewport proof was ${viewportResult.status}: ${viewportResult.detail}`, [], [
@@ -1039,7 +1044,9 @@ async function runCrashInternal(context: StageContext): Promise<WebStageResult> 
   let logs: readonly LogEntry[];
   try {
     logs = validateLogs(
-      await context.session.withinDuration(() => getLogs.call(context.session.driver)),
+      await context.session.withinDuration(
+        (signal) => getLogs.call(context.session.driver, { signal }),
+      ),
       context.session.budgets.maxLogs,
     );
   } catch (error) {

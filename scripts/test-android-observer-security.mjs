@@ -6,6 +6,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AndroidObserverClient } from '../packages/driver-android/dist/observer-client.js';
 import { AndroidTvDriver } from '../packages/driver-android/dist/android-driver.js';
+import { preflightAndroidSecurityTarget } from './lib/android-security-preflight.mjs';
 
 const sdk = process.env.ANDROID_SDK_ROOT ?? process.env.ANDROID_HOME
   ?? path.join(process.env.LOCALAPPDATA ?? '', 'Android', 'Sdk');
@@ -13,6 +14,7 @@ const adb = process.env.ADB ?? path.join(sdk, 'platform-tools', process.platform
 const serial = process.env.ANDROID_SERIAL ?? 'emulator-5554';
 const target = 'org.tvdoctor.observer.securityprobe';
 const legacy = process.argv.includes('--legacy-bootstrap');
+preflightAndroidSecurityTarget({ adb, serial, execute: execFileSync });
 function command(args) {
   try {
     return execFileSync(adb, ['-s', serial, ...args], { encoding: 'utf8', timeout: 30000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();

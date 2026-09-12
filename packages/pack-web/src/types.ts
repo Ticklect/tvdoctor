@@ -1,5 +1,6 @@
 import type {
   ActionResult,
+  DriverOperationOptions,
   ElementBounds,
   RemoteKey,
   ResetStrategy,
@@ -83,6 +84,7 @@ export interface SearchQueryEntryRequest {
   readonly input: WebElementDescriptor;
   readonly snapshot: StateSnapshot;
   readonly inputSequence: readonly RemoteKey[];
+  readonly signal?: AbortSignal;
 }
 
 export type SearchQueryEntryResult =
@@ -111,6 +113,7 @@ export interface IsolatedPointerProbeRequest {
   readonly element: WebElementDescriptor;
   readonly snapshot: StateSnapshot;
   readonly surfaceSequence: readonly RemoteKey[];
+  readonly signal?: AbortSignal;
 }
 
 export type IsolatedPointerProbeResult =
@@ -142,6 +145,7 @@ export interface WebFocusVisibilityProbeRequest {
   readonly element: WebElementDescriptor;
   readonly snapshot: StateSnapshot;
   readonly focusSequence: readonly RemoteKey[];
+  readonly signal?: AbortSignal;
 }
 
 export type WebFocusVisibilityProbeResult =
@@ -182,7 +186,7 @@ export type ViewportObservationResult =
   };
 
 export interface ViewportObservationHook {
-  observe(snapshot: StateSnapshot): Promise<ViewportObservationResult>;
+  observe(snapshot: StateSnapshot, options?: DriverOperationOptions): Promise<ViewportObservationResult>;
 }
 
 export interface WebPackHooks {
@@ -197,7 +201,7 @@ export interface WebPackOptions {
   readonly stages?: readonly WebStageName[];
   readonly budgets?: Partial<WebPackBudgets>;
   readonly resetStrategy?: ResetStrategy;
-  readonly restoreInitialState?: () => Promise<void>;
+  readonly restoreInitialState?: (options?: DriverOperationOptions) => Promise<void>;
   readonly searchQuery?: string;
   /** Streaming-pack reset-relative Settings-open sequence; must end in SELECT. */
   readonly playerSettingsSequence?: readonly RemoteKey[];

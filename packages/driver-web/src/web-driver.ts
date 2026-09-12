@@ -7,6 +7,7 @@ import {
   type ActionTiming,
   type AppReference,
   type Capability,
+  type DriverOperationOptions,
   type LogEntry,
   type RemoteKey,
   type ResetStrategy,
@@ -221,14 +222,16 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #requestsInFlight = 0;
   #requestsStarted = 0;
   #requestsSucceeded = 0;
+  #retirement: Promise<void> | null = null;
   #screenshotSequence = 0;
+  #unusable = false;
 
   constructor(options: PlaywrightWebDriverOptions = {}) {
     this.#options = normaliseOptions(options);
   }
 
-  async capabilities(): Promise<ReadonlySet<Capability>> {
-    return new Set(WEB_DRIVER_CAPABILITIES);
+  async capabilities(options?: DriverOperationOptions): Promise<ReadonlySet<Capability>> {
+    return await this.#runOperation(options, async () => new Set(WEB_DRIVER_CAPABILITIES));
   }
 
   getPerformanceProfile(): WebDriverPerformanceProfile {
@@ -238,7 +241,8 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     };
   }
 
-  async launch(app: AppReference): Promise<void> {
+  async launch(app: AppReference, options?: DriverOperationOptions): Promise<void> {
+    return await this.#runOperation(options, async () => {
     if (app.launchUri === undefined || app.launchUri.trim().length === 0) {
       throw new Error("The Playwright web driver requires app.launchUri.");
     }
@@ -273,6 +277,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       }
       throw error;
     }
+    });
   }
 
   async close(): Promise<void> {
@@ -298,7 +303,8 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     }
   }
 
-  async press(key: RemoteKey): Promise<ActionResult> {
+  async press(key: RemoteKey, options?: DriverOperationOptions): Promise<ActionResult> {
+    return await this.#runOperation(options, async () => {
     this.#performanceProfile.pressCount += 1;
     const profileStartedAt = performance.now();
     try {
@@ -342,9 +348,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     } finally {
       this.#performanceProfile.pressMs += Math.max(0, performance.now() - profileStartedAt);
     }
+    });
   }
 
-  async snapshot(): Promise<WebStateSnapshot> {
+  async snapshot(options?: DriverOperationOptions): Promise<WebStateSnapshot> {
+    return await this.#runOperation(options, async () => {
     this.#performanceProfile.snapshotCount += 1;
     const profileStartedAt = performance.now();
     try {
@@ -406,9 +414,14 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     } finally {
       this.#performanceProfile.snapshotMs += Math.max(0, performance.now() - profileStartedAt);
     }
+    });
   }
 
-  async captureScreenshot(artifactPath?: string): Promise<ScreenshotArtifact> {
+  async captureScreenshot(
+    artifactPath?: string,
+    options?: DriverOperationOptions,
+  ): Promise<ScreenshotArtifact> {
+    return await this.#runOperation(options, async () => {
     const page = this.#requirePage();
     this.#screenshotSequence += 1;
     const fallbackName = `screenshot-${Date.now()}-${this.#screenshotSequence}.png`;
@@ -434,9 +447,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       height: viewport.height,
       capturedAt: new Date().toISOString(),
     };
+    });
   }
 
-  async reset(strategy: ResetStrategy): Promise<void> {
+  async reset(strategy: ResetStrategy, options?: DriverOperationOptions): Promise<void> {
+    return await this.#runOperation(options, async () => {
     this.#performanceProfile.resetCount += 1;
     const profileStartedAt = performance.now();
     try {
@@ -464,10 +479,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     } finally {
       this.#performanceProfile.resetMs += Math.max(0, performance.now() - profileStartedAt);
     }
+    });
   }
 
-  async getLogs(): Promise<readonly WebLogEntry[]> {
-    return this.#logs.map((entry) => ({ ...entry }));
+  async getLogs(options?: DriverOperationOptions): Promise<readonly WebLogEntry[]> {
+    return await this.#runOperation(options, async () => this.#logs.map((entry) => ({ ...entry })));
   }
 
   getNetworkSnapshot(): WebNetworkSnapshot {
@@ -492,6 +508,43 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
   #activePage(): Page | null {
     return this.#page !== null && !this.#page.isClosed() ? this.#page : null;
+  }
+
+  async #runOperation<T>(
+    options: DriverOperationOptions | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.#unusable) {
+      throw new Error("Playwright web driver is unusable after cancellation.");
+    }
+    const signal = options?.signal;
+    if (signal === undefined) return await operation();
+    if (signal.aborted) {
+      await this.#retireAfterCancellation();
+      throw signal.reason;
+    }
+
+    let abortHandler: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      abortHandler = () => {
+        void this.#retireAfterCancellation().then(
+          () => reject(signal.reason),
+          () => reject(signal.reason),
+        );
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
+    });
+    try {
+      return await Promise.race([operation(), cancelled]);
+    } finally {
+      if (abortHandler !== undefined) signal.removeEventListener("abort", abortHandler);
+    }
+  }
+
+  async #retireAfterCancellation(): Promise<void> {
+    this.#unusable = true;
+    this.#retirement ??= this.close().catch(() => undefined);
+    await this.#retirement;
   }
 
   #requirePage(): Page {
