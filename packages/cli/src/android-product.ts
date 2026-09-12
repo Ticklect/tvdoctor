@@ -573,6 +573,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       profile: options.mode,
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
       settling: ANDROID_ACTION_SETTLING,
+      restorationMode: "verified-local",
       restoreInitialState: async () => {
         await driver.reset("relaunch");
       },
