@@ -5,8 +5,13 @@ import { findShortestVerifiedPath, type VerifiedStateEdge } from "../src/verifie
 
 const ACTION_ORDER: readonly RemoteKey[] = ["UP", "RIGHT", "DOWN", "LEFT", "SELECT", "BACK"];
 
-function edge(fromIdentity: string, key: RemoteKey, toIdentity: string): VerifiedStateEdge {
-  return { fromIdentity, key, toIdentity, expandable: true };
+function edge(
+  fromIdentity: string,
+  key: RemoteKey,
+  toIdentity: string,
+  expandable = true,
+): VerifiedStateEdge {
+  return { fromIdentity, key, toIdentity, expandable };
 }
 
 describe("verified local path selection", () => {
@@ -35,7 +40,7 @@ describe("verified local path selection", () => {
     const edges = [
       edge("a", "RIGHT", "b"),
       edge("b", "LEFT", "a"),
-      { fromIdentity: "b", key: "DOWN", toIdentity: "target", expandable: false },
+      edge("b", "DOWN", "target", false),
     ];
 
     expect(findShortestVerifiedPath(edges, "a", "target", ACTION_ORDER)).toBeNull();
