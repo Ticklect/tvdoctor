@@ -6,8 +6,12 @@ import {
   type ComputedSnapshotFingerprint,
 } from "./fingerprint.js";
 
+type MutableExplorationPhaseTimings = {
+  -readonly [Key in keyof ExplorationPhaseTimings]: ExplorationPhaseTimings[Key];
+};
+
 export interface ExplorerPerformanceTracker {
-  readonly phaseTimings: ExplorationPhaseTimings;
+  readonly phaseTimings: MutableExplorationPhaseTimings;
   readonly durationSince: (startedAt: number) => number;
   readonly measureSynchronous: <T>(
     phase: "semanticNormalizationMs" | "graphBookkeepingMs",
@@ -21,7 +25,7 @@ export function createExplorerPerformanceTracker(
   driver: TVDoctorDriver,
   monotonicNow: () => number,
 ): ExplorerPerformanceTracker {
-  const phaseTimings = {
+  const phaseTimings: MutableExplorationPhaseTimings = {
     resetMs: 0,
     pathReplayMs: 0,
     driverPressMs: 0,
