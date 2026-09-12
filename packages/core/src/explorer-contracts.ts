@@ -164,11 +164,11 @@ export interface ExplorationStatistics {
   /** Root-relative restoration attempts made for queued state/action branches. */
   readonly replayRestorations: number;
   /** Exact live canonical states reused without a reset or replay action. */
-  readonly verifiedStateReuses: number;
+  readonly verifiedStateReuses?: number;
   /** Restorations completed through a previously verified exact-state path. */
-  readonly verifiedPathRestorations: number;
+  readonly verifiedPathRestorations?: number;
   /** Verified-local paths rejected and recovered through canonical root replay. */
-  readonly restorationFallbacks: number;
+  readonly restorationFallbacks?: number;
   readonly visitedStates: number;
   readonly screenStates: number;
   readonly focusStates: number;
