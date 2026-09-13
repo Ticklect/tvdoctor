@@ -1,10 +1,7 @@
-import type { ActionResult, DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
+import type { DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
 import { pressAndObserve } from "./action-settling.js";
 import { PreparedStateDivergenceError } from "./errors.js";
-import {
-  computeSnapshotFingerprint,
-  type ComputedSnapshotFingerprint,
-} from "./fingerprint.js";
+import type { ComputedSnapshotFingerprint } from "./fingerprint.js";
 import type {
   ExplorationActionAttempt,
   ExplorationGraph,
@@ -15,7 +12,9 @@ import type {
 } from "./graph.js";
 import type { ExplorerOptions, ExplorationResult, ExplorationTermination } from "./explorer-contracts.js";
 import { takeFrontier as selectFrontier, type QueueEntry } from "./explorer-frontier.js";
+import { createVerifiedLocalRestorer } from "./explorer-local-restoration.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
+import { createExplorerPerformanceTracker } from "./explorer-performance.js";
 import {
   OperationDeadlineExceeded,
   runWithOperationDeadline,
@@ -48,6 +47,7 @@ export async function explore(
     budgets,
     actionOrder,
     frontierStrategy,
+    restorationMode,
     repetitionCompression,
     settling,
     monotonicSource,
@@ -64,6 +64,9 @@ export async function explore(
   let replayActions = 0;
   let resetCount = 0;
   let replayRestorations = 0;
+  let verifiedStateReuses = 0;
+  let verifiedPathRestorations = 0;
+  let restorationFallbacks = 0;
   let totalReplayLength = 0;
   let maximumReplayLength = 0;
   let maximumQueueSize = 0;
@@ -74,63 +77,13 @@ export async function explore(
   let settlingPolls = 0;
   let unsettledActions = 0;
   let frontierInsertionSequence = 0;
-  const phaseTimings = {
-    resetMs: 0,
-    pathReplayMs: 0,
-    driverPressMs: 0,
-    actionDispatchMs: 0,
-    focusSettlingMs: 0,
-    screenSettlingMs: 0,
-    snapshotCaptureMs: 0,
-    semanticNormalizationMs: 0,
-    graphBookkeepingMs: 0,
-  };
-
-  const durationSince = (startedAt: number): number => Math.max(0, monotonicNow() - startedAt);
-  const measureSynchronous = <T>(
-    phase: "semanticNormalizationMs" | "graphBookkeepingMs",
-    operation: () => T,
-  ): T => {
-    const operationStartedAt = monotonicNow();
-    try {
-      return operation();
-    } finally {
-      phaseTimings[phase] += durationSince(operationStartedAt);
-    }
-  };
-  const fingerprintSnapshot = (snapshot: StateSnapshot): ComputedSnapshotFingerprint => (
-    measureSynchronous("semanticNormalizationMs", () => computeSnapshotFingerprint(snapshot))
-  );
-  const recordActionTiming = (result: ActionResult): void => {
-    const inputAt = result.timing.inputSentAtMs;
-    const responseAt = Math.max(inputAt, result.timing.firstResponseAtMs ?? inputAt);
-    const focusAt = Math.max(responseAt, result.timing.focusSettledAtMs ?? responseAt);
-    const screenAt = Math.max(focusAt, result.timing.screenSettledAtMs ?? focusAt);
-    phaseTimings.actionDispatchMs += responseAt - inputAt;
-    phaseTimings.focusSettlingMs += focusAt - responseAt;
-    phaseTimings.screenSettlingMs += screenAt - focusAt;
-  };
-  const measuredDriver: TVDoctorDriver = {
-    capabilities: async (operationOptions) => driver.capabilities(operationOptions),
-    press: async (key, operationOptions) => {
-      const pressStartedAt = monotonicNow();
-      try {
-        const result = await driver.press(key, operationOptions);
-        recordActionTiming(result);
-        return result;
-      } finally {
-        phaseTimings.driverPressMs += durationSince(pressStartedAt);
-      }
-    },
-    snapshot: async (operationOptions) => {
-      const snapshotStartedAt = monotonicNow();
-      try {
-        return await driver.snapshot(operationOptions);
-      } finally {
-        phaseTimings.snapshotCaptureMs += durationSince(snapshotStartedAt);
-      }
-    },
-  };
+  const {
+    phaseTimings,
+    durationSince,
+    measureSynchronous,
+    fingerprintSnapshot,
+    measuredDriver,
+  } = createExplorerPerformanceTracker(driver, monotonicNow);
 
   const screenStates: MutableScreenState[] = [];
   const focusStates: InternalFocusState[] = [];
@@ -214,6 +167,9 @@ export async function explore(
         replayActions,
         resetCount,
         replayRestorations,
+        verifiedStateReuses,
+        verifiedPathRestorations,
+        restorationFallbacks,
         visitedStates: focusStates.length,
         screenStates: screenStates.length,
         focusStates: focusStates.length,
@@ -389,7 +345,7 @@ export async function explore(
     return selected;
   });
 
-  const restore = createExplorerRestorer({
+  const restoreFromRoot = createExplorerRestorer({
     restoreAndCapture,
     withinDurationBudget,
     signalAborted,
@@ -423,6 +379,36 @@ export async function explore(
       phaseTimings.pathReplayMs += durationMs;
     },
   });
+  const localRestorer = createVerifiedLocalRestorer({
+    enabled: restorationMode === "verified-local",
+    actionOrder,
+    initialSnapshot,
+    initialIdentity: initialFingerprint.stateIdentity,
+    measuredDriver,
+    settling,
+    rootRestore: restoreFromRoot,
+    workBudgetTermination,
+    withinDurationBudget,
+    signalAborted,
+    fingerprintSnapshot,
+    monotonicNow,
+    durationSince,
+    onReplayAction: () => {
+      physicalActions += 1;
+      replayActions += 1;
+    },
+    onSettlingObservation: (snapshotsObserved, settled) => {
+      settlingPolls += snapshotsObserved - 1;
+      if (!settled) unsettledActions += 1;
+    },
+    onReplayDuration: (durationMs) => {
+      phaseTimings.pathReplayMs += durationMs;
+    },
+    onStateReuse: () => { verifiedStateReuses += 1; },
+    onPathRestoration: () => { verifiedPathRestorations += 1; },
+    onFallback: () => { restorationFallbacks += 1; },
+  });
+  const restore = localRestorer.restore;
 
   let termination: ExplorationTermination | null = null;
   exploration: while (frontier.length > 0) {
@@ -470,6 +456,7 @@ export async function explore(
         settlingPolls += actionObservation.snapshotsObserved - 1;
         if (!actionObservation.settled) unsettledActions += 1;
       } catch (error) {
+        localRestorer.clearLive();
         if (signalAborted()) {
           termination = incomplete("interrupted");
           break exploration;
@@ -485,6 +472,7 @@ export async function explore(
         break exploration;
       }
       if (!actionObservation.settled) {
+        localRestorer.clearLive();
         if (options.allowUnsettledActions === true) {
           publishProgress();
           continue;
@@ -493,6 +481,7 @@ export async function explore(
         break exploration;
       }
       const observedFingerprint = fingerprintSnapshot(actionObservation.snapshot);
+      localRestorer.observeLive(actionObservation.snapshot, observedFingerprint.stateIdentity);
       const bookkeepingStartedAt = monotonicNow();
       const knownDestination = stateByIdentity.get(observedFingerprint.stateIdentity);
       const attemptId = id("action", attempts.length + 1);
@@ -591,6 +580,17 @@ export async function explore(
       const replayable = actionObservation.actionResult.key === key
         && actionObservation.actionResult.outcome === "applied";
       const expandable = options.shouldExpand?.(actionObservation.snapshot) ?? true;
+      if (replayable
+        && expandable
+        && compressedDestination === undefined
+        && key !== "HOME") {
+        localRestorer.recordEdge({
+          fromIdentity: entry.state.identity,
+          toIdentity: observedFingerprint.stateIdentity,
+          key,
+          expandable: true,
+        });
+      }
       if (replayable && expandable && !destination.state.scheduled) {
         const destinationGroup = destination.state.repetitionGroup === null
           ? undefined

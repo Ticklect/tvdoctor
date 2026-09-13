@@ -57,6 +57,7 @@ export const EXPLORATION_BUDGET_PROFILES: Readonly<Record<
 };
 
 export type ExplorationFrontierStrategy = "breadth-first" | "priority";
+export type ExplorationRestorationMode = "root-only" | "verified-local";
 
 export interface RepetitionCompressionOptions {
   /** Disabled for legacy calls; enabled by explicit quick/standard/deep profiles. */
@@ -98,6 +99,13 @@ export interface ExplorerOptions {
   readonly monotonicNow?: () => number;
   /** Legacy calls remain BFS; explicit profiles default to deterministic priority. */
   readonly frontierStrategy?: ExplorationFrontierStrategy;
+  /**
+   * Root-only is the conservative default. Verified-local may reuse an exact
+   * live state or previously witnessed exact-state path before falling back to
+   * canonical root replay; callers must opt in only when canonical identity is
+   * sufficient to rule out hidden mutable state.
+   */
+  readonly restorationMode?: ExplorationRestorationMode;
   /** Conservative repeated carousel/list-item compression. */
   readonly repetitionCompression?: RepetitionCompressionOptions;
   /** Optional bounded post-press snapshot stability polling. */
@@ -153,8 +161,14 @@ export interface ExplorationStatistics {
   readonly replayActions: number;
   /** Root restorations, including the initial restoration before discovery. */
   readonly resetCount: number;
-  /** Restoration attempts made for queued state/action branches. */
+  /** Root-relative restoration attempts made for queued state/action branches. */
   readonly replayRestorations: number;
+  /** Exact live canonical states reused without a reset or replay action. */
+  readonly verifiedStateReuses?: number;
+  /** Restorations completed through a previously verified exact-state path. */
+  readonly verifiedPathRestorations?: number;
+  /** Verified-local paths rejected and recovered through canonical root replay. */
+  readonly restorationFallbacks?: number;
   readonly visitedStates: number;
   readonly screenStates: number;
   readonly focusStates: number;
