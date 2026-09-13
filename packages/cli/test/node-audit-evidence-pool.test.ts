@@ -7,6 +7,7 @@ import {
   availableObservation,
   type ActionResult,
   type AppReference,
+  type RemoteKey,
   type StateSnapshot,
   type TVDoctorIssue,
 } from "@tvdoctor/protocol";
@@ -72,7 +73,7 @@ function fakeDriver(options: {
       focus = "source-target";
       await options.launch(app);
     },
-    async press(key): Promise<ActionResult> {
+    async press(key: RemoteKey): Promise<ActionResult> {
       if (key === "DOWN") focus = "observed-target";
       return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
     },
