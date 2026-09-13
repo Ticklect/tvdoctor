@@ -235,6 +235,24 @@ export async function pressAndObserve(
     };
   }
 
+  // An explicit proof means the driver already completed its platform-specific
+  // settle boundary and captured this exact canonical observation afterwards.
+  // Presence of a post-action snapshot alone is deliberately insufficient.
+  if (
+    actionResult.outcome === "applied"
+    && actionResult.postActionSnapshot !== undefined
+    && actionResult.settlingProof?.kind === "driver-verified"
+  ) {
+    return {
+      actionResult,
+      snapshot: actionResult.postActionSnapshot,
+      snapshotsCaptured: 0,
+      snapshotsObserved: 1,
+      reusedDriverObservation: true,
+      settled: true,
+    };
+  }
+
   let snapshot: StateSnapshot;
   let snapshotsCaptured = 0;
   let reusedDriverObservation = false;

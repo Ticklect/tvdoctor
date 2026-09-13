@@ -719,75 +719,58 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
     throw new Error(`Android observer did not observe ${packageName}; current window package is ${latestPackage ?? "unknown"}.`);
   }
-  async #waitForStableTargetState(packageName: string, signal?: AbortSignal): Promise<AndroidStateSnapshot> {
+  async #waitForStableFocusedTarget(packageName: string, signal?: AbortSignal): Promise<AndroidStateSnapshot> {
     const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
     let previousFingerprint: string | null = null;
-    let stableSince = performance.now();
+    let stableSince: number | null = null;
+    let latestFocusedPackage: string | null = null;
     while (performance.now() < deadline) {
       const observer = await this.#requiredObserver(signal);
-      const response = await observer.request({ type: "resync" }, {
-        timeoutMs: Math.max(1, Math.min(
-          this.#options.observerRequestTimeoutMs,
-          Math.ceil(deadline - performance.now()),
-        )),
-        ...(signal === undefined ? {} : { signal }),
-      });
+      const remainingMs = Math.max(1, Math.ceil(deadline - performance.now()));
+      const [response, windowOutput] = await Promise.all([
+        observer.request({ type: "resync" }, {
+          timeoutMs: Math.min(this.#options.observerRequestTimeoutMs, remainingMs),
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        this.#deviceText(["shell", "dumpsys", "window"], {
+          timeoutMs: Math.min(this.#options.commandTimeoutMs, remainingMs),
+          maxOutputBytes: this.#options.maxCommandOutputBytes,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      ]);
       const state = parseObserverState(response.state);
       if (state.packageName !== packageName) {
         throw new Error(`Android observer resync crossed into ${state.packageName ?? "an unknown package"}; expected ${packageName}.`);
       }
       const latest = this.#snapshotFromState(state);
+      latestFocusedPackage = focusedWindowPackage(windowOutput);
       const observedAt = performance.now();
-      if (state.stateFingerprint !== previousFingerprint) {
-        previousFingerprint = state.stateFingerprint;
+      const fingerprintChanged = state.stateFingerprint !== previousFingerprint;
+      previousFingerprint = state.stateFingerprint;
+      if (latestFocusedPackage !== packageName) {
+        stableSince = null;
+      } else if (fingerprintChanged || stableSince === null) {
         stableSince = observedAt;
       } else if (observedAt - stableSince >= this.#options.resetStableWindowMs) {
         return latest;
       }
-      const remainingMs = deadline - performance.now();
-      if (remainingMs <= 0) break;
-      await delay(Math.min(this.#options.quietWindowMs, remainingMs), signal);
+      const remainingAfterSampleMs = deadline - performance.now();
+      if (remainingAfterSampleMs <= 0) break;
+      await delay(Math.min(this.#options.quietWindowMs, remainingAfterSampleMs), signal);
+    }
+    if (latestFocusedPackage !== packageName) {
+      throw new Error(
+        `Android did not focus a window owned by ${packageName}; current focused window package is ${latestFocusedPackage ?? "unknown"}.`,
+      );
     }
     throw new Error(`Android target ${packageName} did not remain stable before the deadline.`);
-  }
-  async #waitForFocusedTargetWindow(packageName: string, signal?: AbortSignal): Promise<void> {
-    const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
-    let latestPackage: string | null = null;
-    let focusedSince: number | null = null;
-    while (performance.now() < deadline) {
-      const output = await this.#deviceText(["shell", "dumpsys", "window"], {
-        timeoutMs: Math.max(1, Math.min(
-          this.#options.commandTimeoutMs,
-          Math.ceil(deadline - performance.now()),
-        )),
-        maxOutputBytes: this.#options.maxCommandOutputBytes,
-        ...(signal === undefined ? {} : { signal }),
-      });
-      latestPackage = focusedWindowPackage(output);
-      const observedAt = performance.now();
-      if (latestPackage !== packageName) {
-        focusedSince = null;
-      } else if (focusedSince === null) {
-        focusedSince = observedAt;
-      } else if (observedAt - focusedSince >= this.#options.resetStableWindowMs) {
-        return;
-      }
-      const remainingMs = deadline - performance.now();
-      if (remainingMs <= 0) break;
-      await delay(Math.min(this.#options.quietWindowMs, remainingMs), signal);
-    }
-    throw new Error(
-      `Android did not focus a window owned by ${packageName}; current focused window package is ${latestPackage ?? "unknown"}.`,
-    );
   }
   async #stabilizeTargetLaunch(packageName: string, forceFull: boolean, signal?: AbortSignal): Promise<void> {
     let latestError: unknown;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         await this.#waitForTargetState(packageName, forceFull, signal);
-        await this.#waitForFocusedTargetWindow(packageName, signal);
-        await this.#waitForStableTargetState(packageName, signal);
-        await this.#waitForFocusedTargetWindow(packageName, signal);
+        await this.#waitForStableFocusedTarget(packageName, signal);
         return;
       } catch (error) {
         latestError = error;

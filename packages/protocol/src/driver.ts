@@ -44,6 +44,17 @@ export interface ActionTiming {
   readonly profile?: ActionProfile;
 }
 
+/**
+ * Explicit proof that a driver's attached post-action observation was captured
+ * after its platform-specific settling boundary. Core must not infer this proof
+ * merely from the presence of `postActionSnapshot`.
+ */
+export interface SettledObservationProof {
+  readonly kind: "driver-verified";
+  readonly source: string;
+  readonly observationVersion: string;
+}
+
 export interface ActionResult {
   readonly key: RemoteKey;
   readonly outcome: ActionOutcome;
@@ -55,6 +66,11 @@ export interface ActionResult {
    * callers must fall back to `snapshot()`.
    */
   readonly postActionSnapshot?: StateSnapshot;
+  /**
+   * Present only when the driver can explicitly attest that the attached
+   * post-action snapshot satisfies its platform settling contract.
+   */
+  readonly settlingProof?: SettledObservationProof;
 }
 
 export interface ElementBounds {

@@ -16,6 +16,7 @@ import {
   type ExplorationBudgets,
   type ExplorationFrontierStrategy,
   type ExplorationProfile,
+  type ExplorationRestorationMode,
   type NormalisedRepetitionCompressionOptions,
   type RepetitionCompressionOptions,
 } from "./explorer-contracts.js";
@@ -24,6 +25,7 @@ export interface NormalisedExplorerOptions {
   readonly budgets: ExplorationBudgets;
   readonly actionOrder: readonly RemoteKey[];
   readonly frontierStrategy: ExplorationFrontierStrategy;
+  readonly restorationMode: ExplorationRestorationMode;
   readonly repetitionCompression: NormalisedRepetitionCompressionOptions;
   readonly settling: NormalisedActionSettlingOptions;
   readonly monotonicSource: () => number;
@@ -77,6 +79,16 @@ function normaliseFrontierStrategy(
   const result = strategy ?? (profile === undefined ? "breadth-first" : "priority");
   if (result !== "breadth-first" && result !== "priority") {
     throw new TypeError("frontierStrategy must be breadth-first or priority.");
+  }
+  return result;
+}
+
+function normaliseRestorationMode(
+  restorationMode: ExplorationRestorationMode | undefined,
+): ExplorationRestorationMode {
+  const result = restorationMode ?? "root-only";
+  if (result !== "root-only" && result !== "verified-local") {
+    throw new TypeError("restorationMode must be root-only or verified-local.");
   }
   return result;
 }
@@ -172,6 +184,7 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     options.frontierStrategy,
     options.profile,
   );
+  const restorationMode = normaliseRestorationMode(options.restorationMode);
   const repetitionCompression = normaliseRepetitionCompression(
     options.profile,
     options.repetitionCompression,
@@ -196,6 +209,7 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     budgets,
     actionOrder,
     frontierStrategy,
+    restorationMode,
     repetitionCompression,
     settling,
     monotonicSource: options.monotonicNow ?? (() => performance.now()),
