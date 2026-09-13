@@ -66,10 +66,10 @@ function snapshot(screen: Screen, focus: string): StateSnapshot {
     capturedAt: "2026-09-13T00:00:00.000Z",
     location: availableObservation(`https://example.test/${screen}`),
     focusedElement: availableObservation(focused === null ? null : {
-      stableId: focused.stableId ?? undefined,
-      role: focused.role ?? undefined,
-      name: focused.name ?? undefined,
-      bounds: focused.bounds ?? undefined,
+      ...(focused.stableId == null ? {} : { stableId: focused.stableId }),
+      ...(focused.role == null ? {} : { role: focused.role }),
+      ...(focused.name == null ? {} : { name: focused.name }),
+      ...(focused.bounds == null ? {} : { bounds: focused.bounds }),
     }),
     uiTree: availableObservation([root]),
   };
