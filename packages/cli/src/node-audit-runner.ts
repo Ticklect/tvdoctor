@@ -106,6 +106,7 @@ export async function runAudit(
   let navigationExplorationMs = 0;
   let navigationDiagnosticsMs = 0;
   let streaming: StreamingPackResult | null = null;
+  let settingsRoute: Awaited<ReturnType<typeof discoverStreamingSettingsRoute>> | null = null;
   let web: WebPackResult | null = null;
   let runFailure: { readonly error: unknown } | null = null;
   let journey: JourneyV1 | null = null;
@@ -248,7 +249,7 @@ export async function runAudit(
       });
       playerSettingsSequence = streamingSettingsSequence(streaming);
     } else if (request.signal?.aborted !== true && needsPlayerSettingsRoute) {
-      const settingsRoute = await discoverStreamingSettingsRoute(driver, {
+      settingsRoute = await discoverStreamingSettingsRoute(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
         resetStrategy: "reload",
         ...(navigationStartup?.restoreToPreparedState === undefined
@@ -314,6 +315,8 @@ export async function runAudit(
   );
   const evidenceGenerationMs = Math.max(0, performance.now() - evidenceStartedAt);
   const inventory = navigationInventory(navigation, web);
+  const prerequisiteStatistics = streaming?.statistics ?? settingsRoute?.statistics ?? null;
+  const prerequisiteBudgets = streaming?.budgets ?? (settingsRoute === null ? null : STREAMING_BUDGETS[request.mode]);
   const ledgerValue = asJson({
     schemaVersion: 1,
     target: request.target,
@@ -347,6 +350,12 @@ export async function runAudit(
     navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
     navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
     streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
+    streamingSettingsPrerequisite: settingsRoute === null ? null : {
+      status: settingsRoute.status,
+      detail: settingsRoute.detail,
+      statistics: settingsRoute.statistics,
+      sequenceLength: settingsRoute.sequence?.length ?? null,
+    },
     web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
   });
   const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
@@ -386,30 +395,30 @@ export async function runAudit(
     coverage: {
       screenStatesDiscovered: navigation?.statistics.screenStates ?? 0,
       focusStatesDiscovered: navigation?.statistics.focusStates
-        ?? (streaming?.statistics.uniqueStates ?? 0) + (web?.statistics.uniqueStates ?? 0),
+        ?? (prerequisiteStatistics?.uniqueStates ?? 0) + (web?.statistics.uniqueStates ?? 0),
       transitionsTested: navigation?.graph.actions.length ?? 0,
       actionsSent: (journeyExecution?.actions ?? 0)
         + (navigation?.statistics.physicalActions ?? 0)
-        + (streaming?.statistics.physicalActions ?? 0)
+        + (prerequisiteStatistics?.physicalActions ?? 0)
         + (web?.statistics.physicalActions ?? 0),
       capabilitiesObserved: [...capabilities],
       packs: coverage,
       budget: {
         maxActions: (journeyExecution?.maxActions ?? 0)
           + (navigation?.budgets.maxActions ?? 0)
-          + (streaming?.budgets.maxActions ?? 0)
+          + (prerequisiteBudgets?.maxActions ?? 0)
           + (web?.budgets.maxActions ?? 0),
         maxStates: (navigation?.budgets.maxStates ?? 0)
-          + (streaming?.budgets.maxStates ?? 0)
+          + (prerequisiteBudgets?.maxStates ?? 0)
           + (web?.budgets.maxStates ?? 0),
         maxDepth: Math.max(
           navigation?.budgets.maxDepth ?? 0,
-          streaming?.budgets.maxLocalDepth ?? 0,
+          prerequisiteBudgets?.maxLocalDepth ?? 0,
           web?.budgets.maxLocalDepth ?? 0,
         ),
         maxDurationMs: (journeyExecution?.maxDurationMs ?? 0)
           + (navigation?.budgets.maxDurationMs ?? 0)
-          + (streaming?.budgets.maxDurationMs ?? 0)
+          + (prerequisiteBudgets?.maxDurationMs ?? 0)
           + (web?.budgets.maxDurationMs ?? 0),
         maxRepetitiveItems: request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
         exhausted: exhaustedBudgets(products, packs),
