@@ -33,7 +33,12 @@ interface StageLedger {
       readonly status: string;
       readonly sequence: readonly string[];
     }[];
-  };
+  } | null;
+  readonly streamingSettingsPrerequisite: {
+    readonly status: string;
+    readonly detail: string;
+    readonly sequenceLength: number | null;
+  } | null;
 }
 
 const packageDirectory = dirname(fileURLToPath(import.meta.url));
@@ -171,7 +176,7 @@ test("M7 runs six independent web stages and proves exactly the five remaining f
   const accessibility = ledger.web.stages.find((stage) => stage.stage === "accessibility");
   expect(accessibility?.observations.find((entry) => entry.kind === "accessibility-tree"))
     .toMatchObject({ status: "partial" });
-  const streamingSettings = ledger.streaming.stages.find((stage) => stage.stage === "settings");
-  expect(streamingSettings?.sequence.at(-1)).toBe("SELECT");
-  expect(streamingSettings?.sequence.length).toBeGreaterThan(1);
+  expect(ledger.streaming).toBeNull();
+  expect(ledger.streamingSettingsPrerequisite?.status).toBe("found");
+  expect(ledger.streamingSettingsPrerequisite?.sequenceLength ?? 0).toBeGreaterThan(1);
 });
