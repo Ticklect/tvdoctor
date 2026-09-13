@@ -12,6 +12,7 @@ import type {
   WebDriverPerformanceProfile,
 } from "@tvdoctor/driver-web";
 import {
+  discoverStreamingSettingsRoute,
   runStreamingPack,
   type StreamingPackResult,
 } from "@tvdoctor/pack-streaming";
@@ -93,7 +94,7 @@ export async function runAudit(
   const startedAt = new Date();
   const packs = selectedPacks(request);
   const webStages = selectedWebStages(packs);
-  const needStreamingJourney = packs.has("streaming") || webStages.includes("layout") || webStages.includes("performance");
+  const needsPlayerSettingsRoute = webStages.includes("layout") || webStages.includes("performance");
   const driver = createDriver();
   let capabilities: ReadonlySet<Capability> = new Set();
   let navigation: ExplorationResult | null = null;
@@ -110,6 +111,7 @@ export async function runAudit(
   let journey: JourneyV1 | null = null;
   let journeyExecution: JourneyExecutionResult | null = null;
   let sessionState: WebStorageState | null = null;
+  let playerSettingsSequence: readonly RemoteKey[] | undefined;
   const createIsolatedDriver = (): PlaywrightWebDriver => {
     const preparedState = sessionState;
     return preparedState === null ? createDriver() : createSessionDriver(preparedState);
@@ -235,7 +237,7 @@ export async function runAudit(
         );
       }
     }
-    if (request.signal?.aborted !== true && needStreamingJourney) {
+    if (request.signal?.aborted !== true && packs.has("streaming")) {
       streaming = await runStreamingPack(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
         resetStrategy: "reload",
@@ -244,9 +246,20 @@ export async function runAudit(
           : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
         pointerProbe: createStreamingAuditPointerProbe(request.target, createIsolatedDriver),
       });
+      playerSettingsSequence = streamingSettingsSequence(streaming);
+    } else if (request.signal?.aborted !== true && needsPlayerSettingsRoute) {
+      const settingsRoute = await discoverStreamingSettingsRoute(driver, {
+        budgets: STREAMING_BUDGETS[request.mode],
+        resetStrategy: "reload",
+        ...(navigationStartup?.restoreToPreparedState === undefined
+          ? {}
+          : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
+      });
+      if (settingsRoute.status === "found" && settingsRoute.sequence !== null) {
+        playerSettingsSequence = settingsRoute.sequence;
+      }
     }
     if (request.signal?.aborted !== true && webStages.length > 0) {
-      const playerSettingsSequence = streamingSettingsSequence(streaming);
       web = await runWebPack(driver, {
         stages: webStages,
         budgets: WEB_BUDGETS[request.mode],
