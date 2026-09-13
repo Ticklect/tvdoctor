@@ -109,13 +109,16 @@ class StableExecutor implements AdbCommandExecutor {
 
 class StableObserver implements AndroidObserverConnection {
   resyncCalls = 0;
+  closed = false;
 
   async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
     if (request.type === "resync") this.resyncCalls += 1;
     return { version: 2, id: 1, ok: true, type: request.type, state: state() };
   }
 
-  close(): void {}
+  close(): void {
+    this.closed = true;
+  }
 }
 
 describe("Android launch stabilization", () => {
@@ -149,6 +152,7 @@ describe("Android launch stabilization", () => {
       expect(focusChecks).toBeLessThanOrEqual(4);
     } finally {
       await driver.close();
+      expect(observer.closed).toBe(true);
     }
   });
 });
