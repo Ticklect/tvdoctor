@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,6 +132,33 @@ describe("web-only streaming prerequisites", () => {
       expect(mocks.runWebPack).toHaveBeenCalledWith(
         driver,
         expect.objectContaining({ playerSettingsSequence: ["RIGHT", "SELECT"] }),
+      );
+      if (result.reportPath === null) throw new Error("Layout-only audit did not write a report.");
+      const report = JSON.parse(await readFile(result.reportPath, "utf8")) as {
+        readonly coverage: {
+          readonly actionsSent: number;
+          readonly focusStatesDiscovered: number;
+          readonly budget: {
+            readonly maxActions: number | null;
+            readonly maxStates: number | null;
+            readonly maxDepth: number | null;
+            readonly maxDurationMs: number | null;
+          };
+        };
+      };
+      expect(report.coverage.actionsSent).toBe(2);
+      expect(report.coverage.focusStatesDiscovered).toBe(3);
+      expect(report.coverage.budget.maxActions).toBe(
+        STREAMING_BUDGETS.quick.maxActions + WEB_BUDGETS.quick.maxActions,
+      );
+      expect(report.coverage.budget.maxStates).toBe(
+        STREAMING_BUDGETS.quick.maxStates + WEB_BUDGETS.quick.maxStates,
+      );
+      expect(report.coverage.budget.maxDepth).toBe(
+        Math.max(STREAMING_BUDGETS.quick.maxLocalDepth, WEB_BUDGETS.quick.maxLocalDepth),
+      );
+      expect(report.coverage.budget.maxDurationMs).toBe(
+        STREAMING_BUDGETS.quick.maxDurationMs + WEB_BUDGETS.quick.maxDurationMs,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
