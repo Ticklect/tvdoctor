@@ -1,10 +1,10 @@
 import type { TVDoctorIssue, TVDoctorReportV1 } from "@tvdoctor/protocol";
+import { findingWorkflow } from "./finding-workflow.js";
 import { markdownDataBlock } from "./security.js";
 import {
   artifactsForIssue,
   formatRemoteSequence,
   hasDeterministicCliReplay,
-  findingActionability,
   replayCommand,
   replayTargetOverrideRequired,
   validReport,
@@ -39,8 +39,7 @@ function taskContext(report: TVDoctorReportV1, issue: TVDoctorIssue): AiTaskCont
 }
 
 function hasPortableDeterministicReplay(report: TVDoctorReportV1, issue: TVDoctorIssue): boolean {
-  return hasDeterministicCliReplay(report, issue)
-    && issue.evidence.some((evidence) => evidence.kind === "deterministic-failure");
+  return findingWorkflow(report, issue).state === "verified-replay-ready";
 }
 
 function issueTaskAnchor(issueId: string): string {
@@ -51,13 +50,15 @@ function issueTaskAnchor(issueId: string): string {
 }
 
 function aiReportIndex(report: TVDoctorReportV1): string {
-  const fixNow = report.issues.filter((issue) => hasPortableDeterministicReplay(report, issue)).length;
-  const setupOrInfo = report.issues.filter((issue) => findingActionability(issue) === "SETUP / INFO").length;
+  const workflows = report.issues.map((issue) => findingWorkflow(report, issue));
+  const fixNow = workflows.filter((workflow) => workflow.state === "verified-replay-ready").length;
+  const setupOrInfo = workflows.filter((workflow) => workflow.state === "setup-info").length;
   const cliReplayable = report.issues.filter((issue) => hasDeterministicCliReplay(report, issue)).length;
   const issueLinks = report.issues.map((issue) => {
-    const classification = hasPortableDeterministicReplay(report, issue)
+    const workflow = findingWorkflow(report, issue);
+    const classification = workflow.state === "verified-replay-ready"
       ? "FIX NOW"
-      : findingActionability(issue) === "SETUP / INFO" ? "SETUP / INFO" : "REVIEW";
+      : workflow.state === "setup-info" ? "SETUP / INFO" : "REVIEW";
     const replayLabel = hasDeterministicCliReplay(report, issue) ? " — deterministic CLI-REPLAYABLE" : "";
     return `- [${classification} — ${issue.id}](#${issueTaskAnchor(issue.id)})${replayLabel}`;
   }).join("\n");
