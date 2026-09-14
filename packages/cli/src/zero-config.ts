@@ -1,6 +1,10 @@
 import { basename } from "node:path";
 
 import type { CliContext } from "./cli.js";
+import {
+  ensureManagedAndroidTvEmulator as createManagedAndroidTvEmulator,
+  type ManagedAndroidEmulatorHandle,
+} from "./android-managed-emulator.js";
 import type { AndroidScanResult } from "./android-product.js";
 import { evaluateZeroConfigAndroidDevice } from "./android-selection.js";
 import {
@@ -32,6 +36,7 @@ export interface ZeroConfigDependencies {
   readonly androidPackageInstalled?: typeof queryAndroidPackageInstalled;
   readonly openObserverSetup?: typeof launchObserverSetup;
   readonly observerAccessibilityEnabled?: typeof readObserverAccessibilityEnabled;
+  readonly ensureManagedAndroidTvEmulator?: typeof createManagedAndroidTvEmulator;
   readonly sleep?: (durationMs: number, signal?: AbortSignal) => Promise<void>;
   readonly now?: () => number;
 }
@@ -258,107 +263,155 @@ async function runZeroConfigAndroid(
     return EXIT_ENVIRONMENT;
   }
 
-  write(context, "Finding a compatible Android TV…");
-  const preflight = await operations.androidPreflight();
-  if (!preflight.available) {
-    writeError(context, preflight.message);
-    return EXIT_ENVIRONMENT;
-  }
-  const evaluations = preflight.devices.map((device) => evaluateZeroConfigAndroidDevice(apk, device));
-  const compatible = evaluations.filter((evaluation) => evaluation.compatible);
-  if (compatible.length === 0) {
-    writeError(context, "No compatible, boot-ready Android TV target was found.");
-    for (const evaluation of evaluations) {
-      write(context, `${evaluation.device.serial}: ${evaluation.reasons.join(" ") || "Not eligible for zero-config selection."}`);
+  let managedHandle: ManagedAndroidEmulatorHandle | null = null;
+  try {
+    write(context, "Finding a compatible Android TV…");
+    let preflight = await operations.androidPreflight();
+    if (!preflight.available) {
+      writeError(context, preflight.message);
+      return EXIT_ENVIRONMENT;
     }
-    return EXIT_ENVIRONMENT;
-  }
+    let evaluations = preflight.devices.map((device) => evaluateZeroConfigAndroidDevice(apk, device));
+    let compatible = evaluations.filter((evaluation) => evaluation.compatible);
+    let selected = compatible[0];
 
-  let selected = compatible[0];
-  if (compatible.length > 1) {
-    const choice = await terminal.select(
-      "Choose the Android TV you want to test:",
-      compatible.map((evaluation) => ({
-        label: `${evaluation.device.manufacturer ?? "Android"} ${evaluation.device.model ?? "TV"}`.trim(),
-        detail: `${evaluation.device.serial}; API ${evaluation.device.apiLevel?.toString() ?? "unknown"}`,
-      })),
-    );
-    if (choice === null) return EXIT_USAGE;
-    selected = compatible[choice];
-  }
-  if (selected === undefined) return EXIT_USAGE;
+    if (compatible.length === 0) {
+      for (const evaluation of evaluations) {
+        write(context, `${evaluation.device.serial}: ${evaluation.reasons.join(" ") || "Not eligible for zero-config selection."}`);
+      }
+      if (!terminal.isInteractive) {
+        writeError(context, "No compatible, boot-ready Android TV target was found.");
+        return EXIT_ENVIRONMENT;
+      }
+      const tools = await locateAndroidSdkTools({
+        ...(preflight.adbPath === null ? {} : { explicitAdbPath: preflight.adbPath }),
+      });
+      write(context, "Preparing TVDoctor Test Device…");
+      const ensureManaged = dependencies.ensureManagedAndroidTvEmulator ?? createManagedAndroidTvEmulator;
+      try {
+        managedHandle = await ensureManaged({
+          tools,
+          platform: context.environment.platform as NodeJS.Platform,
+          architecture: context.environment.architecture,
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
+          confirmDownload: async (packages) => {
+            const choice = await terminal.select(
+              `TVDoctor needs Android test-device components: ${packages.join(", ")}`,
+              [
+                { label: "Download and use TVDoctor Test Device" },
+                { label: "Cancel" },
+              ],
+            );
+            return choice === 0;
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        writeError(context, `TVDoctor Test Device setup failed: ${message}`);
+        return EXIT_ENVIRONMENT;
+      }
 
-  const tools = await locateAndroidSdkTools({
-    ...(preflight.adbPath === null ? {} : { explicitAdbPath: preflight.adbPath }),
-  });
-  const adbPath = preflight.adbPath ?? tools.adbPath;
-  write(context, `Using: ${selected.device.manufacturer ?? "Android"} ${selected.device.model ?? "TV"} · API ${selected.device.apiLevel?.toString() ?? "unknown"}`);
+      preflight = await operations.androidPreflight();
+      if (!preflight.available) {
+        writeError(context, preflight.message);
+        return EXIT_ENVIRONMENT;
+      }
+      evaluations = preflight.devices.map((device) => evaluateZeroConfigAndroidDevice(apk, device));
+      compatible = evaluations.filter((evaluation) => evaluation.compatible);
+      selected = compatible.find((evaluation) => evaluation.device.serial === managedHandle?.serial);
+      if (selected === undefined) {
+        writeError(context, "The TVDoctor Test Device started, but it did not become a compatible Android TV target.");
+        return EXIT_ENVIRONMENT;
+      }
+    } else if (compatible.length > 1) {
+      const choice = await terminal.select(
+        "Choose the Android TV you want to test:",
+        compatible.map((evaluation) => ({
+          label: `${evaluation.device.manufacturer ?? "Android"} ${evaluation.device.model ?? "TV"}`.trim(),
+          detail: `${evaluation.device.serial}; API ${evaluation.device.apiLevel?.toString() ?? "unknown"}`,
+        })),
+      );
+      if (choice === null) return EXIT_USAGE;
+      selected = compatible[choice];
+    }
+    if (selected === undefined) return EXIT_USAGE;
 
-  const packageInstalled = dependencies.androidPackageInstalled ?? queryAndroidPackageInstalled;
-  if (await packageInstalled({
-    adbPath,
-    serial: selected.device.serial,
-    packageName: apk.packageName,
-    ...(context.signal === undefined ? {} : { signal: context.signal }),
-  })) {
-    const replace = await terminal.select(
-      `${apk.label ?? apk.packageName} is already installed on this external target.`,
-      [
-        { label: "Replace existing app and test" },
-        { label: "Cancel" },
-      ],
-    );
-    if (replace !== 0) return EXIT_USAGE;
-  }
-
-  const outputPath = defaultOutputDirectory({
-    target: apk.label ?? apk.packageName,
-    platform: "android-tv",
-    mode: "deep",
-  });
-  const startedAtMs = Date.now();
-  write(context, "Scanning… Press Ctrl+C to stop safely.");
-  let result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
-    adbPath,
-    serial: selected.device.serial,
-    apkPath,
-    outputPath,
-  });
-
-  if (result.status === "failed" && observerSetupRequired(result.details)) {
-    const openObserverSetup = dependencies.openObserverSetup ?? launchObserverSetup;
-    await openObserverSetup({
-      adbPath,
-      serial: selected.device.serial,
-      ...(context.signal === undefined ? {} : { signal: context.signal }),
+    const tools = await locateAndroidSdkTools({
+      ...(preflight.adbPath === null ? {} : { explicitAdbPath: preflight.adbPath }),
     });
-    write(context, "Enable TVDoctor Observer accessibility access on the Android TV. TVDoctor will continue automatically.");
-    const enabled = await waitForObserverAccessibility({
-      adbPath,
-      serial: selected.device.serial,
-      ...(context.signal === undefined ? {} : { signal: context.signal }),
-    }, dependencies);
-    if (!enabled) {
-      result = {
-        status: "setup-blocker",
-        issueCount: 0,
-        highestSeverity: null,
-        reportPath: null,
-        details: ["TVDoctor Observer was not enabled within five minutes."],
-      };
-    } else {
-      write(context, "Observer enabled. Resuming scan…");
-      result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
+    const adbPath = preflight.adbPath ?? tools.adbPath;
+    write(context, `Using: ${selected.device.manufacturer ?? "Android"} ${selected.device.model ?? "TV"} · API ${selected.device.apiLevel?.toString() ?? "unknown"}`);
+
+    if (managedHandle === null) {
+      const packageInstalled = dependencies.androidPackageInstalled ?? queryAndroidPackageInstalled;
+      if (await packageInstalled({
         adbPath,
         serial: selected.device.serial,
-        apkPath,
-        outputPath,
-      });
+        packageName: apk.packageName,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      })) {
+        const replace = await terminal.select(
+          `${apk.label ?? apk.packageName} is already installed on this external target.`,
+          [
+            { label: "Replace existing app and test" },
+            { label: "Cancel" },
+          ],
+        );
+        if (replace !== 0) return EXIT_USAGE;
+      }
     }
-  }
 
-  await finishInteractiveScan(context, terminal, result, startedAtMs);
-  return exitCodeForStatus(result.status);
+    const outputPath = defaultOutputDirectory({
+      target: apk.label ?? apk.packageName,
+      platform: "android-tv",
+      mode: "deep",
+    });
+    const startedAtMs = Date.now();
+    write(context, "Scanning… Press Ctrl+C to stop safely.");
+    let result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
+      adbPath,
+      serial: selected.device.serial,
+      apkPath,
+      outputPath,
+    });
+
+    if (result.status === "failed" && observerSetupRequired(result.details)) {
+      const openObserverSetup = dependencies.openObserverSetup ?? launchObserverSetup;
+      await openObserverSetup({
+        adbPath,
+        serial: selected.device.serial,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      });
+      write(context, "Enable TVDoctor Observer accessibility access on the Android TV. TVDoctor will continue automatically.");
+      const enabled = await waitForObserverAccessibility({
+        adbPath,
+        serial: selected.device.serial,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      }, dependencies);
+      if (!enabled) {
+        result = {
+          status: "setup-blocker",
+          issueCount: 0,
+          highestSeverity: null,
+          reportPath: null,
+          details: ["TVDoctor Observer was not enabled within five minutes."],
+        };
+      } else {
+        write(context, "Observer enabled. Resuming scan…");
+        result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
+          adbPath,
+          serial: selected.device.serial,
+          apkPath,
+          outputPath,
+        });
+      }
+    }
+
+    await finishInteractiveScan(context, terminal, result, startedAtMs);
+    return exitCodeForStatus(result.status);
+  } finally {
+    await managedHandle?.stop().catch(() => undefined);
+  }
 }
 
 export async function runZeroConfigTarget(
