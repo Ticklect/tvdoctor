@@ -16,10 +16,10 @@ export interface StartTerminal {
 
 export interface ProgressView {
   readonly elapsedSeconds: number;
-  readonly screens: number;
-  readonly states: number;
-  readonly actions: number;
-  readonly findings: number;
+  readonly screens?: number;
+  readonly states?: number;
+  readonly actions?: number;
+  readonly findings?: number;
 }
 
 export class ProgressRenderer {
@@ -36,9 +36,14 @@ export class ProgressRenderer {
     const minutes = Math.floor(progress.elapsedSeconds / 60);
     const seconds = progress.elapsedSeconds % 60;
     const elapsed = `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-    const line = `Elapsed ${elapsed} | Screens ${progress.screens} | States ${progress.states} | Actions ${progress.actions} | Findings ${progress.findings}`;
+    const segments = [`Elapsed ${elapsed}`];
+    if (progress.screens !== undefined) segments.push(`Screens ${String(progress.screens)}`);
+    if (progress.states !== undefined) segments.push(`States ${String(progress.states)}`);
+    if (progress.actions !== undefined) segments.push(`Actions ${String(progress.actions)}`);
+    if (progress.findings !== undefined) segments.push(`Findings ${String(progress.findings)}`);
+    const line = segments.join(" | ");
     if (!this.#interactive) {
-      if (progress.elapsedSeconds > 0 && progress.elapsedSeconds % 10 === 0) this.#writeLine(line);
+      if (progress.elapsedSeconds > 0 && progress.elapsedSeconds % 30 === 0) this.#writeLine(line);
       return;
     }
     process.stdout.write(`\u001b[2K\r${line}`);
@@ -83,6 +88,7 @@ export class ProcessStartTerminal implements StartTerminal {
       }
       let selected = 0;
       let finished = false;
+      let renderedLineCount = 0;
       const input = process.stdin;
       const wasRaw = input.isRaw ?? false;
       emitKeypressEvents(input);
@@ -95,15 +101,25 @@ export class ProcessStartTerminal implements StartTerminal {
         resolveSelection(value);
       };
       const render = (): void => {
-        process.stdout.write(`\u001b[2J\u001b[H${question}\n`);
-        options.forEach((option, index) => {
-          const pointer = index === selected ? ">" : " ";
-          const detail = option.detail === undefined ? "" : ` - ${option.detail}`;
-          process.stdout.write(`${pointer} ${option.label}${detail}\n`);
-        });
-        process.stdout.write("Use Up/Down and Enter. Escape cancels.\n");
+        const lines = [
+          question,
+          ...options.map((option, index) => {
+            const pointer = index === selected ? ">" : " ";
+            const detail = option.detail === undefined ? "" : ` - ${option.detail}`;
+            return `${pointer} ${option.label}${detail}`;
+          }),
+          "Use Up/Down and Enter. Escape cancels.",
+        ];
+        if (renderedLineCount > 0) {
+          process.stdout.write(`\u001b[${String(renderedLineCount)}A`);
+        }
+        for (const line of lines) {
+          process.stdout.write(`\u001b[2K\r${line}\n`);
+        }
+        renderedLineCount = lines.length;
       };
       function listener(character: string, key: { name?: string; sequence?: string; ctrl?: boolean }): void {
+        void character;
         if (key.ctrl && key.name === "c") {
           process.stdout.write("\n");
           finish(null);
