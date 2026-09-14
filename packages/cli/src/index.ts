@@ -78,3 +78,9 @@ export {
   type ApkCompatibility,
   type ApkMetadata,
 } from "./android-product.js";
+export {
+  classifyZeroConfigTarget,
+  type ZeroConfigClassification,
+  type ZeroConfigTarget,
+  type ZeroConfigTargetDependencies,
+} from "./zero-config-target.js";
