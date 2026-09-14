@@ -1,6 +1,7 @@
 export * from "./artifact-store.js";
 export * from "./bundle.js";
 export * from "./evidence.js";
+export * from "./finding-workflow.js";
 export * from "./render-ai.js";
 export * from "./render-ci.js";
 export * from "./render-html.js";
