@@ -3,6 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ANDROID_OBSERVER_PROTOCOL_VERSION } from "./observer-protocol.js";
 
+export const ANDROID_OBSERVER_MIN_SDK = 23;
+
 export interface AndroidObserverAsset {
   readonly apkPath: string;
   readonly packageName: string;
