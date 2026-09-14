@@ -79,12 +79,31 @@ export {
   type ApkMetadata,
 } from "./android-product.js";
 export {
+  locateAndroidSdkTools,
+  type AndroidSdkLocatorOptions,
+  type AndroidSdkTools,
+} from "./android-sdk.js";
+export {
+  evaluateZeroConfigAndroidDevice,
+  type AndroidDeviceEvaluation,
+} from "./android-selection.js";
+export {
+  androidPackageInstalled,
+  observerAccessibilityEnabled,
+  openObserverSetup,
+  type AndroidAdbTarget,
+  type AndroidPackageQuery,
+} from "./android-zero-config-support.js";
+export {
   classifyZeroConfigTarget,
   type ZeroConfigClassification,
   type ZeroConfigTarget,
   type ZeroConfigTargetDependencies,
 } from "./zero-config-target.js";
-export { runZeroConfigTarget } from "./zero-config.js";
+export {
+  runZeroConfigTarget,
+  type ZeroConfigDependencies,
+} from "./zero-config.js";
 export {
   finishInteractiveScan,
   systemReportActions,
