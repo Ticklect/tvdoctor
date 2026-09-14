@@ -197,4 +197,40 @@ describe("zero-config Android flow", () => {
     expect(code).toBe(0);
     expect(scans).toBe(2);
   });
+
+  it("creates an owned TVDoctor test device when no compatible target exists and stops it afterward", async () => {
+    const events: string[] = [];
+    let preflights = 0;
+    let packageQueries = 0;
+    let stopped = false;
+    const managedTv = { ...tv, serial: "emulator-7777" };
+    const ctx = context(events, terminal(async () => 0), {
+      androidPreflight: async () => {
+        preflights += 1;
+        return {
+          available: true,
+          adbPath: "adb",
+          message: "ready",
+          devices: preflights === 1 ? [] : [managedTv],
+        };
+      },
+    });
+
+    const code = await runZeroConfigTarget({ kind: "android-apk", apkPath: apk.path }, ctx, {
+      androidPackageInstalled: async () => { packageQueries += 1; return true; },
+      ensureManagedAndroidTvEmulator: async (options) => {
+        expect(await options.confirmDownload(["emulator"])).toBe(true);
+        return {
+          serial: managedTv.serial,
+          owned: true,
+          stop: async () => { stopped = true; },
+        };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(preflights).toBe(2);
+    expect(packageQueries).toBe(0);
+    expect(stopped).toBe(true);
+  });
 });
