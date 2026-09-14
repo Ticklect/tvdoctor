@@ -84,3 +84,10 @@ export {
   type ZeroConfigTarget,
   type ZeroConfigTargetDependencies,
 } from "./zero-config-target.js";
+export { runZeroConfigTarget } from "./zero-config.js";
+export {
+  finishInteractiveScan,
+  systemReportActions,
+  type ScanCompletionLike,
+} from "./zero-config-output.js";
+export { runProductCli, START_HELP_TEXT } from "./product-entry.js";
