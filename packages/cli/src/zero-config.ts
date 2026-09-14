@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 
 import type { CliContext } from "./cli.js";
+import type { AndroidScanResult } from "./android-product.js";
 import { evaluateZeroConfigAndroidDevice } from "./android-selection.js";
 import {
   androidPackageInstalled as queryAndroidPackageInstalled,
@@ -157,7 +158,7 @@ async function runAndroidScanAttempt(
     readonly apkPath: string;
     readonly outputPath: string;
   },
-): Promise<Awaited<ReturnType<NonNullable<NonNullable<CliContext["operations"]>["scanAndroidApk"]>>>> {
+): Promise<AndroidScanResult> {
   const scan = context.operations?.scanAndroidApk;
   if (scan === undefined) throw new Error("Android TV scanning is unavailable in this TVDoctor installation.");
   const progress = new ProgressRenderer(terminal.isInteractive, (line) => write(context, line));
