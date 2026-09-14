@@ -37,7 +37,11 @@ function terminal(select: StartTerminal["select"] = async () => 0): StartTermina
   return { isInteractive: true, prompt: async () => null, select };
 }
 
-function context(events: string[], startTerminal = terminal()): CliContext {
+function context(
+  events: string[],
+  startTerminal = terminal(),
+  overrides: Partial<NonNullable<CliContext["operations"]>> = {},
+): CliContext {
   return {
     environment,
     startTerminal,
@@ -59,6 +63,7 @@ function context(events: string[], startTerminal = terminal()): CliContext {
           details: ["All reachable navigation work was exhausted."],
         };
       },
+      ...overrides,
     },
   };
 }
@@ -79,16 +84,14 @@ describe("zero-config Android flow", () => {
   it("asks once when several compatible TVs exist", async () => {
     const events: string[] = [];
     let selections = 0;
-    const ctx = context(events, terminal(async () => { selections += 1; return 1; }));
-    ctx.operations = {
-      ...ctx.operations,
+    const ctx = context(events, terminal(async () => { selections += 1; return 1; }), {
       androidPreflight: async () => ({
         available: true,
         adbPath: "adb",
         message: "ready",
         devices: [tv, { ...tv, serial: "tv-2", model: "Second TV" }],
       }),
-    };
+    });
     await runZeroConfigTarget({ kind: "android-apk", apkPath: apk.path }, ctx, {
       androidPackageInstalled: async () => false,
     });
@@ -98,14 +101,12 @@ describe("zero-config Android flow", () => {
   it("does not silently replace an existing app on an external target", async () => {
     const events: string[] = [];
     let scanCalled = false;
-    const ctx = context(events, terminal(async () => 1));
-    ctx.operations = {
-      ...ctx.operations,
+    const ctx = context(events, terminal(async () => 1), {
       scanAndroidApk: async () => {
         scanCalled = true;
         throw new Error("must not scan");
       },
-    };
+    });
     const code = await runZeroConfigTarget({ kind: "android-apk", apkPath: apk.path }, ctx, {
       androidPackageInstalled: async () => true,
     });
@@ -117,9 +118,7 @@ describe("zero-config Android flow", () => {
     const events: string[] = [];
     let scans = 0;
     let enabledChecks = 0;
-    const ctx = context(events);
-    ctx.operations = {
-      ...ctx.operations,
+    const ctx = context(events, terminal(), {
       scanAndroidApk: async () => {
         scans += 1;
         if (scans === 1) {
@@ -139,7 +138,7 @@ describe("zero-config Android flow", () => {
           details: ["All reachable navigation work was exhausted."],
         };
       },
-    };
+    });
 
     const code = await runZeroConfigTarget({ kind: "android-apk", apkPath: apk.path }, ctx, {
       androidPackageInstalled: async () => false,
