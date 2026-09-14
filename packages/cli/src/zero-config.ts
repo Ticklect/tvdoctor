@@ -20,6 +20,7 @@ const EXIT_USAGE = 2;
 const EXIT_PARTIAL = 3;
 const EXIT_EXECUTION = 4;
 const INTERACTIVE_SETUP_TIMEOUT_MS = 300_000;
+const MAX_APP_SETUP_RECHECKS = 8;
 
 const nonInteractiveTerminal: StartTerminal = {
   isInteractive: false,
@@ -33,6 +34,11 @@ export interface ZeroConfigDependencies {
   readonly observerAccessibilityEnabled?: typeof readObserverAccessibilityEnabled;
   readonly sleep?: (durationMs: number, signal?: AbortSignal) => Promise<void>;
   readonly now?: () => number;
+}
+
+interface AndroidScanAttempt {
+  readonly result: AndroidScanResult;
+  readonly retryAfterManualSetup: boolean;
 }
 
 function write(context: CliContext, text: string): void {
@@ -158,12 +164,13 @@ async function runAndroidScanAttempt(
     readonly apkPath: string;
     readonly outputPath: string;
   },
-): Promise<AndroidScanResult> {
+): Promise<AndroidScanAttempt> {
   const scan = context.operations?.scanAndroidApk;
   if (scan === undefined) throw new Error("Android TV scanning is unavailable in this TVDoctor installation.");
   const progress = new ProgressRenderer(terminal.isInteractive, (line) => write(context, line));
+  let retryAfterManualSetup = false;
   try {
-    return await scan({
+    const result = await scan({
       adbPath: request.adbPath,
       serial: request.serial,
       apkPath: request.apkPath,
@@ -172,26 +179,53 @@ async function runAndroidScanAttempt(
       ...(context.signal === undefined ? {} : { signal: context.signal }),
       onProgress: (state) => progress.update(state),
       onSetupScreen: async (detection) => {
-        const focused = detection.controls.find((control) => control.focused);
-        const choice = await terminal.select(
-          `TVDoctor found a ${detection.kind} screen. How should it continue?`,
-          [
-            { label: "Leave unchanged and stop", detail: "Safest when the choice is unclear" },
-            {
-              label: "Select the highlighted control",
-              ...(focused === undefined ? {} : { detail: focused.label }),
-            },
-            { label: "Press Back" },
-          ],
+        write(
+          context,
+          `TVDoctor found a ${detection.kind} screen. Complete any required account, permission, region, or onboarding choice on the TV itself.`,
         );
-        if (choice === 1) return "select-highlighted";
-        if (choice === 2) return "press-back";
+        const choice = await terminal.select("When you are ready:", [
+          { label: "I completed this setup — recheck" },
+          { label: "Press Back", detail: "Only use this when Back is clearly safe" },
+          { label: "Stop without changing anything" },
+        ]);
+        if (choice === 0) {
+          retryAfterManualSetup = true;
+          return "leave-unchanged";
+        }
+        if (choice === 1) return "press-back";
         return "leave-unchanged";
       },
     });
+    return { result, retryAfterManualSetup };
   } finally {
     progress.finish();
   }
+}
+
+async function runAndroidScanWithManualSetupRecovery(
+  context: CliContext,
+  terminal: StartTerminal,
+  request: {
+    readonly adbPath: string;
+    readonly serial: string;
+    readonly apkPath: string;
+    readonly outputPath: string;
+  },
+): Promise<AndroidScanResult> {
+  for (let attemptIndex = 0; attemptIndex < MAX_APP_SETUP_RECHECKS; attemptIndex += 1) {
+    const attempt = await runAndroidScanAttempt(context, terminal, request);
+    if (attempt.result.status !== "setup-blocker" || !attempt.retryAfterManualSetup) {
+      return attempt.result;
+    }
+    write(context, "Rechecking app setup…");
+  }
+  return {
+    status: "setup-blocker",
+    issueCount: 0,
+    highestSeverity: null,
+    reportPath: null,
+    details: ["Application setup did not reach a stable testable state after repeated user-controlled rechecks."],
+  };
 }
 
 async function runZeroConfigAndroid(
@@ -284,7 +318,7 @@ async function runZeroConfigAndroid(
   });
   const startedAtMs = Date.now();
   write(context, "Scanning… Press Ctrl+C to stop safely.");
-  let result = await runAndroidScanAttempt(context, terminal, {
+  let result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
     adbPath,
     serial: selected.device.serial,
     apkPath,
@@ -314,7 +348,7 @@ async function runZeroConfigAndroid(
       };
     } else {
       write(context, "Observer enabled. Resuming scan…");
-      result = await runAndroidScanAttempt(context, terminal, {
+      result = await runAndroidScanWithManualSetupRecovery(context, terminal, {
         adbPath,
         serial: selected.device.serial,
         apkPath,
