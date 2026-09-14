@@ -159,4 +159,42 @@ describe("zero-config Android flow", () => {
     expect(events).toContain("open-observer-setup");
     expect(enabledChecks).toBe(2);
   });
+
+  it("lets the user complete app setup and automatically rechecks in the same command", async () => {
+    const events: string[] = [];
+    let scans = 0;
+    const ctx = context(events, terminal(async () => 0), {
+      scanAndroidApk: async (request) => {
+        scans += 1;
+        if (scans === 1) {
+          const decision = await request.onSetupScreen?.({
+            kind: "login",
+            heading: "Sign in",
+            controls: [],
+          });
+          expect(decision).toBe("leave-unchanged");
+          return {
+            status: "setup-blocker",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: null,
+            details: ["The scan was not started because TVDoctor found a login screen."],
+          };
+        }
+        return {
+          status: "completed",
+          issueCount: 0,
+          highestSeverity: null,
+          reportPath: null,
+          details: ["All reachable navigation work was exhausted."],
+        };
+      },
+    });
+
+    const code = await runZeroConfigTarget({ kind: "android-apk", apkPath: apk.path }, ctx, {
+      androidPackageInstalled: async () => false,
+    });
+    expect(code).toBe(0);
+    expect(scans).toBe(2);
+  });
 });
