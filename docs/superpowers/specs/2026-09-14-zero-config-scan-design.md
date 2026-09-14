@@ -15,7 +15,7 @@ The normal TVDoctor workflow has one required input:
 - an absolute HTTP(S) URL; or
 - a local `.apk` path.
 
-Everything else is automatic when TVDoctor can make the decision safely and deterministically. TVDoctor asks the user only when a choice changes consent, credentials, persistent account state, an existing personal-device installation, or a large local SDK/emulator download.
+Everything else is automatic when TVDoctor can make the decision safely and deterministically. TVDoctor asks the user only when a choice changes consent, credentials, persistent account state, an existing external-device installation, selects between several equally valid external targets, or starts a large local SDK/emulator download.
 
 Advanced users keep the existing explicit `test`, `accessibility`, `ci`, `baseline`, `doctor`, `setup`, and `replay` surfaces.
 
@@ -54,10 +54,10 @@ TVDoctor accepts a target directly at the root command:
 
 ```text
 tvdoctor https://example.test/tv
-tvdoctor D:\apps\example.apk
+tvdoctor "D:\apps\example tv.apk"
 ```
 
-The root dispatcher classifies the first argument as an absolute HTTP(S) URL or a local `.apk` path. Any other first argument continues through normal command dispatch so existing commands remain unambiguous.
+Named commands are resolved first. When the first token is not a known command, the root dispatcher classifies it as an absolute HTTP(S) URL or a local `.apk` path. Unknown non-target input remains a usage error, so existing named commands remain unambiguous.
 
 The zero-config target form uses the completion-driven Deep scan profile internally. The UI calls this simply **Scan**. It does not teach scan-depth terminology before the run starts.
 
@@ -216,24 +216,24 @@ APK inspection yields package, launch activity, minimum SDK, target SDK, label, 
 Candidate devices are then filtered by:
 
 - `state === device`;
-- Android TV/television characteristic when known;
+- `isTelevision === true` for zero-config auto-selection;
 - API level at or above the observer minimum and APK minimum;
 - ABI overlap when both sides expose ABI information;
 - successful boot/readiness proof before installation.
 
-A non-TV Android device must not be labelled or auto-selected as an Android TV merely because ADB can see it.
+A non-TV Android device must not be labelled or auto-selected as an Android TV merely because ADB can see it. A device whose television identity cannot be established is excluded from zero-config auto-selection and remains available only through the existing explicit advanced device path.
 
 If exactly one compatible TV target remains, zero-config mode selects it automatically. If several compatible targets remain, TVDoctor asks which one to use. If none remain, it moves to managed-emulator recovery when that capability is available.
 
-### Personal-device install guard
+### Existing-package guard
 
 Before `adb install -r`, TVDoctor checks whether the target package is already installed.
 
-- On a disposable emulator, replacement is allowed as part of the requested APK test.
-- On a physical device, if the same package is already installed, TVDoctor does not silently replace it. It offers the user an explicit replace-and-test choice or the disposable TVDoctor test device when available.
+- On a TVDoctor-owned managed emulator, replacement is allowed as part of the requested APK test.
+- On any external target, including a physical TV or user-managed emulator, if the same package is already installed, TVDoctor does not silently replace it. It offers an explicit replace-and-test choice or the TVDoctor test device when available.
 - If the package is absent, the user’s explicit APK scan request is sufficient authorization for installation on the selected compatible target.
 
-This guard prevents a zero-config convenience feature from overwriting an existing personal installation unexpectedly.
+This guard prevents a zero-config convenience feature from overwriting an existing installation unexpectedly.
 
 ## TVDoctor Observer first-run onboarding
 
@@ -290,13 +290,16 @@ The component owns SDK package discovery, system-image availability, AVD creatio
 
 When no compatible target exists:
 
-- if a TVDoctor-managed emulator is already installed, TVDoctor starts or reuses it automatically;
-- if the required system image or emulator package requires a large download or licence acceptance, TVDoctor asks one explicit question before starting that download;
+- if a TVDoctor-managed AVD and required image are already installed, TVDoctor starts it automatically;
+- if the required system image or emulator package requires a large download, TVDoctor asks one explicit question before starting that download;
+- TVDoctor does not auto-answer Android SDK licence prompts; when licence acceptance is required, the SDK tool’s licence text/interaction remains user-controlled in the same terminal;
 - once ready, the same APK scan continues automatically.
 
 The first implementation supports Windows/x64 hosts with Android SDK tooling because that matches the main local-development target. Unsupported hosts receive a concise explanation and retain the manual-device path.
 
-Historical AVD creation failures, including missing `devices.xml`, must be handled as an emulator-setup failure with actionable diagnostics. The implementation must not delete arbitrary existing AVDs or SDK content.
+TVDoctor uses a clearly owned AVD name/prefix. If TVDoctor started that managed emulator for the scan, it stops the emulator after the scan/report phase or on cancellation, while retaining the AVD and downloaded SDK/system-image packages for later reuse. It never deletes or mutates arbitrary pre-existing user AVDs.
+
+Historical AVD creation failures, including missing `devices.xml`, must be handled as an emulator-setup failure with actionable diagnostics.
 
 ## Progress and terminal behavior
 
@@ -349,6 +352,8 @@ The hero contains:
 - concise incomplete/failure reason when applicable.
 
 Immediately below the hero, render the first actionable finding or a short “no findings” state. The current large hardware-confidence checklist moves below the findings into a collapsed **Release checks** section. Repeated-pattern summaries also move below the first actionable findings so they do not delay the first concrete problem.
+
+For partial or failed reports, the concrete incomplete/failure reason is part of the hero/run warning and therefore appears before any findings or release guidance.
 
 ## Shared finding workflow state
 
@@ -417,7 +422,7 @@ Coordinates observer first-use setup and application setup waiting using existin
 
 ### `ManagedAndroidTvEmulator`
 
-Creates/starts a TVDoctor-owned test AVD and returns a ready serial. It lives above the Android driver.
+Creates/starts/stops a TVDoctor-owned test AVD and returns a ready serial. It lives above the Android driver and retains only TVDoctor-owned AVD/image assets between runs.
 
 ### `FindingWorkflowClassifier`
 
@@ -440,7 +445,7 @@ The README and package README lead with:
 
 ```text
 npx tvdoctor https://example.test/tv
-npx tvdoctor D:\apps\example.apk
+npx tvdoctor "D:\apps\example tv.apk"
 ```
 
 Then explain `tvdoctor start` as the one-prompt interactive form and move explicit `test --mode ...` usage into advanced/CI sections.
@@ -454,10 +459,10 @@ Android documentation must accurately describe the Observer behavior implemented
 ### Unit tests
 
 - target classification for valid/invalid URL and APK inputs;
-- root-command dispatch without breaking named commands;
+- named-command precedence and root-target dispatch without breaking existing commands;
 - shared Android SDK discovery, including Windows `%LOCALAPPDATA%` fallback;
-- APK/device compatibility and TV/API filtering;
-- personal-device existing-package guard;
+- APK/device compatibility and strict TV/API filtering for zero-config selection;
+- external-device existing-package guard;
 - finding workflow classification agreement;
 - terminal selection rendering does not clear the entire screen.
 
@@ -469,13 +474,13 @@ Android documentation must accurately describe the Observer behavior implemented
 - report auto-open succeeds and the textual verdict/path remain visible;
 - report open failure falls back without erasing completion output;
 - APK is inspected before device selection;
-- one compatible device is auto-selected;
+- one compatible proven-TV device is auto-selected;
 - multiple compatible devices cause one selection;
-- non-TV/API/ABI-incompatible devices are not auto-selected;
+- non-TV, unknown-TV, API-incompatible, and ABI-incompatible devices are not auto-selected;
 - observer disabled launches setup, observes explicit enablement, and resumes the same scan;
 - observer setup timeout produces setup-blocked, not a target defect;
 - multi-step application onboarding can be completed manually and resumes without restarting;
-- an existing physical-device package requires explicit replacement approval.
+- an existing package on an external target requires explicit replacement approval.
 
 ### Android integration tests
 
@@ -506,23 +511,24 @@ The design is complete when all of the following are true:
 2. The interactive web path shows continuous progress and never appears silent for a multi-minute scan.
 3. A user who runs an APK on a normal Windows Android Studio installation does not need to set `ANDROID_SDK_ROOT` solely for TVDoctor if the SDK is present under `%LOCALAPPDATA%\Android\Sdk`.
 4. APK metadata is known before TVDoctor selects an Android device.
-5. Exactly one compatible, boot-ready Android TV target is selected automatically; unsuitable Android devices are excluded with recorded reasons.
+5. Exactly one compatible, boot-ready, proven Android TV target is selected automatically; unsuitable or identity-unknown Android devices are excluded with recorded reasons.
 6. First-use Observer accessibility setup opens the correct user-controlled Android setup flow and continues the same scan after the user enables the service.
 7. Recoverable Android app setup can be completed by the user without rerunning TVDoctor.
-8. No zero-config path silently replaces an existing same-package installation on a physical device.
-9. When no compatible device exists and the managed-emulator capability is supported, TVDoctor can prepare a disposable API 36 Android TV test device and continue the pending APK scan, asking before any large SDK/system-image download.
-10. The final terminal verdict and report path remain visible after completion.
-11. A retained guided/zero-config report opens automatically when the OS integration succeeds.
-12. The HTML report puts the first actionable finding before the general real-hardware/release checklist.
-13. HTML and `agent-fix-tasks.md` agree exactly about replay readiness.
-14. Existing explicit CLI, CI, deterministic evidence, partial-run semantics, and replay behavior remain valid.
+8. No zero-config path silently replaces an existing same-package installation on an external device.
+9. When no compatible device exists and the managed-emulator capability is supported, TVDoctor can prepare a disposable API 36 Android TV test device and continue the pending APK scan, asking before any large SDK/system-image download and leaving licence acceptance user-controlled.
+10. A TVDoctor-started managed emulator is stopped after the scan/cancellation while its owned AVD and SDK image remain reusable.
+11. The final terminal verdict and report path remain visible after completion.
+12. A retained guided/zero-config report opens automatically when the OS integration succeeds.
+13. The HTML report puts the first actionable finding before the general real-hardware/release checklist.
+14. HTML and `agent-fix-tasks.md` agree exactly about replay readiness.
+15. Existing explicit CLI, CI, deterministic evidence, partial-run semantics, and replay behavior remain valid.
 
 ## Delivery order
 
 Implementation is staged so each step produces a usable improvement and can be verified independently:
 
 1. **Zero-config web and completion UX** — root/start target input, hidden normal scan-depth choice, Chromium install-and-resume, web progress, non-clearing terminal completion, report auto-open, start help/docs.
-2. **Android readiness and same-run recovery** — shared SDK locator, APK-first selection, TV/API/ABI/boot enforcement, Observer onboarding/resume, app-setup waiting, physical-package guard.
+2. **Android readiness and same-run recovery** — shared SDK locator, APK-first selection, TV/API/ABI/boot enforcement, Observer onboarding/resume, app-setup waiting, external-package guard.
 3. **Findings-first report** — shared workflow classifier, report hierarchy, replay-ready presentation, export links, partial/failure recovery copy.
 4. **Managed Android TV test device** — TVDoctor-owned AVD orchestration, package/image readiness, boot/reuse, bounded cleanup and recovery.
 
