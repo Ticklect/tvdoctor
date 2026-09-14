@@ -77,9 +77,13 @@ async function runZeroConfigWeb(target: string, context: CliContext): Promise<nu
       searchQuery: "N",
       ...(context.signal === undefined ? {} : { signal: context.signal }),
     });
+    clearInterval(timer);
+    progress.finish();
     await finishInteractiveScan(context, terminal, result, startedAtMs);
     return exitCodeForStatus(result.status);
   } catch (error) {
+    clearInterval(timer);
+    progress.finish();
     const message = error instanceof Error ? error.message.split(/\r?\n/u, 1)[0] : String(error);
     writeError(context, `Scan failed: ${message}`);
     return EXIT_EXECUTION;
