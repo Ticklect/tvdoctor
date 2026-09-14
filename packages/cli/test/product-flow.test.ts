@@ -64,7 +64,6 @@ describe("guided product output", () => {
   });
 });
 
-
 describe("APK inspection", () => {
   it("parses package, launcher, architecture, and SDK metadata", async () => {
     const apk = await inspectApk("D:/apps/VLC.apk", {
@@ -134,12 +133,16 @@ describe("tvdoctor start", () => {
     expect(safeTarget("HTTPS://Example.COM")).toBe("https://example.com/");
   });
 
-  it("does not offer cookie actions for a non-consent setup blocker", async () => {
+  it("asks for exactly one target and does not show platform or depth menus", async () => {
+    let prompts = 0;
     let selections = 0;
-    let auditStarted = false;
+    let requestMode: string | null = null;
     const terminal: StartTerminal = {
       isInteractive: true,
-      prompt: async () => "https://example.test/login",
+      prompt: async () => {
+        prompts += 1;
+        return "https://example.test/tv";
+      },
       select: async () => {
         selections += 1;
         return 0;
@@ -149,11 +152,41 @@ describe("tvdoctor start", () => {
       ...contextWithTerminal(terminal),
       operations: {
         replayIssue: async () => ({ status: "fixed", details: [] }),
-        detectWebsiteStartup: async () => ({
-          status: "blocked",
-          blockerKind: "login",
-          detail: "Sign-in is required.",
-        }),
+        testTarget: async (request) => {
+          requestMode = request.mode;
+          return {
+            status: "completed",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: null,
+            details: [],
+          };
+        },
+      },
+    });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(prompts).toBe(1);
+    expect(selections).toBe(0);
+    expect(requestMode).toBe("deep");
+  });
+
+  it("rejects invalid guided targets without starting an audit", async () => {
+    let stdout = "";
+    let auditStarted = false;
+    const terminal: StartTerminal = {
+      isInteractive: true,
+      prompt: async () => "not-a-url",
+      select: async () => 0,
+    };
+    const code = await runCli(["start"], {
+      environment,
+      io: {
+        writeStdout: (value) => { stdout += value; },
+        writeStderr: () => undefined,
+      },
+      startTerminal: terminal,
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
         testTarget: async () => {
           auditStarted = true;
           return { status: "completed", issueCount: 0, highestSeverity: null, reportPath: null, details: [] };
@@ -161,111 +194,9 @@ describe("tvdoctor start", () => {
       },
     });
 
-    expect(code).toBe(EXIT_CODES.replayInconclusive);
-    expect(selections).toBe(2);
+    expect(code).toBe(EXIT_CODES.usageError);
+    expect(stdout).toContain("absolute HTTP(S) URL or a local .apk path");
     expect(auditStarted).toBe(false);
-  });
-
-  it("confirms a successful report action after a website scan", async () => {
-    let stdout = "";
-    let openedPath: string | null = null;
-    const selections = [0, 0, 0];
-    const terminal: StartTerminal = {
-      isInteractive: true,
-      prompt: async () => "https://example.test",
-      select: async () => selections.shift() ?? null,
-    };
-    const code = await runCli(["start"], {
-      ...contextWithTerminal(terminal),
-      io: {
-        writeStdout: (value) => { stdout += value; },
-        writeStderr: () => undefined,
-      },
-      reportActions: {
-        openReport: async (path) => {
-          openedPath = path;
-          return true;
-        },
-        showFolder: async () => false,
-        copyPath: async () => false,
-      },
-      operations: {
-        replayIssue: async () => ({ status: "fixed", details: [] }),
-        detectWebsiteStartup: async () => ({ status: "ready", detail: "Ready." }),
-        testTarget: async () => ({
-          status: "completed",
-          issueCount: 0,
-          highestSeverity: null,
-          reportPath: "D:/reports/report.json",
-          details: ["All reachable work was exhausted."],
-        }),
-      },
-    });
-
-    expect(code).toBe(EXIT_CODES.success);
-    expect(openedPath).toMatch(/[\\/]reports[\\/]report\.html$/u);
-    expect(stdout).toContain("sent the report to your default viewer");
-  });
-
-  it("offers the same report actions after an Android scan", async () => {
-    let copiedPath: string | null = null;
-    const selections = [1, 0, 0, 2];
-    const terminal: StartTerminal = {
-      isInteractive: true,
-      prompt: async () => "D:/apps/example.apk",
-      select: async () => selections.shift() ?? null,
-    };
-    const code = await runCli(["start"], {
-      ...contextWithTerminal(terminal),
-      reportActions: {
-        openReport: async () => false,
-        showFolder: async () => false,
-        copyPath: async (path) => {
-          copiedPath = path;
-          return true;
-        },
-      },
-      operations: {
-        replayIssue: async () => ({ status: "fixed", details: [] }),
-        androidPreflight: async () => ({
-          available: true,
-          adbPath: "adb",
-          message: "Found 1 online Android device.",
-          devices: [{
-            serial: "emulator-5554",
-            state: "device",
-            online: true,
-            model: "Android TV",
-            manufacturer: "Google",
-            apiLevel: 36,
-            supportedAbis: ["x86_64"],
-            isTelevision: true,
-            detail: null,
-          }],
-        }),
-        inspectApk: async (path) => ({
-          path,
-          packageName: "org.example.tv",
-          versionName: "1.0.0",
-          launchableActivities: [".MainActivity"],
-          leanbackActivity: ".MainActivity",
-          supportedAbis: ["x86_64"],
-          minSdk: 24,
-          targetSdk: 36,
-          label: "Example TV",
-        }),
-        scanAndroidApk: async () => ({
-          status: "completed",
-          issueCount: 0,
-          highestSeverity: null,
-          reportPath: "D:/reports/report.json",
-          details: ["All reachable work was exhausted."],
-        }),
-      },
-    });
-
-    expect(code).toBe(EXIT_CODES.success);
-    expect(copiedPath).toMatch(/[\\/]reports[\\/]report\.html$/u);
   });
 });
 
@@ -347,7 +278,6 @@ describe("Android device preflight", () => {
             close: () => undefined,
           };
         }
-        if (options.serial === undefined) throw new Error("metadata driver requires a serial");
         const serial = options.serial;
         return {
           listDevices: async () => [],
@@ -376,38 +306,5 @@ describe("Android device preflight", () => {
     expect(result.devices[1]).toMatchObject({ online: true, model: "Android TV" });
     expect(result.devices[2]?.detail).toContain("Offline");
     expect(created).toBe(3);
-  });
-
-  it("rejects invalid guided URLs without starting an audit", async () => {
-    let stdout = "";
-    let auditStarted = false;
-    let promptCount = 0;
-    const terminal = {
-      isInteractive: true,
-      prompt: async () => {
-        promptCount += 1;
-        return promptCount === 1 ? "not-a-url" : null;
-      },
-      select: async () => 0,
-    };
-    const code = await runCli(["start"], {
-      environment,
-      io: {
-        writeStdout: (value) => { stdout += value; },
-        writeStderr: () => undefined,
-      },
-      startTerminal: terminal,
-      operations: {
-        replayIssue: async () => ({ status: "fixed", details: [] }),
-        testTarget: async () => {
-          auditStarted = true;
-          return { status: "completed", issueCount: 0, highestSeverity: null, reportPath: null, details: [] };
-        },
-      },
-    });
-
-    expect(code).toBe(EXIT_CODES.usageError);
-    expect(stdout).toContain("Please enter an absolute HTTP or HTTPS web address");
-    expect(auditStarted).toBe(false);
   });
 });
