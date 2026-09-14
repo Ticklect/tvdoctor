@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 import { createNodeCliOperations } from "./node-replay.js";
-import { runCli, type CliContext } from "./index.js";
+import { runProductCli, type CliContext } from "./index.js";
 import { ProcessStartTerminal } from "./interactive.js";
 
 const shutdownController = new AbortController();
@@ -104,7 +104,7 @@ function handleInterrupt(): void {
 
 process.on("SIGINT", handleInterrupt);
 try {
-  process.exitCode = await runCli(process.argv.slice(2), context);
+  process.exitCode = await runProductCli(process.argv.slice(2), context);
 } finally {
   process.removeListener("SIGINT", handleInterrupt);
 }
