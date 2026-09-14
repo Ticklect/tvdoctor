@@ -4,6 +4,7 @@ import process from "node:process";
 
 import type { CliContext, ReportActionHandlers } from "./cli.js";
 import type { StartTerminal } from "./interactive.js";
+import { sanitizeTerminalText } from "./terminal.js";
 
 export interface ScanCompletionLike {
   readonly status: "completed" | "partial" | "failed" | "setup-blocker";
@@ -14,7 +15,7 @@ export interface ScanCompletionLike {
 }
 
 function write(context: CliContext, text: string): void {
-  context.io.writeStdout(`${text}\n`);
+  context.io.writeStdout(`${sanitizeTerminalText(text, { maximumLength: 4_096 })}\n`);
 }
 
 async function launchDetached(command: string, arguments_: readonly string[]): Promise<boolean> {
