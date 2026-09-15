@@ -13,6 +13,7 @@ jobs:
   apply-verify-and-commit:
     runs-on: windows-latest
     timeout-minutes: 45
+    environment: android-observer-release
     steps:
       - name: Check out fix branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -54,8 +55,27 @@ jobs:
       - name: Build host packages
         run: npm run build:packages
 
-      - name: Rebuild tracked observer APK and manifest
+      - name: Materialize protected observer release keystore
         shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TVDOCTOR_OBSERVER_KEYSTORE_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) {
+            throw "TVDOCTOR_OBSERVER_KEYSTORE_BASE64 is not configured."
+          }
+          [System.IO.File]::WriteAllBytes(
+            (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12"),
+            [Convert]::FromBase64String($env:KEYSTORE_BASE64)
+          )
+
+      - name: Rebuild tracked observer APK and manifest with release identity
+        shell: pwsh
+        env:
+          TVDOCTOR_OBSERVER_KEYSTORE: ${{ runner.temp }}/tvdoctor-observer-release.p12
+          TVDOCTOR_OBSERVER_KEY_ALIAS: ${{ secrets.TVDOCTOR_OBSERVER_KEY_ALIAS }}
+          TVDOCTOR_OBSERVER_STORE_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_STORE_PASSWORD }}
+          TVDOCTOR_OBSERVER_KEY_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_KEY_PASSWORD }}
+          TVDOCTOR_OBSERVER_CERTIFICATE_SHA256: ${{ secrets.TVDOCTOR_OBSERVER_CERTIFICATE_SHA256 }}
         run: npm --workspace @tvdoctor/driver-android run build:observer
 
       - name: Verify packaged observer identity
@@ -108,3 +128,8 @@ jobs:
           git diff --cached --check
           git commit -m "fix(android): enforce foreground integrity"
           git push origin HEAD:fix/android-v2-foreground-integrity
+
+      - name: Remove protected keystore material
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12") -Force -ErrorAction SilentlyContinue
