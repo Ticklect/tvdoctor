@@ -1,29 +1,9 @@
-Android V2 foreground-integrity RED baseline confirmed on 2026-09-15T20:37:34Z.
+Android V2 foreground-integrity behavioral RED baseline confirmed on 2026-09-15T20:38:47Z.
 
-Command: npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts
-Exit code: 1
+Driver command exit code: 1
+CLI command exit code: 1
 
-Tail of failing test output:
-[31m     [31m×[31m records a redacted external boundary without exposing foreign content[39m[32m 37[2mms[22m[39m
-     [32m✓[39m rejects a foreign boundary that leaks accessibility content[32m 33[2mms[22m[39m
-[31m     [31m×[31m blocks a normal key before dispatch when the target no longer owns focus[39m[32m 34[2mms[22m[39m
-[31m     [31m×[31m records an action that crosses into an external boundary after input[39m[32m 31[2mms[22m[39m
-[31m     [31m×[31m requires a fresh full tree after target to foreign to target cache invalidation[39m[32m 31[2mms[22m[39m
-[31m     [31m×[31m permits setup input only for the exact system setup allowlist[39m[32m 31[2mms[22m[39m
-[31m     [31m×[31m does not write a screenshot if focus leaves the target during screencap[39m[32m 35[2mms[22m[39m
-
-[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 6 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
-
-[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mrecords a redacted external boundary without exposing foreign content
-[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mrequires a fresh full tree after target to foreign to target cache invalidation
-[31m[1mError[22m: Android observer returned an observation outside the provisioned target package.[39m
-[36m [2m❯[22m AndroidTvDriver.#snapshotFromState src/android-driver.ts:[2m591:13[22m[39m
-    [90m589|[39m     if (this.#currentApp === null || state.packageName !== this.#curre…
-    [90m590|[39m       this.#cachedTree = null;
-    [90m591|[39m       throw new Error("Android observer returned an observation outsid…
-    [90m   |[39m             [31m^[39m
-    [90m592|[39m     }
-    [90m593|[39m     this.#stateMessages += 1;
+Driver failing-test tail:
 [90m [2m❯[22m AndroidTvDriver.#snapshot src/android-driver.ts:[2m437:17[22m[39m
 [90m [2m❯[22m run src/android-driver.ts:[2m832:14[22m[39m
 
@@ -82,10 +62,10 @@ Received: [31m"inconclusive"[39m
 [32m- Error {[39m
 [32m-   "message": "rejected promise",[39m
 [31m+ {[39m
-[31m+   "capturedAt": "2026-09-15T20:37:34.919Z",[39m
+[31m+   "capturedAt": "2026-09-15T20:38:44.795Z",[39m
 [31m+   "height": 1,[39m
 [31m+   "mediaType": "image/png",[39m
-[31m+   "path": "/tmp/tvdoctor-foreground-NmUM2D/frame.png",[39m
+[31m+   "path": "/tmp/tvdoctor-foreground-378ACt/frame.png",[39m
 [31m+   "width": 1,[39m
 [2m  }[22m
 
@@ -102,8 +82,8 @@ Received: [31m"inconclusive"[39m
 
 [2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
 [2m      Tests [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (7)[39m
-[2m   Start at [22m 20:37:34
-[2m   Duration [22m 431ms[2m (tests 64%, transform 28%, import 7%, worker 1%)[22m
+[2m   Start at [22m 20:38:44
+[2m   Duration [22m 583ms[2m (tests 68%, transform 25%, import 6%, worker 1%)[22m
 
 
 ::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/src/android-driver.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > records a redacted external boundary without exposing foreign content,line=591,column=13::Error: Android observer returned an observation outside the provisioned target package.%0A ❯ AndroidTvDriver.#snapshotFromState src/android-driver.ts:591:13%0A ❯ AndroidTvDriver.#snapshot src/android-driver.ts:437:17%0A ❯ run src/android-driver.ts:832:14%0A%0A
@@ -116,7 +96,7 @@ Received: [31m"inconclusive"[39m
 
 ::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > permits setup input only for the exact system setup allowlist,line=240,column=30::TypeError: setupDriver.pressSystemSetup is not a function%0A ❯ test/android-v2-foreground-regression.test.ts:240:30%0A%0A
 
-::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > does not write a screenshot if focus leaves the target during screencap,line=255,column=59::AssertionError: promise resolved "{ …(5) }" instead of rejecting%0A%0A- Expected%0A+ Received%0A%0A- Error {%0A-   "message": "rejected promise",%0A+ {%0A+   "capturedAt": "2026-09-15T20:37:34.919Z",%0A+   "height": 1,%0A+   "mediaType": "image/png",%0A+   "path": "/tmp/tvdoctor-foreground-NmUM2D/frame.png",%0A+   "width": 1,%0A  }%0A%0A ❯ test/android-v2-foreground-regression.test.ts:255:59%0A%0A
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > does not write a screenshot if focus leaves the target during screencap,line=255,column=59::AssertionError: promise resolved "{ …(5) }" instead of rejecting%0A%0A- Expected%0A+ Received%0A%0A- Error {%0A-   "message": "rejected promise",%0A+ {%0A+   "capturedAt": "2026-09-15T20:38:44.795Z",%0A+   "height": 1,%0A+   "mediaType": "image/png",%0A+   "path": "/tmp/tvdoctor-foreground-378ACt/frame.png",%0A+   "width": 1,%0A  }%0A%0A ❯ test/android-v2-foreground-regression.test.ts:255:59%0A%0A
 npm error Lifecycle script `test` failed with error:
 npm error code 1
 npm error path /home/runner/work/tvdoctor/tvdoctor/packages/driver-android
@@ -124,3 +104,105 @@ npm error workspace @tvdoctor/driver-android@0.1.0
 npm error location /home/runner/work/tvdoctor/tvdoctor/packages/driver-android
 npm error command failed
 npm error command sh -c vitest run --config vitest.config.ts android-v2-foreground-regression.test.ts
+
+CLI failing-test tail:
+ [32m✓[39m packages/cli/test/node-baseline.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m packages/cli/test/node-audit-hardening.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 570[2mms[22m[39m
+   [32m✓[39m Node audit release hardening [2m(19)[22m
+     [33m[2m✓[22m[39m suppresses close rejection after interruption during active exploration[33m 323[2mms[22m[39m
+ [32m✓[39m packages/cli/test/node-replay.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m packages/cli/test/journey.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m packages/cli/test/web-audit-hooks.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+[90mstdout[2m | packages/cli/test/evidence-excerpt.test.ts[2m > [22m[2mproduction evidence excerpt[2m > [22m[2mwrites valid evidence quickly for the bounded production-sized payload
+[22m[39mlarge-DOM evidence artifact write: 24.648 ms
+
+ [32m✓[39m packages/cli/test/evidence-excerpt.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 55[2mms[22m[39m
+ [31m❯[39m packages/cli/test/android-foreground-regression.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m4 failed[39m[2m)[22m[32m 8[2mms[22m[39m
+   [31m❯[39m Android CLI foreground integrity regressions [2m(4)[22m
+[31m     [31m×[31m detects a redacted permission-controller boundary with no exposed nodes[39m[32m 6[2mms[22m[39m
+[31m     [31m×[31m relaunches and revalidates when final evidence starts outside the target[39m[32m 1[2mms[22m[39m
+[31m     [31m×[31m rejects final evidence when relaunch cannot restore the target[39m[32m 0[2mms[22m[39m
+[31m     [31m×[31m downgrades an otherwise complete exploration when final target validation fails[39m[32m 0[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 4 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m packages/cli/test/android-foreground-regression.test.ts[2m > [22mAndroid CLI foreground integrity regressions[2m > [22mdetects a redacted permission-controller boundary with no exposed nodes
+[31m[1mAssertionError[22m: expected null to deeply equal { kind: 'system permission', …(2) }[39m
+
+[32m- Expected:[39m
+{
+  "controls": [],
+  "heading": "System permission",
+  "kind": "system permission",
+}
+
+[31m+ Received:[39m
+null
+
+[36m [2m❯[22m packages/cli/test/android-foreground-regression.test.ts:[2m28:9[22m[39m
+    [90m 26|[39m     expect(classifyAndroidStartup(snapshot(
+    [90m 27|[39m       "android://com.google.android.permissioncontroller/com.android.p…
+    [90m 28|[39m     ))).toEqual({
+    [90m   |[39m         [31m^[39m
+    [90m 29|[39m       kind: "system permission",
+    [90m 30|[39m       heading: "System permission",
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m packages/cli/test/android-foreground-regression.test.ts[2m > [22mAndroid CLI foreground integrity regressions[2m > [22mrelaunches and revalidates when final evidence starts outside the target
+[31m[1mTypeError[22m: restoreAndroidTargetForFinalEvidence is not a function[39m
+[36m [2m❯[22m packages/cli/test/android-foreground-regression.test.ts:[2m42:28[22m[39m
+    [90m 40|[39m     let resetCalls = 0;
+    [90m 41|[39m     let foregroundChecks = 0;
+    [90m 42|[39m     const restored = await restoreAndroidTargetForFinalEvidence({
+    [90m   |[39m                            [31m^[39m
+    [90m 43|[39m       snapshot: async () => states.shift() ?? states.at(-1)!,
+    [90m 44|[39m       reset: async () => { resetCalls += 1; },
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m packages/cli/test/android-foreground-regression.test.ts[2m > [22mAndroid CLI foreground integrity regressions[2m > [22mrejects final evidence when relaunch cannot restore the target
+[31m[1mTypeError[22m: restoreAndroidTargetForFinalEvidence is not a function[39m
+[36m [2m❯[22m packages/cli/test/android-foreground-regression.test.ts:[2m59:18[22m[39m
+    [90m 57|[39m     const external = snapshot("android://com.google.android.tvlauncher…
+    [90m 58|[39m     let resetCalls = 0;
+    [90m 59|[39m     await expect(restoreAndroidTargetForFinalEvidence({
+    [90m   |[39m                  [31m^[39m
+    [90m 60|[39m       snapshot: async () => external,
+    [90m 61|[39m       reset: async () => { resetCalls += 1; },
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m packages/cli/test/android-foreground-regression.test.ts[2m > [22mAndroid CLI foreground integrity regressions[2m > [22mdowngrades an otherwise complete exploration when final target validation fails
+[31m[1mTypeError[22m: androidRunStatus is not a function[39m
+[36m [2m❯[22m packages/cli/test/android-foreground-regression.test.ts:[2m68:12[22m[39m
+    [90m 66|[39m
+    [90m 67|[39m   it("downgrades an otherwise complete exploration when final target v…
+    [90m 68|[39m     expect(androidRunStatus(true, null)).toBe("completed");
+    [90m   |[39m            [31m^[39m
+    [90m 69|[39m     expect(androidRunStatus(true, "Android scan ended outside org.exam…
+    [90m 70|[39m     expect(androidRunStatus(false, null)).toBe("partial");
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m8 passed[39m[22m[90m (9)[39m
+[2m      Tests [22m [1m[31m4 failed[39m[22m[2m | [22m[1m[32m135 passed[39m[22m[90m (139)[39m
+[2m   Start at [22m 20:38:45
+[2m   Duration [22m 2.14s[2m (import 51%, transform 31%, tests 17%, worker 1%)[22m
+
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/cli/test/android-foreground-regression.test.ts,title=packages/cli/test/android-foreground-regression.test.ts > Android CLI foreground integrity regressions > detects a redacted permission-controller boundary with no exposed nodes,line=28,column=9::AssertionError: expected null to deeply equal { kind: 'system permission', …(2) }%0A%0A- Expected:%0A{%0A  "controls": [],%0A  "heading": "System permission",%0A  "kind": "system permission",%0A}%0A%0A+ Received:%0Anull%0A%0A ❯ packages/cli/test/android-foreground-regression.test.ts:28:9%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/cli/test/android-foreground-regression.test.ts,title=packages/cli/test/android-foreground-regression.test.ts > Android CLI foreground integrity regressions > relaunches and revalidates when final evidence starts outside the target,line=42,column=28::TypeError: restoreAndroidTargetForFinalEvidence is not a function%0A ❯ packages/cli/test/android-foreground-regression.test.ts:42:28%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/cli/test/android-foreground-regression.test.ts,title=packages/cli/test/android-foreground-regression.test.ts > Android CLI foreground integrity regressions > rejects final evidence when relaunch cannot restore the target,line=59,column=18::TypeError: restoreAndroidTargetForFinalEvidence is not a function%0A ❯ packages/cli/test/android-foreground-regression.test.ts:59:18%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/cli/test/android-foreground-regression.test.ts,title=packages/cli/test/android-foreground-regression.test.ts > Android CLI foreground integrity regressions > downgrades an otherwise complete exploration when final target validation fails,line=68,column=12::TypeError: androidRunStatus is not a function%0A ❯ packages/cli/test/android-foreground-regression.test.ts:68:12%0A%0A
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /home/runner/work/tvdoctor/tvdoctor/packages/cli
+npm error workspace tvdoctor@0.1.0
+npm error location /home/runner/work/tvdoctor/tvdoctor/packages/cli
+npm error command failed
+npm error command sh -c vitest run --config vitest.config.ts --root ../.. packages/cli/test android-foreground-regression.test.ts
