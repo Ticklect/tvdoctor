@@ -1,41 +1,122 @@
-Android V2 foreground-integrity RED baseline confirmed on 2026-09-15T20:36:37Z.
+Android V2 foreground-integrity RED baseline confirmed on 2026-09-15T20:37:34Z.
 
 Command: npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts
 Exit code: 1
 
 Tail of failing test output:
+[31m     [31m×[31m records a redacted external boundary without exposing foreign content[39m[32m 37[2mms[22m[39m
+     [32m✓[39m rejects a foreign boundary that leaks accessibility content[32m 33[2mms[22m[39m
+[31m     [31m×[31m blocks a normal key before dispatch when the target no longer owns focus[39m[32m 34[2mms[22m[39m
+[31m     [31m×[31m records an action that crosses into an external boundary after input[39m[32m 31[2mms[22m[39m
+[31m     [31m×[31m requires a fresh full tree after target to foreign to target cache invalidation[39m[32m 31[2mms[22m[39m
+[31m     [31m×[31m permits setup input only for the exact system setup allowlist[39m[32m 31[2mms[22m[39m
+[31m     [31m×[31m does not write a screenshot if focus leaves the target during screencap[39m[32m 35[2mms[22m[39m
 
-> @tvdoctor/driver-android@0.1.0 test
-> vitest run --config vitest.config.ts android-v2-foreground-regression.test.ts
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 6 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
 
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mrecords a redacted external boundary without exposing foreign content
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mrequires a fresh full tree after target to foreign to target cache invalidation
+[31m[1mError[22m: Android observer returned an observation outside the provisioned target package.[39m
+[36m [2m❯[22m AndroidTvDriver.#snapshotFromState src/android-driver.ts:[2m591:13[22m[39m
+    [90m589|[39m     if (this.#currentApp === null || state.packageName !== this.#curre…
+    [90m590|[39m       this.#cachedTree = null;
+    [90m591|[39m       throw new Error("Android observer returned an observation outsid…
+    [90m   |[39m             [31m^[39m
+    [90m592|[39m     }
+    [90m593|[39m     this.#stateMessages += 1;
+[90m [2m❯[22m AndroidTvDriver.#snapshot src/android-driver.ts:[2m437:17[22m[39m
+[90m [2m❯[22m run src/android-driver.ts:[2m832:14[22m[39m
 
-[1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/runner/work/tvdoctor/tvdoctor/packages/driver-android[39m
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯[22m[39m
 
- [31m❯[39m test/android-v2-foreground-regression.test.ts [2m([22m[2m0 test[22m[2m)[22m
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mblocks a normal key before dispatch when the target no longer owns focus
+[31m[1mAssertionError[22m: expected 'applied' to be 'failed' // Object.is equality[39m
 
-[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+Expected: [32m"[7mfail[27med"[39m
+Received: [31m"[7mappli[27med"[39m
 
-[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m [ test/android-v2-foreground-regression.test.ts ][22m
-[31m[1mError[22m: Failed to resolve entry for package "@tvdoctor/protocol". The package may have incorrect main/module/exports specified in its package.json.[39m
-[36m [2m❯[22m src/android-driver.ts:[2m5:1[22m[39m
-    [90m  3|[39m import { dirname, isAbsolute, join, resolve } from "node:path";
-    [90m  4|[39m import process from "node:process";
-    [90m  5|[39m import {
-    [90m   |[39m [31m^[39m
-    [90m  6|[39m   availableObservation,
-    [90m  7|[39m   unavailableObservation,
-[90m [2m❯[22m src/index.ts:[2m1:1[22m[39m
+[36m [2m❯[22m test/android-v2-foreground-regression.test.ts:[2m205:28[22m[39m
+    [90m203|[39m     const result = await driver.press("RIGHT");
+    [90m204|[39m     const after = executor.calls.filter((call) => call.join(" ").inclu…
+    [90m205|[39m     expect(result.outcome).toBe("failed");
+    [90m   |[39m                            [31m^[39m
+    [90m206|[39m     expect(after).toBe(before);
+    [90m207|[39m     expect(result.message).toMatch(/focused window|foreground|target/u…
 
-[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mrecords an action that crosses into an external boundary after input
+[31m[1mAssertionError[22m: expected 'inconclusive' to be 'applied' // Object.is equality[39m
+
+Expected: [32m"applied"[39m
+Received: [31m"inconclusive"[39m
+
+[36m [2m❯[22m test/android-v2-foreground-regression.test.ts:[2m215:28[22m[39m
+    [90m213|[39m     observer.crossOnSettle = true;
+    [90m214|[39m     const result = await driver.press("RIGHT");
+    [90m215|[39m     expect(result.outcome).toBe("applied");
+    [90m   |[39m                            [31m^[39m
+    [90m216|[39m     expect(result.postActionSnapshot?.location).toMatchObject({ status…
+    [90m217|[39m     expect(result.postActionSnapshot?.uiTree).toEqual({ status: "avail…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mpermits setup input only for the exact system setup allowlist
+[31m[1mTypeError[22m: setupDriver.pressSystemSetup is not a function[39m
+[36m [2m❯[22m test/android-v2-foreground-regression.test.ts:[2m240:30[22m[39m
+    [90m238|[39m     };
+    [90m239|[39m     executor.focusedPackage = "com.google.android.permissioncontroller…
+    [90m240|[39m     await expect(setupDriver.pressSystemSetup("SELECT")).resolves.toMa…
+    [90m   |[39m                              [31m^[39m
+    [90m241|[39m     executor.focusedPackage = "com.evil.permissioncontroller.fake/com.…
+    [90m242|[39m     const before = executor.calls.filter((call) => call.join(" ").incl…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m > [22mAndroid foreground integrity regressions[2m > [22mdoes not write a screenshot if focus leaves the target during screencap
+[31m[1mAssertionError[22m: promise resolved "{ …(5) }" instead of rejecting[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- Error {[39m
+[32m-   "message": "rejected promise",[39m
+[31m+ {[39m
+[31m+   "capturedAt": "2026-09-15T20:37:34.919Z",[39m
+[31m+   "height": 1,[39m
+[31m+   "mediaType": "image/png",[39m
+[31m+   "path": "/tmp/tvdoctor-foreground-NmUM2D/frame.png",[39m
+[31m+   "width": 1,[39m
+[2m  }[22m
+
+[36m [2m❯[22m test/android-v2-foreground-regression.test.ts:[2m255:59[22m[39m
+    [90m253|[39m     try {
+    [90m254|[39m       executor.switchFocusAfterScreencap = "com.google.android.tvlaunc…
+    [90m255|[39m       await expect(driver.captureScreenshot(artifactPath)).rejects.toT…
+    [90m   |[39m                                                           [31m^[39m
+    [90m256|[39m       await expect(access(artifactPath)).rejects.toThrow();
+    [90m257|[39m     } finally {
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯[22m[39m
 
 
 [2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
-[2m      Tests [22m [2mno tests[22m
-[2m   Start at [22m 20:36:37
-[2m   Duration [22m 256ms[2m (worker 96%, environment 4%)[22m
+[2m      Tests [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 20:37:34
+[2m   Duration [22m 431ms[2m (tests 64%, transform 28%, import 7%, worker 1%)[22m
 
 
-::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/src/android-driver.ts,title=test/android-v2-foreground-regression.test.ts,line=5,column=1::Error: Failed to resolve entry for package "@tvdoctor/protocol". The package may have incorrect main/module/exports specified in its package.json.%0A ❯ src/android-driver.ts:5:1%0A ❯ src/index.ts:1:1%0A%0A
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/src/android-driver.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > records a redacted external boundary without exposing foreign content,line=591,column=13::Error: Android observer returned an observation outside the provisioned target package.%0A ❯ AndroidTvDriver.#snapshotFromState src/android-driver.ts:591:13%0A ❯ AndroidTvDriver.#snapshot src/android-driver.ts:437:17%0A ❯ run src/android-driver.ts:832:14%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > blocks a normal key before dispatch when the target no longer owns focus,line=205,column=28::AssertionError: expected 'applied' to be 'failed' // Object.is equality%0A%0AExpected: "failed"%0AReceived: "applied"%0A%0A ❯ test/android-v2-foreground-regression.test.ts:205:28%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > records an action that crosses into an external boundary after input,line=215,column=28::AssertionError: expected 'inconclusive' to be 'applied' // Object.is equality%0A%0AExpected: "applied"%0AReceived: "inconclusive"%0A%0A ❯ test/android-v2-foreground-regression.test.ts:215:28%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/src/android-driver.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > requires a fresh full tree after target to foreign to target cache invalidation,line=591,column=13::Error: Android observer returned an observation outside the provisioned target package.%0A ❯ AndroidTvDriver.#snapshotFromState src/android-driver.ts:591:13%0A ❯ AndroidTvDriver.#snapshot src/android-driver.ts:437:17%0A ❯ run src/android-driver.ts:832:14%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > permits setup input only for the exact system setup allowlist,line=240,column=30::TypeError: setupDriver.pressSystemSetup is not a function%0A ❯ test/android-v2-foreground-regression.test.ts:240:30%0A%0A
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/test/android-v2-foreground-regression.test.ts,title=test/android-v2-foreground-regression.test.ts > Android foreground integrity regressions > does not write a screenshot if focus leaves the target during screencap,line=255,column=59::AssertionError: promise resolved "{ …(5) }" instead of rejecting%0A%0A- Expected%0A+ Received%0A%0A- Error {%0A-   "message": "rejected promise",%0A+ {%0A+   "capturedAt": "2026-09-15T20:37:34.919Z",%0A+   "height": 1,%0A+   "mediaType": "image/png",%0A+   "path": "/tmp/tvdoctor-foreground-NmUM2D/frame.png",%0A+   "width": 1,%0A  }%0A%0A ❯ test/android-v2-foreground-regression.test.ts:255:59%0A%0A
 npm error Lifecycle script `test` failed with error:
 npm error code 1
 npm error path /home/runner/work/tvdoctor/tvdoctor/packages/driver-android
