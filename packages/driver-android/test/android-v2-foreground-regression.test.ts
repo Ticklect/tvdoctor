@@ -82,6 +82,7 @@ function png1x1(): Buffer {
 class FakeExecutor implements AdbCommandExecutor {
   readonly calls: string[][] = [];
   focusedPackage = "org.example.tv/org.example.tv.MainActivity";
+  switchFocusAfterKeyevent: string | null = null;
   switchFocusAfterScreencap: string | null = null;
 
   async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
@@ -108,7 +109,9 @@ class FakeExecutor implements AdbCommandExecutor {
     else if (joined.includes("dumpsys window")) stdout = `mCurrentFocus=Window{123 u0 ${this.focusedPackage}}`;
     else if (joined.includes("pidof -s org.example.tv")) stdout = "321";
     else if (joined.includes("dumpsys package org.example.tv")) stdout = "versionName=1.2.3 versionCode=7";
-    else if (joined.includes("exec-out screencap -p")) {
+    else if (joined.includes("input keyevent")) {
+      if (this.switchFocusAfterKeyevent !== null) this.focusedPackage = this.switchFocusAfterKeyevent;
+    } else if (joined.includes("exec-out screencap -p")) {
       stdout = png1x1();
       if (this.switchFocusAfterScreencap !== null) this.focusedPackage = this.switchFocusAfterScreencap;
     }
@@ -179,8 +182,19 @@ async function launchedDriver() {
 }
 
 describe("Android foreground integrity regressions", () => {
+  it("corrects a masked observer target identity when another package owns the focused window", async () => {
+    const { driver, executor } = await launchedDriver();
+    executor.focusedPackage = "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
+    const snapshot = await driver.snapshot();
+    expect(snapshot.location).toMatchObject({ status: "available", value: expect.stringContaining("com.google.android.tvlauncher") });
+    expect(snapshot.uiTree).toEqual({ status: "available", value: [] });
+    expect(snapshot.focusedElement).toEqual({ status: "available", value: null });
+    await driver.close();
+  });
+
   it("records a redacted external boundary without exposing foreign content", async () => {
-    const { driver, observer } = await launchedDriver();
+    const { driver, executor, observer } = await launchedDriver();
+    executor.focusedPackage = "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
     observer.mode = "external";
     const snapshot = await driver.snapshot();
     expect(snapshot.location).toMatchObject({ status: "available", value: expect.stringContaining("com.google.android.tvlauncher") });
@@ -190,7 +204,8 @@ describe("Android foreground integrity regressions", () => {
   });
 
   it("rejects a foreign boundary that leaks accessibility content", async () => {
-    const { driver, observer } = await launchedDriver();
+    const { driver, executor, observer } = await launchedDriver();
+    executor.focusedPackage = "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
     observer.mode = "leaky";
     await expect(driver.snapshot()).rejects.toThrow(/foreign UI content|outside.*target/u);
     await driver.close();
@@ -209,8 +224,9 @@ describe("Android foreground integrity regressions", () => {
   });
 
   it("records an action that crosses into an external boundary after input", async () => {
-    const { driver, observer } = await launchedDriver();
+    const { driver, executor, observer } = await launchedDriver();
     observer.crossOnSettle = true;
+    executor.switchFocusAfterKeyevent = "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
     const result = await driver.press("RIGHT");
     expect(result.outcome).toBe("applied");
     expect(result.postActionSnapshot?.location).toMatchObject({ status: "available", value: expect.stringContaining("com.google.android.tvlauncher") });
@@ -219,10 +235,12 @@ describe("Android foreground integrity regressions", () => {
   });
 
   it("requires a fresh full tree after target to foreign to target cache invalidation", async () => {
-    const { driver, observer } = await launchedDriver();
+    const { driver, executor, observer } = await launchedDriver();
     await driver.snapshot();
+    executor.focusedPackage = "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
     observer.mode = "external";
     await driver.snapshot();
+    executor.focusedPackage = "org.example.tv/org.example.tv.MainActivity";
     observer.mode = "target";
     const requestCount = observer.requests.length;
     await driver.snapshot();
