@@ -1,0 +1,122 @@
+name: Android foreground GREEN apply
+
+on:
+  push:
+    branches: [fix/android-v2-foreground-integrity]
+    paths:
+      - .github/workflows/android-green-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-verify-and-commit:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out fix branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/android-v2-foreground-integrity
+
+      - name: Normalize checkout line endings
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+
+      - name: Configure Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Restore last-known-good development toolchain and lockfile
+        shell: pwsh
+        run: |
+          @'
+          import json
+          from pathlib import Path
+
+          previous = {
+              "@types/node": "24.13.3",
+              "eslint": "10.8.1",
+              "globals": "17.11.0",
+              "typescript": "6.0.3",
+              "typescript-eslint": "8.67.0",
+              "vitest": "4.1.11",
+              "@playwright/test": "1.62.1",
+              "vite": "8.2.1",
+          }
+          upgraded = {
+              "@types/node": "26.5.0",
+              "eslint": "10.10.0",
+              "globals": "17.12.0",
+              "typescript": "7.0.2",
+              "typescript-eslint": "8.70.0",
+              "vitest": "5.0.0",
+              "@playwright/test": "1.63.0",
+              "vite": "8.2.2",
+          }
+          manifests = [Path("package.json"), *sorted(Path("packages").glob("*/package.json"))]
+          changed = []
+          for path in manifests:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              dirty = False
+              for section_name in ("devDependencies", "dependencies"):
+                  section = data.get(section_name, {})
+                  for name, old_version in previous.items():
+                      if section.get(name) == upgraded[name]:
+                          section[name] = old_version
+                          dirty = True
+              if dirty:
+                  path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                  changed.append(str(path))
+          if not changed:
+              raise SystemExit("Expected at least one Dependabot development-toolchain manifest to restore.")
+          print("Restored development toolchain in:", ", ".join(changed))
+          '@ | python -
+          npm install --package-lock-only --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw "Lockfile regeneration failed." }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
+
+      - name: Apply assertion-checked source transforms
+        run: python scripts/apply-android-v2-foreground-fix.py
+
+      - name: Build exact candidate
+        run: npm run build
+
+      - name: Verify packaged observer remains unchanged and valid
+        run: npm --workspace @tvdoctor/driver-android run verify:observer
+
+      - name: Targeted GREEN regressions
+        shell: pwsh
+        run: |
+          npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts
+          if ($LASTEXITCODE -ne 0) { throw "Android driver foreground regression suite failed." }
+          npm test --workspace tvdoctor -- android-foreground-regression.test.ts
+          if ($LASTEXITCODE -ne 0) { throw "Android CLI foreground regression suite failed." }
+
+      - name: Full repository lint
+        run: npm run lint
+
+      - name: Full repository typecheck
+        run: npm run typecheck
+
+      - name: Full unit suite
+        run: npm run test:unit
+
+      - name: Validate patch whitespace
+        shell: pwsh
+        run: git diff --check
+
+      - name: Commit verified host implementation and toolchain rollback
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json packages/*/package.json packages/driver-android/src/android-driver.ts packages/cli/src/android-product.ts
+          git diff --cached --check
+          git commit -m "fix(android): enforce host foreground integrity"
+          git push origin HEAD:fix/android-v2-foreground-integrity
