@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build workspace packages required by the driver tests
+        run: npm run build:packages
+
       - name: Prove foreground regression suite is RED
         shell: bash
         run: |
@@ -45,7 +48,7 @@ jobs:
             echo "Exit code: $status"
             echo
             echo "Tail of failing test output:"
-            tail -n 80 /tmp/android-red.log
+            tail -n 120 /tmp/android-red.log
           } > docs/superpowers/plans/android-v2-red-baseline.txt
 
       - name: Commit RED evidence
@@ -54,5 +57,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/superpowers/plans/android-v2-red-baseline.txt
-          git commit -m "test: record Android foreground RED baseline"
+          git commit -m "test: record Android foreground behavioral RED baseline"
           git push origin HEAD:fix/android-v2-foreground-integrity
