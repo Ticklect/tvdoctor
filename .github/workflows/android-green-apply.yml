@@ -13,7 +13,6 @@ jobs:
   apply-verify-and-commit:
     runs-on: windows-latest
     timeout-minutes: 45
-    environment: android-observer-release
     steps:
       - name: Check out fix branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -31,20 +30,6 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-
-      - name: Configure Java 17
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Configure pinned Android SDK
-        uses: android-actions/setup-android@4d90f943634881869c98b16d759177c8ee849798
-        with:
-          packages: |
-            platform-tools
-            platforms;android-36
-            build-tools;36.0.0
 
       - name: Restore last-known-good development toolchain and lockfile
         shell: pwsh
@@ -99,33 +84,10 @@ jobs:
       - name: Apply assertion-checked source transforms
         run: python scripts/apply-android-v2-foreground-fix.py
 
-      - name: Build host packages
-        run: npm run build:packages
+      - name: Build exact candidate
+        run: npm run build
 
-      - name: Materialize protected observer release keystore
-        shell: pwsh
-        env:
-          KEYSTORE_BASE64: ${{ secrets.TVDOCTOR_OBSERVER_KEYSTORE_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64)) {
-            throw "TVDOCTOR_OBSERVER_KEYSTORE_BASE64 is not configured."
-          }
-          [System.IO.File]::WriteAllBytes(
-            (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12"),
-            [Convert]::FromBase64String($env:KEYSTORE_BASE64)
-          )
-
-      - name: Rebuild tracked observer APK and manifest with release identity
-        shell: pwsh
-        env:
-          TVDOCTOR_OBSERVER_KEYSTORE: ${{ runner.temp }}/tvdoctor-observer-release.p12
-          TVDOCTOR_OBSERVER_KEY_ALIAS: ${{ secrets.TVDOCTOR_OBSERVER_KEY_ALIAS }}
-          TVDOCTOR_OBSERVER_STORE_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_STORE_PASSWORD }}
-          TVDOCTOR_OBSERVER_KEY_PASSWORD: ${{ secrets.TVDOCTOR_OBSERVER_KEY_PASSWORD }}
-          TVDOCTOR_OBSERVER_CERTIFICATE_SHA256: ${{ secrets.TVDOCTOR_OBSERVER_CERTIFICATE_SHA256 }}
-        run: npm --workspace @tvdoctor/driver-android run build:observer
-
-      - name: Verify packaged observer identity
+      - name: Verify packaged observer remains unchanged and valid
         run: npm --workspace @tvdoctor/driver-android run verify:observer
 
       - name: Targeted GREEN regressions
@@ -136,47 +98,25 @@ jobs:
           npm test --workspace tvdoctor -- android-foreground-regression.test.ts
           if ($LASTEXITCODE -ne 0) { throw "Android CLI foreground regression suite failed." }
 
-      - name: Full relevant unit suites
-        shell: pwsh
-        run: |
-          npm test --workspace @tvdoctor/driver-android
-          if ($LASTEXITCODE -ne 0) { throw "Android driver unit suite failed." }
-          npm test --workspace @tvdoctor/core
-          if ($LASTEXITCODE -ne 0) { throw "Core unit suite failed." }
-          npm test --workspace tvdoctor
-          if ($LASTEXITCODE -ne 0) { throw "CLI unit suite failed." }
+      - name: Full repository lint
+        run: npm run lint
 
-      - name: Relevant typechecks
-        shell: pwsh
-        run: |
-          npm run typecheck --workspace @tvdoctor/driver-android
-          if ($LASTEXITCODE -ne 0) { throw "Android driver typecheck failed." }
-          npm run typecheck --workspace @tvdoctor/core
-          if ($LASTEXITCODE -ne 0) { throw "Core typecheck failed." }
-          npm run typecheck --workspace tvdoctor
-          if ($LASTEXITCODE -ne 0) { throw "CLI typecheck failed." }
+      - name: Full repository typecheck
+        run: npm run typecheck
 
-      - name: Lint changed TypeScript and security harness
-        shell: pwsh
-        run: |
-          npx eslint packages/driver-android/src/android-driver.ts packages/driver-android/test/android-v2-foreground-regression.test.ts packages/cli/src/android-product.ts packages/cli/test/android-foreground-regression.test.ts scripts/test-android-observer-security.mjs --max-warnings=0
-          if ($LASTEXITCODE -ne 0) { throw "Changed-file lint failed." }
+      - name: Full unit suite
+        run: npm run test:unit
 
       - name: Validate patch whitespace
         shell: pwsh
         run: git diff --check
 
-      - name: Commit verified implementation, toolchain rollback, and observer assets
+      - name: Commit verified host implementation and toolchain rollback
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json packages/*/package.json packages/driver-android/src/android-driver.ts packages/driver-android/observer/src/org/tvdoctor/observer/ObserverAccessibilityService.java packages/driver-android/observer/tvdoctor-observer.apk packages/driver-android/observer/observer-manifest.json packages/cli/src/android-product.ts scripts/test-android-observer-security.mjs
+          git add package.json package-lock.json packages/*/package.json packages/driver-android/src/android-driver.ts packages/cli/src/android-product.ts
           git diff --cached --check
-          git commit -m "fix(android): enforce foreground integrity"
+          git commit -m "fix(android): enforce host foreground integrity"
           git push origin HEAD:fix/android-v2-foreground-integrity
-
-      - name: Remove protected keystore material
-        if: ${{ always() }}
-        shell: pwsh
-        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "tvdoctor-observer-release.p12") -Force -ErrorAction SilentlyContinue
