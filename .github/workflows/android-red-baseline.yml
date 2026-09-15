@@ -27,28 +27,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build workspace packages required by the driver tests
+      - name: Build workspace packages required by the tests
         run: npm run build:packages
 
-      - name: Prove foreground regression suite is RED
+      - name: Prove driver and CLI foreground regressions are RED
         shell: bash
         run: |
           set +e
-          npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts 2>&1 | tee /tmp/android-red.log
-          status=${PIPESTATUS[0]}
+          npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts 2>&1 | tee /tmp/driver-red.log
+          driver_status=${PIPESTATUS[0]}
+          npm test --workspace tvdoctor -- android-foreground-regression.test.ts 2>&1 | tee /tmp/cli-red.log
+          cli_status=${PIPESTATUS[0]}
           set -e
-          if [ "$status" -eq 0 ]; then
-            echo "Regression suite unexpectedly passed before production fixes." >&2
+          if [ "$driver_status" -eq 0 ] || [ "$cli_status" -eq 0 ]; then
+            echo "One or more regression suites unexpectedly passed before production fixes." >&2
             exit 1
           fi
           {
-            echo "Android V2 foreground-integrity RED baseline confirmed on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+            echo "Android V2 foreground-integrity behavioral RED baseline confirmed on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
             echo
-            echo "Command: npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts"
-            echo "Exit code: $status"
+            echo "Driver command exit code: $driver_status"
+            echo "CLI command exit code: $cli_status"
             echo
-            echo "Tail of failing test output:"
-            tail -n 120 /tmp/android-red.log
+            echo "Driver failing-test tail:"
+            tail -n 100 /tmp/driver-red.log
+            echo
+            echo "CLI failing-test tail:"
+            tail -n 100 /tmp/cli-red.log
           } > docs/superpowers/plans/android-v2-red-baseline.txt
 
       - name: Commit RED evidence
@@ -57,5 +62,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/superpowers/plans/android-v2-red-baseline.txt
-          git commit -m "test: record Android foreground behavioral RED baseline"
+          git commit -m "test: record Android driver and CLI RED baseline"
           git push origin HEAD:fix/android-v2-foreground-integrity
