@@ -1,0 +1,58 @@
+name: Android foreground RED baseline
+
+on:
+  push:
+    branches: [fix/android-v2-foreground-integrity]
+    paths:
+      - .github/workflows/android-red-baseline.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prove-regressions-fail-before-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fix branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/android-v2-foreground-integrity
+
+      - name: Configure Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prove foreground regression suite is RED
+        shell: bash
+        run: |
+          set +e
+          npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts 2>&1 | tee /tmp/android-red.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Regression suite unexpectedly passed before production fixes." >&2
+            exit 1
+          fi
+          {
+            echo "Android V2 foreground-integrity RED baseline confirmed on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+            echo
+            echo "Command: npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts"
+            echo "Exit code: $status"
+            echo
+            echo "Tail of failing test output:"
+            tail -n 80 /tmp/android-red.log
+          } > docs/superpowers/plans/android-v2-red-baseline.txt
+
+      - name: Commit RED evidence
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/superpowers/plans/android-v2-red-baseline.txt
+          git commit -m "test: record Android foreground RED baseline"
+          git push origin HEAD:fix/android-v2-foreground-integrity
