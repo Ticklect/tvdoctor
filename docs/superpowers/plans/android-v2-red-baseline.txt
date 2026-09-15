@@ -1,0 +1,45 @@
+Android V2 foreground-integrity RED baseline confirmed on 2026-09-15T20:36:37Z.
+
+Command: npm test --workspace @tvdoctor/driver-android -- android-v2-foreground-regression.test.ts
+Exit code: 1
+
+Tail of failing test output:
+
+> @tvdoctor/driver-android@0.1.0 test
+> vitest run --config vitest.config.ts android-v2-foreground-regression.test.ts
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/runner/work/tvdoctor/tvdoctor/packages/driver-android[39m
+
+ [31m❯[39m test/android-v2-foreground-regression.test.ts [2m([22m[2m0 test[22m[2m)[22m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m test/android-v2-foreground-regression.test.ts[2m [ test/android-v2-foreground-regression.test.ts ][22m
+[31m[1mError[22m: Failed to resolve entry for package "@tvdoctor/protocol". The package may have incorrect main/module/exports specified in its package.json.[39m
+[36m [2m❯[22m src/android-driver.ts:[2m5:1[22m[39m
+    [90m  3|[39m import { dirname, isAbsolute, join, resolve } from "node:path";
+    [90m  4|[39m import process from "node:process";
+    [90m  5|[39m import {
+    [90m   |[39m [31m^[39m
+    [90m  6|[39m   availableObservation,
+    [90m  7|[39m   unavailableObservation,
+[90m [2m❯[22m src/index.ts:[2m1:1[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [2mno tests[22m
+[2m   Start at [22m 20:36:37
+[2m   Duration [22m 256ms[2m (worker 96%, environment 4%)[22m
+
+
+::error file=/home/runner/work/tvdoctor/tvdoctor/packages/driver-android/src/android-driver.ts,title=test/android-v2-foreground-regression.test.ts,line=5,column=1::Error: Failed to resolve entry for package "@tvdoctor/protocol". The package may have incorrect main/module/exports specified in its package.json.%0A ❯ src/android-driver.ts:5:1%0A ❯ src/index.ts:1:1%0A%0A
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /home/runner/work/tvdoctor/tvdoctor/packages/driver-android
+npm error workspace @tvdoctor/driver-android@0.1.0
+npm error location /home/runner/work/tvdoctor/tvdoctor/packages/driver-android
+npm error command failed
+npm error command sh -c vitest run --config vitest.config.ts android-v2-foreground-regression.test.ts
