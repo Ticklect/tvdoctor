@@ -132,6 +132,19 @@ export interface ExplorerOptions {
    * to the same root restoration path. Intended for expensive Android relaunches.
    */
   readonly restorationMode?: ExplorationRestorationMode;
+  /**
+   * In verified-local mode, allow an unmatched live state to fall back to a
+   * full root restoration. Defaults to true. Android hosts may disable this to
+   * avoid force-stopping/relaunching the target during exploration.
+   */
+  readonly allowRootRestorationFallback?: boolean;
+  /**
+   * Whether an exact visible self-loop should be refreshed from the root before
+   * trying a sibling action. Defaults to true for hidden-state isolation. Hosts
+   * with an expensive/destructive relaunch boundary may opt out and trust the
+   * exact canonical live state instead.
+   */
+  readonly refreshVisibleSelfLoops?: boolean;
   /** Conservative repeated carousel/list-item compression. */
   readonly repetitionCompression?: RepetitionCompressionOptions;
   /** Optional bounded post-press snapshot stability polling. */

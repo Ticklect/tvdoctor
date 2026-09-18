@@ -110,15 +110,16 @@ function decisions(options: {
 }
 
 describe("Android action policy", () => {
-  it("keeps TAB out of all automatic Android traversal strategies", () => {
+  it("keeps TAB and HOME out of all automatic Android traversal strategies", () => {
     const media = mediaSession({
       packageName: TARGET_PACKAGE,
       active: true,
       playbackState: "playing",
     });
     expect(decisions({ media }).map((entry) => entry.key)).not.toContain("TAB");
+    expect(decisions({ media }).map((entry) => entry.key)).not.toContain("HOME");
     expect(decisions({ strategy: "brute-force", media }).map((entry) => entry.key)).toEqual(
-      REMOTE_KEYS.filter((key) => key !== "TAB"),
+      REMOTE_KEYS.filter((key) => key !== "TAB" && key !== "HOME"),
     );
   });
 
@@ -145,7 +146,6 @@ describe("Android action policy", () => {
       "PREVIOUS",
       "REWIND",
       "FAST_FORWARD",
-      "HOME",
     ]);
   });
 
@@ -164,7 +164,6 @@ describe("Android action policy", () => {
       "RIGHT",
       "SELECT",
       "BACK",
-      "HOME",
     ]);
   });
 
@@ -177,11 +176,8 @@ describe("Android action policy", () => {
     expect(decisions({ focusedNode: player }).map((entry) => entry.key)).toContain("PLAY_PAUSE");
   });
 
-  it("treats HOME as a target boundary", () => {
-    expect(decisions().find((entry) => entry.key === "HOME")).toMatchObject({
-      disposition: "target-boundary",
-      reasonCode: "home-boundary-probe",
-    });
+  it("never schedules HOME automatically", () => {
+    expect(decisions().some((entry) => entry.key === "HOME")).toBe(false);
   });
 
   it("fails closed when the current accessibility window is foreign", () => {

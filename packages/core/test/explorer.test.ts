@@ -695,6 +695,57 @@ describe("bounded deterministic explorer", () => {
     expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(3);
   });
 
+  it("can trust exact visible self-loops without relaunching between sibling actions", async () => {
+    const states = { root: { screen: "home", focus: "home-nav" } } as const;
+    const transitions = {
+      root: { UP: "root", RIGHT: "root", DOWN: "root" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("root", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["UP", "RIGHT", "DOWN"],
+      restorationMode: "verified-local",
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.complete).toBe(true);
+    expect(result.graph.actions.map((attempt) => attempt.key)).toEqual(["UP", "RIGHT", "DOWN"]);
+    expect(result.statistics.resetCount).toBe(1);
+    expect(result.statistics.replayRestorations).toBe(0);
+    expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(1);
+  });
+
+  it("can stop an unrestorable verified-local branch instead of relaunching the root", async () => {
+    const states = {
+      A: { screen: "home", focus: "A" },
+      B: { screen: "home", focus: "B" },
+    } as const;
+    const transitions = {
+      A: { RIGHT: "B", DOWN: "A" },
+      B: { RIGHT: "B", DOWN: "B" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("A", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "DOWN"],
+      restorationMode: "verified-local",
+      allowRootRestorationFallback: false,
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination).toMatchObject({
+      complete: false,
+      reason: "restoration-unavailable",
+    });
+    expect(result.statistics.resetCount).toBe(1);
+    expect(result.statistics.replayRestorations).toBe(0);
+    expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(1);
+  });
+
   it("does not let a visible self-loop carry hidden action history into a sibling branch", async () => {
     type VisibleState = "root" | "expected" | "contaminated";
     let visibleState: VisibleState = "root";

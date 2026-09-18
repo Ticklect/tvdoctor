@@ -43,11 +43,8 @@ export async function explore(
   options: ExplorerOptions = {},
 ): Promise<ExplorationResult> {
   const {
-    budgets,
-    actionOrder,
-    frontierStrategy,
-    restorationMode,
-    repetitionCompression,
+    budgets, actionOrder, frontierStrategy, restorationMode,
+    allowRootRestorationFallback, refreshVisibleSelfLoops, repetitionCompression,
     settling,
     replaySettling,
     monotonicSource,
@@ -378,6 +375,8 @@ export async function explore(
   });
   const localRestorer = createVerifiedLocalRestorer({
     enabled: restorationMode === "verified-local",
+    allowRootRestorationFallback,
+    refreshVisibleSelfLoops,
     actionOrder,
     initialSnapshot,
     initialIdentity: initialFingerprint.stateIdentity,

@@ -89,9 +89,8 @@ export const ANDROID_LAUNCH_SETTLING = {
 } as const;
 
 export const ANDROID_LAUNCH_WARMUP_MS = 8_000;
-
 const ANDROID_TRAVERSAL_STRATEGY = "adaptive" as const;
-const ANDROID_AUTOMATIC_ACTIONS = REMOTE_KEYS.filter((key) => key !== "TAB");
+const ANDROID_AUTOMATIC_ACTIONS = REMOTE_KEYS.filter((key) => key !== "TAB" && key !== "HOME");
 
 function androidSnapshotBelongsToTarget(snapshot: AndroidStateSnapshot, packageName: string): boolean {
   return snapshot.location.status === "available"
@@ -589,22 +588,7 @@ function adaptiveDirectionalKeys(
   return ANDROID_DPAD_DIRECTIONS.filter((key) => available.has(key));
 }
 
-function adaptiveHomeBoundaryClass(
-  snapshot: StateSnapshot,
-  screenStateId: string,
-  targetPackage: string,
-): string {
-  if (snapshot.location.status !== "available") return `screen:${screenStateId}`;
-  const location = snapshot.location.value.trim().split(/[?#]/u, 1)[0]?.replace(/\/+$/u, "") ?? "";
-  const match = /^(?:android|android-app):\/\/([^/]+)\/(.+)$/u.exec(location);
-  if (match?.[1] !== targetPackage || match[2]?.trim().length === 0) {
-    return `screen:${screenStateId}`;
-  }
-  return `activity:${location}`;
-}
-
 function adaptiveDecisionRank(key: RemoteKey): number {
-  if (key === "HOME") return 2;
   if (!NAVIGATION_KEYS.includes(key as (typeof NAVIGATION_KEYS)[number])) return 1;
   return 0;
 }
@@ -615,7 +599,7 @@ export function createAndroidTraversalPolicyRecorder(input: {
   readonly authorisedActionIds?: ReadonlySet<string>;
 }): AndroidTraversalPolicyRecorder {
   const records: AndroidPolicyStateRecord[] = [];
-  const adaptiveHomeClasses = new Set<string>();
+  let rootScreenStateId: string | null = null;
   const adaptiveScreenBacks = new Set<string>();
   const adaptiveMediaActions = new Map<RemoteKey, string>();
   const visualBaselines = new Map<string, AndroidScreenshotFingerprint>();
@@ -636,6 +620,7 @@ export function createAndroidTraversalPolicyRecorder(input: {
     },
     actionsForState: async (context) => {
       const snapshot = context.snapshot as AndroidStateSnapshot;
+      rootScreenStateId ??= context.screenStateId;
       const mediaSession = await input.driver.getActiveMediaSession(input.targetPackage);
       let screenshot: AndroidCoverageEvidence["screenshot"] = "not-collected";
       const sparseAccessibility = accessibilityIsSparse(snapshot);
@@ -663,26 +648,19 @@ export function createAndroidTraversalPolicyRecorder(input: {
             reasonCode: "semantic-and-visual-evidence-unavailable",
             detail: "Accessibility semantics and a usable screenshot fingerprint were both unavailable.",
           }))
-        : policyDecisions;
+        : policyDecisions.map((decision) => decision.key === "BACK"
+          && context.screenStateId === rootScreenStateId
+          ? {
+              ...decision,
+              disposition: "operator-gated",
+              reasonCode: "root-back-boundary",
+              detail: "BACK from the prepared root screen may leave the target app for the Android launcher, so it is not sent automatically.",
+            }
+          : decision);
       const adaptiveDirections = new Set(adaptiveDirectionalKeys(snapshot));
       const reusedActionIds = new Map<string, string>();
       const decisions = evidenceDecisions.filter((decision) => {
         if (decision.disposition !== "automatic" && decision.disposition !== "target-boundary") {
-          return true;
-        }
-        if (decision.key === "HOME") {
-          const boundaryClass = adaptiveHomeBoundaryClass(
-            snapshot,
-            context.screenStateId,
-            input.targetPackage,
-          );
-          if (adaptiveHomeClasses.has(boundaryClass)) {
-            reusedActionIds.set(decision.actionId, boundaryClass.startsWith("activity:")
-              ? "equivalent-activity-home-probe"
-              : "equivalent-screen-home-probe");
-          } else {
-            adaptiveHomeClasses.add(boundaryClass);
-          }
           return true;
         }
         if (ANDROID_DPAD_DIRECTIONS.includes(
@@ -986,13 +964,12 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       actions: ANDROID_AUTOMATIC_ACTIONS,
       settling: ANDROID_ACTION_SETTLING,
       restorationMode: "verified-local",
+      allowRootRestorationFallback: false,
+      refreshVisibleSelfLoops: false,
       replaySettling: { strategy: "driver" },
       actionsForState: policyRecorder.actionsForState,
       onActionObserved: policyRecorder.onActionObserved,
-      restoreInitialState: async () => {
-        await driver.reset("relaunch");
-        await new Promise<void>((resolveWarmup) => setTimeout(resolveWarmup, ANDROID_LAUNCH_WARMUP_MS));
-      },
+      restoreInitialSnapshot: async () => await driver.snapshot(),
       shouldExpand: (snapshot) => {
         latestActivityLabel = snapshot.location.status === "available" ? snapshot.location.value : null;
         return snapshot.location.status === "available"

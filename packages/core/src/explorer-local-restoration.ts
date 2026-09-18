@@ -21,6 +21,8 @@ const SAFE_LOCAL_RESTORATION_KEYS = new Set<RemoteKey>(["UP", "DOWN", "LEFT", "R
 
 interface VerifiedLocalRestorationContext {
   readonly enabled: boolean;
+  readonly allowRootRestorationFallback: boolean;
+  readonly refreshVisibleSelfLoops: boolean;
   readonly actionOrder: readonly RemoteKey[];
   readonly initialSnapshot: StateSnapshot;
   readonly initialIdentity: string;
@@ -174,6 +176,16 @@ export function createVerifiedLocalRestorer(
       }
     }
 
+    if (!context.allowRootRestorationFallback) {
+      clearLive();
+      return {
+        status: "skip",
+        termination: incomplete(
+          "restoration-unavailable",
+          "The queued branch could not be restored from the current verified live state without a root relaunch.",
+        ),
+      };
+    }
     return rootRestore(entry);
   };
 
@@ -191,7 +203,11 @@ export function createVerifiedLocalRestorer(
     observeLive(snapshot, identity);
     const visibleSelfLoop = identity === entry.state.identity;
     const safelyRefreshable = entry.sequence.every((key) => SAFE_LOCAL_RESTORATION_KEYS.has(key));
-    if (!context.enabled || !visibleSelfLoop || !hasPendingWork || !safelyRefreshable) return null;
+    if (!context.enabled
+      || !context.refreshVisibleSelfLoops
+      || !visibleSelfLoop
+      || !hasPendingWork
+      || !safelyRefreshable) return null;
     clearLive();
     const refreshed = await rootRestore(entry);
     return refreshed.status === "ok" ? null : refreshed.termination;

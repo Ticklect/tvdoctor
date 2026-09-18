@@ -26,6 +26,8 @@ export interface NormalisedExplorerOptions {
   readonly actionOrder: readonly RemoteKey[];
   readonly frontierStrategy: ExplorationFrontierStrategy;
   readonly restorationMode: ExplorationRestorationMode;
+  readonly allowRootRestorationFallback: boolean;
+  readonly refreshVisibleSelfLoops: boolean;
   readonly repetitionCompression: NormalisedRepetitionCompressionOptions;
   readonly settling: NormalisedActionSettlingOptions;
   readonly replaySettling: NormalisedActionSettlingOptions;
@@ -193,6 +195,13 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
   if (options.restoreInitialSnapshot !== undefined && typeof options.restoreInitialSnapshot !== "function") {
     throw new TypeError("restoreInitialSnapshot must be a function.");
   }
+  if (options.refreshVisibleSelfLoops !== undefined && typeof options.refreshVisibleSelfLoops !== "boolean") {
+    throw new TypeError("refreshVisibleSelfLoops must be a boolean.");
+  }
+  if (options.allowRootRestorationFallback !== undefined
+    && typeof options.allowRootRestorationFallback !== "boolean") {
+    throw new TypeError("allowRootRestorationFallback must be a boolean.");
+  }
   if (options.actionsForState !== undefined && typeof options.actionsForState !== "function") {
     throw new TypeError("actionsForState must be a function.");
   }
@@ -213,6 +222,8 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     actionOrder,
     frontierStrategy,
     restorationMode,
+    allowRootRestorationFallback: options.allowRootRestorationFallback ?? true,
+    refreshVisibleSelfLoops: options.refreshVisibleSelfLoops ?? true,
     repetitionCompression,
     settling,
     replaySettling,

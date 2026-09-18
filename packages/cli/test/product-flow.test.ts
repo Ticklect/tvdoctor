@@ -521,6 +521,50 @@ describe("Android traversal safety policy", () => {
     expect(ledger.counts.inaccessible).toBeGreaterThan(0);
     expect(hasIncompleteSafeCoverage(ledger)).toBe(true);
   });
+
+  it("never offers HOME to automatic Android exploration", async () => {
+    const recorder = createAndroidTraversalPolicyRecorder({
+      driver: {
+        getActiveMediaSession: async () => ({ status: "unavailable", reason: "none" }),
+        captureScreenshotFingerprint: async () => {
+          throw new Error("rich semantics should not need screenshot evidence");
+        },
+      } as never,
+      targetPackage,
+    });
+
+    const first = await recorder.actionsForState({
+      screenStateId: "screen-main",
+      focusStateId: "focus-main",
+      snapshot: targetSnapshot("Open"),
+      defaultActions: [],
+    } as never);
+    expect(first).not.toContain("HOME");
+    expect(recorder.records[0]?.decisions.some((decision) => decision.key === "HOME")).toBe(false);
+  });
+
+  it("gates BACK on the prepared root screen so traversal does not exit to the launcher", async () => {
+    const recorder = createAndroidTraversalPolicyRecorder({
+      driver: {
+        getActiveMediaSession: async () => ({ status: "unavailable", reason: "none" }),
+        captureScreenshotFingerprint: async () => {
+          throw new Error("rich semantics should not need screenshot evidence");
+        },
+      } as never,
+      targetPackage,
+    });
+
+    const actions = await recorder.actionsForState({
+      screenStateId: "screen-root",
+      focusStateId: "focus-root",
+      snapshot: targetSnapshot("Open"),
+      defaultActions: [],
+    } as never);
+
+    expect(actions).not.toContain("BACK");
+    expect(recorder.records[0]?.decisions.find((decision) => decision.key === "BACK"))
+      .toMatchObject({ disposition: "operator-gated", reasonCode: "root-back-boundary" });
+  });
 });
 
 describe("Android final target validation", () => {

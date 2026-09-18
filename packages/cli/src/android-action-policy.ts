@@ -23,7 +23,7 @@ const MEDIA_KEYS = [
   "FAST_FORWARD",
 ] as const satisfies readonly RemoteKey[];
 
-const ANDROID_REMOTE_KEYS = REMOTE_KEYS.filter((key) => key !== "TAB");
+const ANDROID_REMOTE_KEYS = REMOTE_KEYS.filter((key) => key !== "TAB" && key !== "HOME");
 
 const RISKY_ACTIVATION = /\b(?:sign[ -]?in|log[ -]?in|login|subscribe|subscription|buy|purchase|pay(?:ment)?|delete(?:\s+(?:account|data))?|erase|wipe|factory\s+reset|uninstall|sign[ -]?out|logout)\b/iu;
 const PERSISTENT_TOGGLE = /\b(?:display|show|view)\s+(?:in|as)\s+(?:a\s+)?(?:grid|list)\b/iu;
@@ -166,7 +166,7 @@ export function decideAndroidActions(
   ) || hasPlayerSemantics(nodes);
   const keys = context.strategy === "brute-force"
     ? ANDROID_REMOTE_KEYS
-    : [...NAVIGATION_KEYS, ...(mediaEligible ? MEDIA_KEYS : []), "HOME"] as readonly RemoteKey[];
+    : [...NAVIGATION_KEYS, ...(mediaEligible ? MEDIA_KEYS : [])] as readonly RemoteKey[];
   const owned = targetOwned(context);
   const semantics = nodeSemantics(focused);
 
@@ -179,15 +179,6 @@ export function decideAndroidActions(
         disposition: "inaccessible",
         reasonCode: "target-state-unavailable",
         detail: "The exact target-owned state could not be established.",
-      };
-    }
-    if (key === "HOME") {
-      return {
-        actionId: id,
-        key,
-        disposition: "target-boundary",
-        reasonCode: "home-boundary-probe",
-        detail: "Exercise HOME once, record the package boundary, and restore the exact target state.",
       };
     }
     if (key === "SELECT") {

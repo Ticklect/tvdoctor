@@ -61,11 +61,13 @@ ADB `input keyevent` primitive for input. ADB is not used to dump UIAutomator
 hierarchies during normal exploration.
 
 Automatic exploration is state-aware rather than a fixed key list. Directional
-navigation and `BACK` remain bounded exploration actions, while `SELECT` is
+navigation remains bounded, while `BACK` is suppressed on the prepared root
+screen so TVDoctor does not automatically exit the app to the launcher. `BACK`
+can still be exercised on deeper target-owned screens. `SELECT` is
 gated per state: TVDoctor suppresses it when the observed control is risky,
-persistent, or too ambiguous to activate safely. `HOME` may be used only as a
-bounded target-boundary probe, with the target package checked before and after
-the probe. Media controls (`PLAY_PAUSE`, `PLAY`, `PAUSE`, `STOP`, `NEXT`,
+persistent, or too ambiguous to activate safely. `HOME` is never sent by
+automatic Android exploration, so TVDoctor does not intentionally leave the
+target app for the launcher and relaunch it as part of coverage. Media controls (`PLAY_PAUSE`, `PLAY`, `PAUSE`, `STOP`, `NEXT`,
 `PREVIOUS`, `REWIND`, and `FAST_FORWARD`) may be explored automatically only
 when target-owned media-session or player evidence supports them. `TAB` is never
 an automatic Android exploration action. These keys remain available to
@@ -125,6 +127,14 @@ validated by the Android driver before the next edge is accepted. The web
 driver continues to use root-relative restoration because browser sibling
 actions can carry hidden page state that is not represented in the semantic
 snapshot.
+
+Android also trusts an exact stable visible self-loop for sibling traversal
+instead of force-stopping and relaunching the app after harmless DPAD no-ops.
+The already prepared post-launch root snapshot is used directly as exploration's
+initial root, avoiding a redundant launch-reset cycle before the first action.
+If a later queued Android state cannot be recovered through a previously verified
+local path, TVDoctor leaves that branch incomplete instead of force-stopping and
+relaunching the target app from the launcher.
 
 ## Transport and security
 
@@ -227,8 +237,8 @@ service process alive for the next run.
 - protected/secure surfaces may block screenshots or accessibility content;
 - TVDoctor records transitions out of the tested package but does not expand
   the Android launcher or unrelated system UI during normal exploration;
-- HOME exploration is limited to the bounded target-boundary probe; media keys
-  require target-owned media/player evidence, and TAB is never automatic;
+- HOME and TAB are never automatic; media keys require target-owned
+  media/player evidence;
 - policy-gated SELECT and sparse-evidence fail-closed decisions can leave safe
   coverage incomplete and therefore produce a partial report;
 - the tested APK and its startup state must be deterministic enough for replay;
