@@ -1,0 +1,19 @@
+{
+  "name": "tvdoctor-github-release",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local dependency manifest for the TVDoctor 0.1.0 GitHub Release installer.",
+  "dependencies": {
+    "@tvdoctor/baseline": "file:packages/tvdoctor-baseline-0.1.0.tgz",
+    "@tvdoctor/core": "file:packages/tvdoctor-core-0.1.0.tgz",
+    "@tvdoctor/driver-android": "file:packages/tvdoctor-driver-android-0.1.0.tgz",
+    "@tvdoctor/driver-web": "file:packages/tvdoctor-driver-web-0.1.0.tgz",
+    "@tvdoctor/pack-streaming": "file:packages/tvdoctor-pack-streaming-0.1.0.tgz",
+    "@tvdoctor/pack-web": "file:packages/tvdoctor-pack-web-0.1.0.tgz",
+    "@tvdoctor/protocol": "file:packages/tvdoctor-protocol-0.1.0.tgz",
+    "@tvdoctor/reporters": "file:packages/tvdoctor-reporters-0.1.0.tgz",
+    "playwright": "file:packages/playwright-1.63.0.tgz",
+    "playwright-core": "file:packages/playwright-core-1.63.0.tgz",
+    "tvdoctor": "file:packages/tvdoctor-0.1.0.tgz"
+  }
+}

@@ -3,10 +3,9 @@
 All notable public changes will be recorded here. TVDoctor intends to follow
 Semantic Versioning after its first public release.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-18
 
-This section describes the intended initial public preview. It is not a claim
-that `tvdoctor@0.1.0` has been published.
+Initial public preview distributed through GitHub Releases.
 
 ### Added
 
@@ -75,6 +74,9 @@ that `tvdoctor@0.1.0` has been published.
 - fail-closed Android sparse-observation handling using target-bound screenshot
   fingerprints and media-session evidence, with `android-coverage-ledger.json`
   recording incomplete safe coverage and forcing partial results.
+- a Windows GitHub Release bundle with local package payloads, SHA-256
+  verification, isolated installation under `%LOCALAPPDATA%\TVDoctor`, and no
+  npm-account requirement.
 
 ### Verification status
 
@@ -84,7 +86,7 @@ that `tvdoctor@0.1.0` has been published.
 - A selected release candidate is accepted only after one clean
   aggregate/package gate and a successful hosted run at its exact commit SHA;
   that proof belongs in the release audit record.
-- Repository visibility and npm publication remain explicit operator decisions.
-  This changelog does not claim that `tvdoctor@0.1.0` is published.
+- v0.1.0 is distributed through GitHub Releases rather than depending on public
+  npm-registry publication.
 - Physical Android/Google TV devices, macOS CI, non-Chromium browsers, and
   Fire TV/Roku/Tizen/webOS remain outside the supported evidence.

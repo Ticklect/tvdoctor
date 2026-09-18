@@ -7,7 +7,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0-only Licence" src="https://img.shields.io/badge/licence-AGPL--3.0--only-36A3FF"></a>
   <a href="package.json"><img alt="Node 24" src="https://img.shields.io/badge/Node-24-42E8E0"></a>
   <a href="package.json"><img alt="npm 11" src="https://img.shields.io/badge/npm-11-42E8E0"></a>
-  <a href="RELEASE.md"><img alt="0.1.0 release candidate" src="https://img.shields.io/badge/0.1.0-release%20candidate-FFBE55"></a>
+  <a href="https://github.com/Ticklect/tvdoctor/releases/tag/v0.1.0"><img alt="0.1.0 public preview" src="https://img.shields.io/badge/0.1.0-public%20preview-FFBE55"></a>
 </p>
 
 TVDoctor explores TV interfaces with the same small remote vocabulary people use—
@@ -17,12 +17,10 @@ deterministic replays that developers can act on.
 It runs locally: no AI service, cloud account, API key, or telemetry service is
 required.
 
-> **Release candidate:** source and publishable packages are versioned `0.1.0`,
-> but npm publication has not happened. Acceptance requires clean local and hosted
-> gates at the exact candidate SHA; earlier green runs are supporting
-> evidence, not proof of a changed candidate. All surfaces remain Beta,
-> Experimental, or Planned, and repository visibility remains an explicit owner
-> decision.
+> **v0.1.0 public preview:** TVDoctor is distributed through GitHub Releases,
+> including a Windows install bundle that does not require an npm account.
+> Release acceptance requires clean local and hosted gates at the exact release
+> SHA. All surfaces remain Beta, Experimental, or Planned.
 
 ## Why TVDoctor
 
@@ -65,7 +63,28 @@ That is deterministic fixture evidence, not a general accuracy claim.
 
 **[See the full demo and exact reproduction guide →](docs/demo.md)**
 
-## Try the source candidate
+## Install v0.1.0 on Windows
+
+Download `TVDoctor-v0.1.0-windows.zip` from the
+[v0.1.0 GitHub Release](https://github.com/Ticklect/tvdoctor/releases/tag/v0.1.0),
+extract it, then run:
+
+```powershell
+.\install.ps1
+tvdoctor setup
+tvdoctor doctor
+```
+
+The bundle requires Node.js 24 and npm 11, but it does **not** require an npm
+account. TVDoctor and its exact package dependencies are shipped inside the ZIP.
+`tvdoctor setup` performs the separate first-time download of the matched
+Chromium runtime.
+
+The installer keeps TVDoctor under `%LOCALAPPDATA%\TVDoctor\0.1.0` and
+creates a small `tvdoctor.cmd` launcher. Use `uninstall.ps1` from the same
+release bundle to remove it.
+
+## Try the source checkout
 
 With repository access, use the declared Node.js 24 and npm 11 environment. The
 lockfile is the dependency authority.
@@ -136,18 +155,12 @@ tvdoctor test --apk D:\apps\example.apk --device emulator-5554 --mode quick
 | [Baselines](docs/baselines-and-ci.md) | Experimental | Versioned, fail-closed CLI and library comparison with semantic inventories. |
 | [Limitations](docs/limitations.md) | Required reading | Current observability, evidence, platform, and compatibility boundaries. |
 
-### Registry installation
+### GitHub Release installation
 
-These commands are the intended npm experience after publication; they are not
-an assertion that `tvdoctor@0.1.0` is currently available from the registry:
-
-```sh
-npm install --save-dev tvdoctor
-npx tvdoctor setup
-npx tvdoctor test http://127.0.0.1:3000
-```
-
-Until publication is verified, use the source-checkout commands above.
+The supported v0.1.0 distribution is the versioned GitHub Release bundle above.
+TVDoctor is not relying on public npm-registry publication for this release.
+The ZIP contains the exact local package tarballs, SHA-256 checksums, installer,
+uninstaller, licence, and build metadata for the release commit.
 
 ## CLI reference
 
@@ -374,6 +387,7 @@ Status words are deliberate:
 
 | Surface | Status | Evidence and boundary |
 | --- | --- | --- |
+| Windows GitHub Release bundle on Node.js 24 + npm 11 | Beta | Offline package installation smoke-tested from the versioned release payload; Chromium setup remains a separate first-time download. |
 | Node.js 24 + npm 11 source workspace | Beta | Clean local and hosted Linux installs have passed; other major versions are outside the declared engine range. |
 | `tvdoctor.report/v1` and `tvdoctor.replay/v1` | Beta | Strict parsing, cross-link, redaction, rendering, and real-browser replay tests. Formats remain pre-1.0. |
 | Deterministic core and streaming pack | Beta | Unit and controlled real-Chromium fixture gates; no arbitrary-app accuracy claim. |

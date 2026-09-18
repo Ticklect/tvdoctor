@@ -25,15 +25,11 @@ and credit reporters who want attribution.
 
 ## Supported versions
 
-There is no published supported release yet.
-
 | Version | Security fixes |
 | --- | --- |
-| Current `main` source candidate | Best effort while v0.1 is prepared |
-| `0.1.0` package candidate | Not supported until registry publication is verified |
+| `0.1.0` GitHub Release | Supported for security fixes during the v0.1 preview |
+| Current `main` | Best effort between tagged preview releases |
 | Older snapshots and forks | Not supported by this project |
-
-This table will be replaced with explicit release lines when v0.1 is published.
 
 ## Security boundaries
 
