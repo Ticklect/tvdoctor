@@ -147,27 +147,84 @@ export function preferredStartupControl(
   blockerKind: string,
   controls: readonly StartupControlCandidate[],
 ): StartupControlCandidate | null {
+  if (blockerKind !== "consent-wall") return null;
   const normalise = (value: string | null | undefined): string =>
     value?.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase() ?? "";
-  const rejectWords = decision === "reject"
-    ? /\b(?:reject|deny|decline|essential|necessary|manage|options|preferences)\b/u
-    : /\b(?:accept(?: all)?|agree|allow|continue|got it|ok(?:ay)?)\b/u;
-  const candidates = [...controls].sort((left, right) => {
-    const leftFocused = left.focused === true ? 0 : 1;
-    const rightFocused = right.focused === true ? 0 : 1;
-    return leftFocused - rightFocused;
-  });
-  return candidates.find((control) => rejectWords.test(normalise(control.name))) ?? null;
+  const intent = decision === "reject"
+    ? /\b(?:reject|deny|decline)\b/u
+    : /\b(?:accept|agree|allow)\b/u;
+  const matches = controls.filter((control) => (
+    control.enabled !== false
+    && intent.test(normalise(control.name))
+  ));
+  if (matches.length !== 1) return null;
+  return matches[0] ?? null;
 }
 
 export function startupActivationSequence(
   controls: readonly StartupControlCandidate[],
   target: StartupControlCandidate,
 ): readonly RemoteKey[] {
-  const focusedIndex = controls.findIndex((control) => control.focused === true);
   const targetIndex = controls.indexOf(target);
   if (targetIndex < 0) return [];
-  if (focusedIndex < 0 || focusedIndex === targetIndex) return ["SELECT"];
-  const distance = (targetIndex - focusedIndex + controls.length) % controls.length;
-  return [...Array.from({ length: distance }, () => "TAB" as RemoteKey), "SELECT"];
+  return target.focused === true ? ["SELECT"] : [];
+}
+
+const MAX_STARTUP_DECISION_ACTIONS = 64;
+
+function focusedStartupIdentity(snapshot: StateSnapshot): string | null {
+  if (snapshot.focusedElement.status !== "available") return null;
+  const focused = snapshot.focusedElement.value;
+  if (focused === null) return null;
+  const normalise = (value: string | null | undefined): string =>
+    value?.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase() ?? "";
+  return JSON.stringify([
+    focused.stableId ?? null,
+    focused.role ?? null,
+    normalise(focused.name),
+    focused.bounds ?? null,
+  ]);
+}
+
+function focusedMatchesStartupDecision(
+  snapshot: StateSnapshot,
+  decision: "reject" | "accept",
+): boolean {
+  if (snapshot.focusedElement.status !== "available") return false;
+  const focused = snapshot.focusedElement.value;
+  if (focused === null) return false;
+  const name = focused.name?.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase() ?? "";
+  return decision === "reject"
+    ? /\b(?:reject|deny|decline)\b/u.test(name)
+    : /\b(?:accept|agree|allow)\b/u.test(name);
+}
+
+export async function resolveStartupDecisionThroughFocus(
+  driver: TVDoctorDriver,
+  decision: "reject" | "accept",
+  blockerKind: string,
+  initialSnapshot?: StateSnapshot,
+): Promise<readonly RemoteKey[] | null> {
+  if (blockerKind !== "consent-wall") return null;
+  let snapshot = initialSnapshot ?? await driver.snapshot();
+  if (focusedMatchesStartupDecision(snapshot, decision)) return ["SELECT"];
+
+  const initialIdentity = focusedStartupIdentity(snapshot);
+  if (initialIdentity === null) return null;
+  const seen = new Set<string>([initialIdentity]);
+  const actions: RemoteKey[] = [];
+
+  while (actions.length < MAX_STARTUP_DECISION_ACTIONS - 1) {
+    const result = await driver.press("TAB");
+    if (result.key !== "TAB" || result.outcome !== "applied") return null;
+    actions.push("TAB");
+    snapshot = result.postActionSnapshot ?? await driver.snapshot();
+    if (focusedMatchesStartupDecision(snapshot, decision)) {
+      return [...actions, "SELECT"];
+    }
+    const identity = focusedStartupIdentity(snapshot);
+    if (identity === null || seen.has(identity)) return null;
+    seen.add(identity);
+  }
+  return null;
 }

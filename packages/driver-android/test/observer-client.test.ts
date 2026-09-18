@@ -24,7 +24,7 @@ async function listen(
 ): Promise<number> {
   const server = createServer((socket) => {
     const decoder = new ObserverFrameDecoder();
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       for (const value of decoder.push(chunk)) onRequest(value as ObserverRequest, socket);
     });
   });

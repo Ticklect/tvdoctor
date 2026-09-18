@@ -11,6 +11,7 @@ export const NAVIGATION_KEYS = [
 /** Explicit remote inputs accepted by drivers, startup actions, and replay. */
 export const REMOTE_KEYS = [
   ...NAVIGATION_KEYS,
+  "TAB",
   "HOME",
   "PLAY_PAUSE",
   "PLAY",

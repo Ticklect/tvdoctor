@@ -93,7 +93,8 @@ async function withinDeadline<T>(
 async function captureContext(
   target: string,
   sequence: readonly RemoteKey[],
-  createDriver: () => PlaywrightWebDriver,
+  driver: PlaywrightWebDriver,
+  closeDriver: boolean,
   maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
 ): Promise<{
   readonly before: StateSnapshot;
@@ -103,7 +104,6 @@ async function captureContext(
   readonly action: ActionResult | null;
   readonly logs: readonly WebLogEntry[];
 }> {
-  const driver = createDriver();
   const deadlineMs = Date.now() + maximumDurationMs;
   try {
     await withinDeadline(
@@ -137,12 +137,26 @@ async function captureContext(
     );
     const logs = await withinDeadline(driver.getLogs(), deadlineMs, "Evidence log capture");
     return { before, after, beforePng, afterPng, action, logs };
+  } catch (error) {
+    // A pooled session that fails mid-operation is retired before reuse. The
+    // next launch may create a new browser process, while successful captures
+    // keep the process alive and receive a fresh BrowserContext on launch().
+    if (!closeDriver) {
+      await withinDeadline(
+        driver.close(),
+        Date.now() + 5_000,
+        "Evidence browser retirement",
+      ).catch(() => undefined);
+    }
+    throw error;
   } finally {
-    await withinDeadline(
-      driver.close(),
-      Date.now() + 5_000,
-      "Evidence browser cleanup",
-    ).catch(() => undefined);
+    if (closeDriver) {
+      await withinDeadline(
+        driver.close(),
+        Date.now() + 5_000,
+        "Evidence browser cleanup",
+      ).catch(() => undefined);
+    }
   }
 }
 
@@ -252,6 +266,7 @@ export async function captureIssue(
   products: AuditRunProducts,
   sourceIssue: TVDoctorIssue,
   createDriver: () => PlaywrightWebDriver,
+  reuseDriver?: PlaywrightWebDriver,
 ): Promise<CapturedIssue> {
   const sequence = sequenceForIssue(products, sourceIssue);
   const compiled = sourceIssue.reproduction.status === "available" ? compileIssueReplay(sourceIssue) : null;
@@ -262,7 +277,8 @@ export async function captureIssue(
   });
   let context: Awaited<ReturnType<typeof captureContext>>;
   try {
-    context = await captureContext(target, sequence, createDriver);
+    const driver = reuseDriver ?? createDriver();
+    context = await captureContext(target, sequence, driver, reuseDriver === undefined);
     const driftReason = freshEvidenceDriftReason(sourceIssue, context);
     if (driftReason !== null) throw new Error(driftReason);
   } catch (error) {
@@ -415,29 +431,46 @@ export async function captureIssuesWithinBudget(
 ): Promise<readonly CapturedIssue[]> {
   const startedAtMs = now();
   const captured: CapturedIssue[] = [];
-  for (const [index, issue] of issues.entries()) {
-    if (signal?.aborted === true) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        "Fresh evidence was not recaptured because the scan was interrupted.",
-      ));
-      continue;
+  let sharedDriver: PlaywrightWebDriver | null = null;
+  try {
+    for (const [index, issue] of issues.entries()) {
+      if (signal?.aborted === true) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          "Fresh evidence was not recaptured because the scan was interrupted.",
+        ));
+        continue;
+      }
+      if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
+        ));
+        continue;
+      }
+      if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
+        captured.push(skippedEvidenceIssue(
+          issue,
+          `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
+        ));
+        continue;
+      }
+      if (capture === captureIssue) {
+        sharedDriver ??= createDriver();
+        captured.push(await capture(
+          store,
+          target,
+          products,
+          issue,
+          createDriver,
+          sharedDriver,
+        ));
+      } else {
+        captured.push(await capture(store, target, products, issue, createDriver));
+      }
     }
-    if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
-      ));
-      continue;
-    }
-    if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
-      captured.push(skippedEvidenceIssue(
-        issue,
-        `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
-      ));
-      continue;
-    }
-    captured.push(await capture(store, target, products, issue, createDriver));
+  } finally {
+    await sharedDriver?.close().catch(() => undefined);
   }
   return captured;
 }

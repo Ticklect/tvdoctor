@@ -726,20 +726,25 @@ async function runAccessibilityInternal(context: StageContext): Promise<WebStage
     entry.node.focusable === true && entry.node.visible === false
   ));
   const accessibilityTreeObserved = capabilities.has("accessibility-tree");
-  issues.push(...missingNames
+  const semanticIssues = [...missingNames
     .filter((entry) => entry.node.stableId !== null)
     .map((entry) => missingAccessibleNameIssue(
       describeWebElement(entry.node),
       snapshotLocation(initial),
       accessibilityTreeObserved,
-    )));
-  issues.push(...hiddenFocusable
+    )), ...hiddenFocusable
     .filter((entry) => entry.node.stableId !== null)
     .map((entry) => hiddenFocusableIssue(
       describeWebElement(entry.node),
       snapshotLocation(initial),
       accessibilityTreeObserved,
-    )));
+    ))];
+  const seenSemanticIssueIds = new Set<string>();
+  issues.push(...semanticIssues.filter((issue) => {
+    if (seenSemanticIssueIds.has(issue.id)) return false;
+    seenSemanticIssueIds.add(issue.id);
+    return true;
+  }));
   observations.push(observation(
     "accessibility-tree",
     capabilities.has("accessibility-tree") ? "available" : "partial",

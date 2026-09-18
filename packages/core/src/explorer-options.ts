@@ -16,6 +16,7 @@ import {
   type ExplorationBudgets,
   type ExplorationFrontierStrategy,
   type ExplorationProfile,
+  type ExplorationRestorationMode,
   type NormalisedRepetitionCompressionOptions,
   type RepetitionCompressionOptions,
 } from "./explorer-contracts.js";
@@ -24,8 +25,10 @@ export interface NormalisedExplorerOptions {
   readonly budgets: ExplorationBudgets;
   readonly actionOrder: readonly RemoteKey[];
   readonly frontierStrategy: ExplorationFrontierStrategy;
+  readonly restorationMode: ExplorationRestorationMode;
   readonly repetitionCompression: NormalisedRepetitionCompressionOptions;
   readonly settling: NormalisedActionSettlingOptions;
+  readonly replaySettling: NormalisedActionSettlingOptions;
   readonly monotonicSource: () => number;
 }
 
@@ -172,16 +175,29 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     options.frontierStrategy,
     options.profile,
   );
+  const restorationMode = options.restorationMode ?? "root-only";
+  if (restorationMode !== "root-only" && restorationMode !== "verified-local") {
+    throw new TypeError("restorationMode must be root-only or verified-local.");
+  }
   const repetitionCompression = normaliseRepetitionCompression(
     options.profile,
     options.repetitionCompression,
   );
   const settling = normaliseActionSettlingOptions(options.settling);
+  const replaySettling = options.replaySettling === undefined
+    ? settling
+    : normaliseActionSettlingOptions(options.replaySettling);
   if (options.restoreInitialState !== undefined && typeof options.restoreInitialState !== "function") {
     throw new TypeError("restoreInitialState must be a function.");
   }
   if (options.restoreInitialSnapshot !== undefined && typeof options.restoreInitialSnapshot !== "function") {
     throw new TypeError("restoreInitialSnapshot must be a function.");
+  }
+  if (options.actionsForState !== undefined && typeof options.actionsForState !== "function") {
+    throw new TypeError("actionsForState must be a function.");
+  }
+  if (options.onActionObserved !== undefined && typeof options.onActionObserved !== "function") {
+    throw new TypeError("onActionObserved must be a function.");
   }
   if (options.monotonicNow !== undefined && typeof options.monotonicNow !== "function") {
     throw new TypeError("monotonicNow must be a function.");
@@ -196,8 +212,10 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     budgets,
     actionOrder,
     frontierStrategy,
+    restorationMode,
     repetitionCompression,
     settling,
+    replaySettling,
     monotonicSource: options.monotonicNow ?? (() => performance.now()),
   };
 }

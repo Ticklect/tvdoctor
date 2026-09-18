@@ -8,6 +8,7 @@ import {
   type ActionResult,
   type Capability,
   type DriverOperationOptions,
+  type Observation,
   type RemoteKey,
   type ResetStrategy,
   type ScreenshotArtifact,
@@ -22,6 +23,8 @@ import {
   type ObserverState,
 } from "./observer-protocol.js";
 import { NodeAdbCommandExecutor } from "./subprocess.js";
+import { MAX_MEDIA_SESSION_DUMP_BYTES, parseMediaSessionDump } from "./media-session.js";
+import { fingerprintScreenshotPng, MAX_SCREENSHOT_PNG_BYTES } from "./screenshot-fingerprint.js";
 import type {
   AdbCommandOptions,
   AndroidAppMetadata,
@@ -29,7 +32,9 @@ import type {
   AndroidDeviceListEntry,
   AndroidDeviceMetadata,
   AndroidLogEntry,
+  AndroidMediaSessionMetadata,
   AndroidObserverMetrics,
+  AndroidScreenshotFingerprint,
   AndroidStateSnapshot,
   AndroidTvDriverOptions,
   AndroidUiNodeSnapshot,
@@ -41,9 +46,17 @@ const CAPABILITIES: ReadonlySet<Capability> = new Set([
 const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u;
 const SERIAL_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 const COMPONENT_CLASS_PATTERN = /^(?:\.[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)*|[A-Za-z][A-Za-z0-9_$]*(?:\.[A-Za-z0-9_$]+)+)$/u;
+const TVDOCTOR_OBSERVER_PACKAGE = "org.tvdoctor.observer";
+const SYSTEM_SETUP_PACKAGES: ReadonlySet<string> = new Set([
+  "com.android.permissioncontroller",
+  "com.google.android.permissioncontroller",
+  "com.android.packageinstaller",
+  "com.google.android.packageinstaller",
+]);
 const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
   UP: "KEYCODE_DPAD_UP", DOWN: "KEYCODE_DPAD_DOWN", LEFT: "KEYCODE_DPAD_LEFT",
   RIGHT: "KEYCODE_DPAD_RIGHT", SELECT: "KEYCODE_DPAD_CENTER", BACK: "KEYCODE_BACK",
+  TAB: "KEYCODE_TAB",
   HOME: "KEYCODE_HOME", PLAY_PAUSE: "KEYCODE_MEDIA_PLAY_PAUSE", PLAY: "KEYCODE_MEDIA_PLAY",
   PAUSE: "KEYCODE_MEDIA_PAUSE", STOP: "KEYCODE_MEDIA_STOP", NEXT: "KEYCODE_MEDIA_NEXT",
   PREVIOUS: "KEYCODE_MEDIA_PREVIOUS", REWIND: "KEYCODE_MEDIA_REWIND",
@@ -83,6 +96,13 @@ function cleanText(value: string): string {
   return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ").trim().slice(0, 2_000);
 }
+function isObserverSignatureMismatch(error: unknown, packageName: string): boolean {
+  if (packageName !== TVDOCTOR_OBSERVER_PACKAGE || !(error instanceof Error)) return false;
+  const message = error.message;
+  return message.includes("INSTALL_FAILED_UPDATE_INCOMPATIBLE")
+    && message.toLowerCase().includes(TVDOCTOR_OBSERVER_PACKAGE)
+    && /signatures? do not match/iu.test(message);
+}
 function utf8(value: Uint8Array): string { return Buffer.from(value).toString("utf8"); }
 function defaultAdbPath(): string {
   const sdkRoot = process.env["ANDROID_SDK_ROOT"] ?? process.env["ANDROID_HOME"]
@@ -98,6 +118,13 @@ function validateSerial(value: string): string {
 function validatePackage(value: string): string {
   if (!PACKAGE_PATTERN.test(value)) throw new TypeError("Android package name is invalid.");
   return value;
+}
+function isSystemSetupPackage(value: string | null): boolean {
+  return value !== null && SYSTEM_SETUP_PACKAGES.has(value);
+}
+function snapshotBelongsToPackage(snapshot: AndroidStateSnapshot, packageName: string): boolean {
+  return snapshot.location.status === "available"
+    && snapshot.location.value.startsWith(`android://${packageName}/`);
 }
 function componentName(packageName: string, requested: string): string {
   const value = requested.includes("/") ? requested.split("/", 2)[1] ?? "" : requested;
@@ -355,7 +382,16 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const signal = combinedSignal(this.#options.signal, options?.signal);
     return await this.#enqueueOperation(() => this.#press(key, signal), signal);
   }
-  async #press(key: RemoteKey, signal?: AbortSignal): Promise<ActionResult> {
+  async pressSystemSetup(key: "SELECT" | "BACK", options?: DriverOperationOptions): Promise<ActionResult> {
+    if (key !== "SELECT" && key !== "BACK") throw new TypeError("Android setup input only supports SELECT or BACK.");
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#press(key, signal, "system-setup"), signal);
+  }
+  async #press(
+    key: RemoteKey,
+    signal?: AbortSignal,
+    foreground: "target" | "system-setup" = "target",
+  ): Promise<ActionResult> {
     this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
     const totalStarted = performance.now(); const inputSentAtMs = Date.now();
     let inputDelivered = false; let beginRoundTripMs = 0;
@@ -366,6 +402,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
       });
       beginRoundTripMs = performance.now() - beginStarted;
       if (begin.actionId === undefined) throw new Error("Android observer did not return an action identity.");
+      if (foreground === "system-setup") await this.#assertSystemSetupForeground(signal);
+      else await this.#assertTargetForeground(signal);
       const inputStarted = performance.now();
       // Keep input synchronous after the durable focused-window launch guard.
       // This is the delivery barrier that prevents a delayed key from crossing
@@ -443,12 +481,49 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #reset(strategy: ResetStrategy, signal?: AbortSignal): Promise<void> {
     this.#ensureOpen(); const current = this.#currentApp;
     if (current === null) throw new Error("No Android app has been launched.");
-    if (strategy === "clear-data") await this.#deviceCommand(["shell", "pm", "clear", current.id], { timeoutMs: 30_000, ...(signal === undefined ? {} : { signal }) });
-    await this.#deviceCommand(["shell", "am", "force-stop", current.id], signal === undefined ? {} : { signal });
-    await this.#launchPackage(current.id, this.#component, signal);
+    const stageError = (stage: string, error: unknown): Error => new Error(
+      `Android reset stage ${stage} failed for ${current.id}. ${cleanText(error instanceof Error ? error.message : String(error))}`,
+      { cause: error },
+    );
+    const runStage = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (signal?.aborted === true) throw signal.reason;
+        throw stageError(stage, error);
+      }
+    };
+    if (strategy === "clear-data") {
+      await runStage("clear-data", () => this.#deviceCommand(
+        ["shell", "pm", "clear", current.id],
+        { timeoutMs: 30_000, ...(signal === undefined ? {} : { signal }) },
+      ));
+    }
+    try {
+      await this.#deviceCommand(
+        ["shell", "am", "force-stop", current.id],
+        signal === undefined ? {} : { signal },
+      );
+    } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
+      const pidAfterFailure = await this.#deviceText(
+        ["shell", "pidof", "-s", current.id],
+        {
+          timeoutMs: Math.min(5_000, this.#options.commandTimeoutMs),
+          maxOutputBytes: 4_096,
+          ...(signal === undefined ? {} : { signal }),
+        },
+      ).catch(() => null);
+      if (pidAfterFailure === null || cleanText(pidAfterFailure).length > 0) {
+        throw stageError("force-stop", error);
+      }
+      // The host may time out after Android has already applied force-stop.
+      // Continue from the reconciled stopped state without repeating force-stop.
+    }
+    await runStage("launch", () => this.#launchPackage(current.id, this.#component, signal));
     this.#appMetadata = null; this.#cachedTree = null;
-    await this.#stabilizeTargetLaunch(current.id, true, signal);
-    await this.#getAppMetadata(signal);
+    await runStage("focus-stabilization", () => this.#stabilizeTargetLaunch(current.id, true, signal));
+    await runStage("metadata-refresh", () => this.#getAppMetadata(signal));
   }
   async forceStop(
     packageName = this.#currentApp?.id,
@@ -476,14 +551,83 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#ensureOpen();
     if (!/\.png$/iu.test(artifactPath)) throw new TypeError("Android screenshots require a .png artifact path.");
     const absolutePath = resolve(artifactPath); const capturedAt = new Date().toISOString();
+    await this.#assertTargetForeground(signal);
     const result = await this.#deviceCommand(["exec-out", "screencap", "-p"], {
       timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: this.#options.maxScreenshotBytes,
       ...(signal === undefined ? {} : { signal }),
     });
     const dimensions = pngDimensions(result.stdout);
+    await this.#assertTargetForeground(signal);
     signal?.throwIfAborted();
     await mkdir(dirname(absolutePath), { recursive: true }); await writeFile(absolutePath, result.stdout);
     return { path: absolutePath, mediaType: "image/png", ...dimensions, capturedAt };
+  }
+  async captureScreenshotFingerprint(
+    options?: DriverOperationOptions,
+  ): Promise<Observation<AndroidScreenshotFingerprint>> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#captureScreenshotFingerprint(signal), signal);
+  }
+  async #captureScreenshotFingerprint(signal?: AbortSignal): Promise<Observation<AndroidScreenshotFingerprint>> {
+    this.#ensureOpen();
+    try {
+      await this.#assertTargetForeground(signal);
+      const result = await this.#deviceCommand(["exec-out", "screencap", "-p"], {
+        timeoutMs: this.#options.commandTimeoutMs,
+        maxOutputBytes: Math.min(this.#options.maxScreenshotBytes, MAX_SCREENSHOT_PNG_BYTES),
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (result.exitCode !== 0) {
+        return unavailableObservation(
+          `Android screenshot capture was unavailable (exit code ${String(result.exitCode)}).`,
+        );
+      }
+      await this.#assertTargetForeground(signal);
+      return availableObservation(fingerprintScreenshotPng(result.stdout));
+    } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      return unavailableObservation("Android screenshot fingerprint capture failed for the target foreground window.");
+    }
+  }
+  async getActiveMediaSession(
+    packageName: string,
+    options?: DriverOperationOptions,
+  ): Promise<Observation<AndroidMediaSessionMetadata>> {
+    const signal = combinedSignal(this.#options.signal, options?.signal);
+    return await this.#enqueueOperation(() => this.#getActiveMediaSession(packageName, signal), signal);
+  }
+  async #getActiveMediaSession(
+    packageName: string,
+    signal?: AbortSignal,
+  ): Promise<Observation<AndroidMediaSessionMetadata>> {
+    this.#ensureOpen();
+    const targetPackage = validatePackage(packageName);
+    const current = this.#currentApp;
+    if (current === null) return unavailableObservation("No Android target app has been launched.");
+    if (targetPackage !== current.id) {
+      return unavailableObservation(`Android media-session target must exactly match ${current.id}.`);
+    }
+    try {
+      const result = await this.#deviceCommand(["shell", "dumpsys", "media_session"], {
+        timeoutMs: this.#options.commandTimeoutMs,
+        maxOutputBytes: MAX_MEDIA_SESSION_DUMP_BYTES,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (result.exitCode !== 0) {
+        return unavailableObservation(
+          `Android media-session service was unavailable (exit code ${String(result.exitCode)}).`,
+        );
+      }
+      const metadata = parseMediaSessionDump(utf8(result.stdout), targetPackage);
+      return metadata === null
+        ? unavailableObservation(`No media session owned by ${targetPackage} was observed.`)
+        : availableObservation(metadata);
+    } catch (error) {
+      if (signal?.aborted === true) throw signal.reason;
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      return unavailableObservation("Android media-session observation failed.");
+    }
   }
   async getLogs(options?: DriverOperationOptions): Promise<readonly AndroidLogEntry[]> {
     const signal = combinedSignal(this.#options.signal, options?.signal);
@@ -586,22 +730,32 @@ export class AndroidTvDriver implements TVDoctorDriver {
   }
 
   #snapshotFromState(state: ObserverState): AndroidStateSnapshot {
-    if (this.#currentApp === null || state.packageName !== this.#currentApp.id) {
-      this.#cachedTree = null;
-      throw new Error("Android observer returned an observation outside the provisioned target package.");
-    }
+    if (this.#currentApp === null) throw new Error("No Android app has been launched.");
+    const targetOwned = state.packageName === this.#currentApp.id;
     this.#stateMessages += 1;
     if (state.nodes !== undefined) this.#fullTreeMessages += 1;
     this.#canonicalPayloadBytes += Buffer.byteLength(JSON.stringify(state), "utf8");
-    if (state.nodes !== undefined) this.#cachedTree = state.nodes;
-    if (this.#cachedTree === null) throw new Error("Android observer omitted its canonical tree before a full state was established.");
-    const tree = withFocus(this.#cachedTree, state.focused?.stableId ?? null); this.#cachedTree = tree;
+    if (!targetOwned) {
+      this.#cachedTree = null;
+      if (state.focused !== null || state.nodeCount !== 0 || (state.nodes?.length ?? 0) !== 0) {
+        throw new Error("Android observer exposed foreign UI content outside the provisioned target package.");
+      }
+    } else if (state.nodes !== undefined) {
+      this.#cachedTree = state.nodes;
+    }
+    if (targetOwned && this.#cachedTree === null) {
+      throw new Error("Android observer omitted its canonical tree before a full state was established.");
+    }
+    const tree = targetOwned
+      ? withFocus(this.#cachedTree ?? [], state.focused?.stableId ?? null)
+      : [];
+    if (targetOwned) this.#cachedTree = tree;
     const location = state.packageName === null
       ? `android://unknown/window-${String(state.windowId ?? "unknown")}`
       : `android://${state.packageName}/${state.windowClassName ?? `window-${String(state.windowId ?? "unknown")}`}`;
     return {
       capturedAt: new Date(state.timestampMs).toISOString(), location: availableObservation(location),
-      focusedElement: availableObservation(state.focused === null ? null : {
+      focusedElement: availableObservation(!targetOwned || state.focused === null ? null : {
         ...(state.focused.stableId === null ? {} : { stableId: state.focused.stableId }),
         ...(state.focused.role === null ? {} : { role: state.focused.role }),
         ...(state.focused.name === null ? {} : { name: state.focused.name }),
@@ -613,7 +767,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
       app: this.#appMetadata === null
         ? unavailableObservation("Android app metadata has not been collected.") : availableObservation(this.#appMetadata),
       hierarchyMetadata: availableObservation({
-        capturedNodeCount: state.nodeCount,
+        targetWindowActive: targetOwned,
+        capturedNodeCount: targetOwned ? state.nodeCount : 0,
         maxNodeCount: 4_096,
         maxDepth: state.maxDepth,
         truncated: state.nodeCount >= 4_096 || state.maxDepth >= 64,
@@ -627,7 +782,14 @@ export class AndroidTvDriver implements TVDoctorDriver {
     if (target === undefined) throw new Error("No Android app has been launched.");
     const asset = this.#options.observerAsset ?? await resolveAndroidObserverAsset();
     const commandOptions = signal === undefined ? {} : { signal };
-    await this.#deviceCommand(["install", "-r", asset.apkPath], { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes, ...commandOptions });
+    const installOptions = { timeoutMs: 120_000, maxOutputBytes: this.#options.maxCommandOutputBytes, ...commandOptions };
+    try {
+      await this.#deviceCommand(["install", "-r", asset.apkPath], installOptions);
+    } catch (error) {
+      if (!isObserverSignatureMismatch(error, asset.packageName)) throw error;
+      await this.#deviceCommand(["uninstall", TVDOCTOR_OBSERVER_PACKAGE], installOptions);
+      await this.#deviceCommand(["install", asset.apkPath], installOptions);
+    }
     const installedPath = (await this.#deviceText(["shell", "pm", "path", asset.packageName], commandOptions)).trim();
     if (!/^package:\/data\/app\/[A-Za-z0-9_./=+~-]+\.apk$/u.test(installedPath)) {
       throw new Error("Installed Android observer identity could not be verified.");
@@ -714,7 +876,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
         ...(signal === undefined ? {} : { signal }),
       });
       const state = parseObserverState(response.state); latestPackage = state.packageName;
-      if (state.packageName === packageName) return this.#snapshotFromState(state);
+      if (state.packageName === packageName || isSystemSetupPackage(state.packageName)) {
+        return this.#snapshotFromState(state);
+      }
       await delay(75, signal);
     }
     throw new Error(`Android observer did not observe ${packageName}; current window package is ${latestPackage ?? "unknown"}.`);
@@ -734,6 +898,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       });
       const state = parseObserverState(response.state);
       if (state.packageName !== packageName) {
+        if (isSystemSetupPackage(state.packageName)) return this.#snapshotFromState(state);
         throw new Error(`Android observer resync crossed into ${state.packageName ?? "an unknown package"}; expected ${packageName}.`);
       }
       const latest = this.#snapshotFromState(state);
@@ -780,13 +945,49 @@ export class AndroidTvDriver implements TVDoctorDriver {
       `Android did not focus a window owned by ${packageName}; current focused window package is ${latestPackage ?? "unknown"}.`,
     );
   }
+  async #assertTargetForeground(signal?: AbortSignal): Promise<void> {
+    const current = this.#currentApp;
+    if (current === null) throw new Error("No Android app has been launched.");
+    const output = await this.#deviceText(["shell", "dumpsys", "window"], {
+      timeoutMs: this.#options.commandTimeoutMs,
+      maxOutputBytes: this.#options.maxCommandOutputBytes,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const focusedPackage = focusedWindowPackage(output);
+    if (focusedPackage !== current.id) {
+      throw new Error(
+        `Android target ${current.id} is not the focused foreground window; current focused window package is ${focusedPackage ?? "unknown"}.`,
+      );
+    }
+  }
+  async #assertSystemSetupForeground(signal?: AbortSignal): Promise<void> {
+    const output = await this.#deviceText(["shell", "dumpsys", "window"], {
+      timeoutMs: this.#options.commandTimeoutMs,
+      maxOutputBytes: this.#options.maxCommandOutputBytes,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const focusedPackage = focusedWindowPackage(output);
+    if (!isSystemSetupPackage(focusedPackage)) {
+      throw new Error(
+        `Android setup input requires a permission-controller or package-installer foreground window; current focused window package is ${focusedPackage ?? "unknown"}.`,
+      );
+    }
+  }
   async #stabilizeTargetLaunch(packageName: string, forceFull: boolean, signal?: AbortSignal): Promise<void> {
     let latestError: unknown;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await this.#waitForTargetState(packageName, forceFull, signal);
+        const observed = await this.#waitForTargetState(packageName, forceFull, signal);
+        if (!snapshotBelongsToPackage(observed, packageName)) {
+          await this.#assertSystemSetupForeground(signal);
+          return;
+        }
         await this.#waitForFocusedTargetWindow(packageName, signal);
-        await this.#waitForStableTargetState(packageName, signal);
+        const stable = await this.#waitForStableTargetState(packageName, signal);
+        if (!snapshotBelongsToPackage(stable, packageName)) {
+          await this.#assertSystemSetupForeground(signal);
+          return;
+        }
         await this.#waitForFocusedTargetWindow(packageName, signal);
         return;
       } catch (error) {

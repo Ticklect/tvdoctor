@@ -72,14 +72,23 @@ try {
     assert.match(json, /TVDOCTOR_PUBLIC_SECURITY_PROBE/u, 'the public target marker must be observable');
     assert.doesNotMatch(json, /TVDOCTOR_PASSWORD_SENTINEL|TVDOCTOR_PASSWORD_DESCRIPTION/u);
   });
-  await test('an active window outside the provisioned package exposes no content and retains only the target identity', async () => {
+  await test('an active window outside the provisioned package exposes only boundary ownership metadata', async () => {
+    const begin = await client.request({ type: 'begin_action', key: 'RIGHT' });
+    assert.ok(Number.isSafeInteger(begin.actionId), 'begin_action must return an action identity');
     command(['shell', 'am', 'start', '-W', '-n', 'org.tvdoctor.observer/.SetupActivity']);
     await delay(500);
-    const response = await client.request({ type: 'current_state', forceFull: true });
-    assert.equal(response.state.packageName, target);
+    const response = await client.request({
+      type: 'settle_action',
+      actionId: begin.actionId,
+      timeoutMs: 3000,
+      quietWindowMs: 100,
+      noResponseGraceMs: 300,
+    });
+    assert.equal(response.state.packageName, 'org.tvdoctor.observer');
     assert.deepEqual(response.state.nodes, []);
     assert.equal(response.state.focused, null);
-    assert.equal(response.state.windowClassName, null);
+    assert.match(response.state.windowClassName ?? '', /SetupActivity/u);
+    assert.ok(response.timing.eventsObserved > 0, 'cross-package window events must wake action settling');
   });
   client.close(); client = undefined;
   await delay(200);

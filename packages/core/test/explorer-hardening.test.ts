@@ -605,6 +605,33 @@ describe("startup preparation", () => {
     await expect(result.restoreToPreparedState?.()).resolves.toBeTruthy();
   });
 
+  it("accepts repeated explicit TAB inputs in a startup preparation sequence", async () => {
+    const driver = new StartupConsentDriver();
+    const result = await prepareStartup(driver, {
+      policy: { kind: "remote-sequence", actions: ["TAB", "TAB", "SELECT"] },
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe("ready");
+    expect(driver.pressed).toEqual(["TAB", "TAB", "SELECT"]);
+  });
+
+  it("bounds explicit startup preparation sequences even when repeated keys are allowed", async () => {
+    const driver = new StartupConsentDriver();
+    await expect(prepareStartup(driver, {
+      policy: {
+        kind: "remote-sequence",
+        actions: Array.from({ length: 65 }, () => "SELECT" as RemoteKey),
+      },
+      stability,
+      monotonicNow: () => 0,
+      wait: async () => undefined,
+    })).rejects.toThrow("startup policy.actions must contain no more than 64 remote keys.");
+    expect(driver.pressed).toEqual([]);
+  });
+
   it("ignores startup policy actions when the stable screen has no blocker", async () => {
     const driver = new CleanStartupDriver();
     const result = await prepareStartup(driver, {

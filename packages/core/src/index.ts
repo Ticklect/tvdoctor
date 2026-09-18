@@ -16,3 +16,4 @@ export * from "./replay.js";
 export * from "./sequence-minimizer.js";
 export * from "./semantic-issue-id.js";
 export * from "./startup.js";
+export * from "./verified-path.js";

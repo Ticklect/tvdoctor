@@ -45,8 +45,8 @@
     "markdown-it": "15.0.1",
     "parse5": "8.0.1",
     "saxes": "6.0.0",
-    "typescript": "7.0.2",
+    "typescript": "6.0.3",
     "typescript-eslint": "8.70.0",
-    "vitest": "5.0.0"
+    "vitest": "4.1.11"
   }
 }

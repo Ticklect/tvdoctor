@@ -20,6 +20,7 @@ import {
   nodeMatchesStreamingDescriptor,
   playbackProgressObservation,
   rankSemanticCandidates,
+  discoverStreamingSettingsRoute,
   runStreamingPack,
   selectedCaptionTrack,
   semanticStateIdentity,
@@ -487,6 +488,40 @@ const reachablePointer: StreamingPointerProbe = {
 };
 
 describe("runStreamingPack", () => {
+  it("discovers and confirms only the bounded Player Settings route for dependent web checks", async () => {
+    const routeDriver = new StreamingFakeDriver("conventional");
+    const route = await discoverStreamingSettingsRoute(routeDriver);
+    const full = await runStreamingPack(new StreamingFakeDriver("conventional"), {
+      pointerProbe: reachablePointer,
+    });
+    const fullSettings = full.stages.find((stage) => stage.stage === "settings");
+
+    expect(route.status).toBe("found");
+    expect(route.sequence).toEqual(fullSettings?.sequence);
+    expect(route.sequence?.at(-1)).toBe("SELECT");
+    expect([...new Set(routeDriver.selectedIds)]).toEqual([
+      "safe-content",
+      "details-play",
+      "player-settings",
+    ]);
+    expect(route.statistics.physicalActions).toBeLessThan(full.statistics.physicalActions);
+  });
+
+  it("does not claim a Settings route when activation fails to open a distinct captions-bearing surface", async () => {
+    const driver = new StreamingFakeDriver(
+      "conventional",
+      true,
+      false,
+      { settingsOpens: false },
+    );
+    const route = await discoverStreamingSettingsRoute(driver);
+
+    expect(route.status).toBe("unavailable");
+    expect(route.sequence).toBeUndefined();
+    expect(route.detail).toContain("distinct semantic player-settings surface");
+    expect(driver.selectedIds.filter((id) => id === "player-settings")).toHaveLength(1);
+  });
+
   it("completes the showcase journey, finds four deterministic defects, and replays Text Colour", async () => {
     const driver = new StreamingFakeDriver("conventional");
     const result = await runStreamingPack(driver, { pointerProbe: reachablePointer });

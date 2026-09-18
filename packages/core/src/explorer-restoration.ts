@@ -23,7 +23,12 @@ export interface RestoreStop {
   readonly termination: ExplorationTermination;
 }
 
-export type RestoreResult = RestoreSuccess | RestoreStop;
+export interface RestoreSkip {
+  readonly status: "skip";
+  readonly termination: ExplorationTermination;
+}
+
+export type RestoreResult = RestoreSuccess | RestoreStop | RestoreSkip;
 
 export class DurationBudgetExceeded extends Error {
   constructor() {

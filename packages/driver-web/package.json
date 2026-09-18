@@ -50,11 +50,11 @@
   },
   "dependencies": {
     "@tvdoctor/protocol": "0.1.0",
-    "playwright": "1.62.1"
+    "playwright": "1.63.0"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "@types/node": "26.5.0",
-    "typescript": "7.0.2"
+    "typescript": "6.0.3"
   }
 }

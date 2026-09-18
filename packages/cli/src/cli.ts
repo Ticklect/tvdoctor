@@ -483,8 +483,8 @@ function parseTestArguments(
       } else if (argument === "--startup-actions") {
         const requested = value.split(",").map((key) => key.trim()).filter((key) => key.length > 0);
         if (requested.length === 0) return "--startup-actions requires at least one remote key";
+        if (requested.length > 64) return "--startup-actions accepts no more than 64 remote keys";
         if (requested.some((key) => !REMOTE_KEY_SET.has(key))) return "--startup-actions accepts only known remote keys";
-        if (new Set(requested).size !== requested.length) return "--startup-actions must not contain duplicate remote keys";
         startupActions = requested as RemoteKey[];
       } else if (argument === "--max-duration-ms") {
         const parsed = Number(value);

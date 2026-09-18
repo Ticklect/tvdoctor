@@ -56,6 +56,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     private volatile String targetPackageName;
     private volatile int lastWindowId = -1;
     private volatile String lastStructureFingerprint = "";
+    private volatile String lastTreePackageName = "";
     private volatile String lastStateFingerprint = "";
     private ServerSocket serverSocket;
     private Thread serverThread;
@@ -69,7 +70,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         String target = targetPackageName;
-        if (target == null || !target.equals(nullableString(event.getPackageName()))) return;
+        if (target == null) return;
         long now = SystemClock.elapsedRealtime();
         long sequence = eventSequence.incrementAndGet();
         lastEventElapsedMs = now;
@@ -263,6 +264,7 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         lastWindowId = -1;
         windowClassByPackage.clear();
         lastStructureFingerprint = "";
+        lastTreePackageName = "";
         lastStateFingerprint = "";
         authenticated.set(true);
         return ok(id, "hello")
@@ -410,32 +412,37 @@ public final class ObserverAccessibilityService extends AccessibilityService {
         FocusHolder focus = new FocusHolder();
         Counter counter = new Counter();
         int maximumDepth = 0;
-        // Keep the authenticated target identity even when another package owns
-        // the active window. The empty tree remains a safe, navigable boundary
-        // state without exposing the outside package or tripping the host's
-        // defence against a compromised observer claiming a different package.
-        String capturedPackageName = targetPackageName;
-        boolean targetWindowCaptured = false;
+        // Preserve only the active window's ownership metadata across the
+        // target boundary. Foreign UI nodes and focus remain redacted.
+        String capturedPackageName = null;
         int capturedWindowId = -1;
         if (root != null) {
             try {
                 String rootPackageName = nullableString(root.getPackageName());
+                capturedPackageName = rootPackageName;
+                capturedWindowId = root.getWindowId();
                 if (targetPackageName != null && targetPackageName.equals(rootPackageName)) {
-                    capturedPackageName = rootPackageName;
-                    targetWindowCaptured = true;
-                    capturedWindowId = root.getWindowId();
                     maximumDepth = appendNode(root, roots, structure, focus, counter, 0, "root", false);
                 }
             } finally { root.recycle(); }
         }
-        String capturedWindowClassName = !targetWindowCaptured
+        if (capturedPackageName == null) capturedPackageName = lastPackageName;
+        String capturedWindowClassName = capturedPackageName == null
             ? null
             : windowClassByPackage.get(capturedPackageName);
         String structureFingerprint = sha256(structure.toString());
         String focusSignature = focus.stableId == null ? "none" : focus.stableId;
-        String stateFingerprint = sha256(structureFingerprint + "\u001f" + focusSignature);
-        boolean treeChanged = forceFull || !structureFingerprint.equals(lastStructureFingerprint);
+        String treePackageName = nullToEmpty(capturedPackageName);
+        String stateFingerprint = sha256(
+            treePackageName + "\u001f"
+                + nullToEmpty(capturedWindowClassName) + "\u001f"
+                + structureFingerprint + "\u001f" + focusSignature
+        );
+        boolean treeChanged = forceFull
+            || !structureFingerprint.equals(lastStructureFingerprint)
+            || !treePackageName.equals(lastTreePackageName);
         lastStructureFingerprint = structureFingerprint;
+        lastTreePackageName = treePackageName;
         lastStateFingerprint = stateFingerprint;
         JSONObject state = new JSONObject()
             .put("sequence", eventSequence.get())

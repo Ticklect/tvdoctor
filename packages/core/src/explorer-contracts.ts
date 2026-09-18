@@ -57,6 +57,22 @@ export const EXPLORATION_BUDGET_PROFILES: Readonly<Record<
 };
 
 export type ExplorationFrontierStrategy = "breadth-first" | "priority";
+export type ExplorationRestorationMode = "root-only" | "verified-local";
+
+export interface ExplorationActionContext {
+  readonly screenStateId: string;
+  readonly focusStateId: string;
+  readonly snapshot: StateSnapshot;
+  readonly defaultActions: readonly RemoteKey[];
+}
+
+export interface ExplorationObservedActionContext {
+  readonly screenStateId: string;
+  readonly focusStateId: string;
+  readonly key: RemoteKey;
+  readonly beforeSnapshot: StateSnapshot;
+  readonly afterSnapshot: StateSnapshot;
+}
 
 export interface RepetitionCompressionOptions {
   /** Disabled for legacy calls; enabled by explicit quick/standard/deep profiles. */
@@ -82,6 +98,18 @@ export interface ExplorerOptions {
   readonly budgets?: Partial<ExplorationBudgets>;
   /** Deterministic action priority. Defaults to the bounded navigation-key set. */
   readonly actions?: readonly RemoteKey[];
+  /**
+   * Optional state-aware action filter. Returned keys must be a duplicate-free
+   * subset of `actions`. The hook may collect bounded platform evidence before
+   * deciding which configured inputs are safe for this exact state.
+   */
+  readonly actionsForState?: (
+    context: ExplorationActionContext,
+  ) => readonly RemoteKey[] | Promise<readonly RemoteKey[]>;
+  /** Observe one settled action without changing its canonical graph result. */
+  readonly onActionObserved?: (
+    context: ExplorationObservedActionContext,
+  ) => void | Promise<void>;
   /** Record transitions to these snapshots but do not enqueue them for expansion/replay. */
   readonly shouldExpand?: (snapshot: StateSnapshot) => boolean;
   /** Used when restoreInitialState is absent. */
@@ -98,10 +126,22 @@ export interface ExplorerOptions {
   readonly monotonicNow?: () => number;
   /** Legacy calls remain BFS; explicit profiles default to deterministic priority. */
   readonly frontierStrategy?: ExplorationFrontierStrategy;
+  /**
+   * `root-only` preserves fresh reset-relative restoration before every branch.
+   * `verified-local` may reuse an exact live canonical state before falling back
+   * to the same root restoration path. Intended for expensive Android relaunches.
+   */
+  readonly restorationMode?: ExplorationRestorationMode;
   /** Conservative repeated carousel/list-item compression. */
   readonly repetitionCompression?: RepetitionCompressionOptions;
   /** Optional bounded post-press snapshot stability polling. */
   readonly settling?: ActionSettlingOptions;
+  /**
+   * Optional restoration/replay settling policy. Defaults to `settling` for
+   * compatibility; observer-backed drivers can use `driver` to reuse their
+   * settled post-action snapshot while checkpoint identity remains mandatory.
+   */
+  readonly replaySettling?: ActionSettlingOptions;
   /** Continue to sibling actions when a driver reports transient unobserved input. */
   readonly allowUnsettledActions?: boolean;
   /** Bounded live progress after each observed or explicitly tolerated action. */
@@ -155,6 +195,12 @@ export interface ExplorationStatistics {
   readonly resetCount: number;
   /** Restoration attempts made for queued state/action branches. */
   readonly replayRestorations: number;
+  /** Exact source-state branches that safely avoided root reset/replay. */
+  readonly verifiedStateReuses?: number;
+  /** Verified local path restorations completed without a root reset. */
+  readonly verifiedPathRestorations?: number;
+  /** Local restoration attempts that failed closed and used root replay. */
+  readonly restorationFallbacks?: number;
   readonly visitedStates: number;
   readonly screenStates: number;
   readonly focusStates: number;

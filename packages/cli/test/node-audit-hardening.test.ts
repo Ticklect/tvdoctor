@@ -28,6 +28,11 @@ import {
   writeAuditAuxiliaryArtifacts,
   type AuditRunProducts,
 } from "../src/node-audit.js";
+import {
+  preferredStartupControl,
+  resolveStartupDecisionThroughFocus,
+  startupActivationSequence,
+} from "../src/node-audit-navigation.js";
 
 const PRODUCTS: AuditRunProducts = {
   navigation: null,
@@ -602,6 +607,280 @@ describe("Node audit release hardening", () => {
       expect(results[MAX_ISSUES_WITH_FRESH_EVIDENCE]?.issue.reproduction.status)
         .toBe("unavailable");
       expect(MAX_ISSUES_WITH_FRESH_EVIDENCE * 8 + 2).toBeLessThan(10_000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves an explicit Reject choice through live focus when consent controls were truncated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-truncated-consent-"));
+    try {
+      const closed = vi.fn(async () => undefined);
+      const auxiliaryClosed = vi.fn(async () => undefined);
+      let driverCreations = 0;
+      const focusNames = [
+        "Before you continue to YouTube",
+        "Language: English (United Kingdom)",
+        "More options",
+        "Reject all",
+      ] as const;
+      let focusIndex = 0;
+      let consentResolved = false;
+      const consentPresses: string[] = [];
+      const consentSnapshot = (): StateSnapshot => {
+        if (consentResolved) {
+          return {
+            capturedAt: "2026-09-14T20:00:00.000Z",
+            location: availableObservation("https://www.youtube.com/"),
+            focusedElement: availableObservation({
+              stableId: "home",
+              role: "button",
+              name: "Home",
+            }),
+            uiTree: availableObservation([{
+              stableId: "home",
+              role: "button",
+              name: "Home",
+              text: "Home",
+              bounds: { x: 10, y: 10, width: 100, height: 40 },
+              visible: true,
+              enabled: true,
+              focusable: true,
+              focused: true,
+              modal: false,
+              selectionState: null,
+              valueNow: null,
+              children: [],
+            }]),
+          };
+        }
+        const focusName = focusNames[focusIndex] ?? focusNames[0];
+        const focusedDialog = focusIndex === 0;
+        return {
+          capturedAt: "2026-09-14T20:00:00.000Z",
+          location: availableObservation("https://www.youtube.com/"),
+          focusedElement: availableObservation({
+            stableId: focusedDialog ? "consent-dialog" : `truncated-focus-${String(focusIndex)}`,
+            role: focusedDialog ? "dialog" : "button",
+            name: focusName,
+          }),
+          // This deliberately models the real YouTube failure: the modal itself
+          // survived bounded semantic capture, while its later actionable
+          // descendants were omitted by the global node limit.
+          uiTree: availableObservation([{
+            stableId: "consent-dialog",
+            role: "dialog",
+            name: "Before you continue to YouTube",
+            text: "Cookies and privacy choices before you continue to YouTube",
+            bounds: { x: 0, y: 0, width: 640, height: 480 },
+            visible: true,
+            enabled: true,
+            focusable: true,
+            focused: focusedDialog,
+            modal: true,
+            selectionState: null,
+            valueNow: null,
+            children: [],
+          }]),
+        };
+      };
+      const operation = createNodeAuditOperation({
+        createDriver: () => {
+          const close = driverCreations === 0 ? closed : auxiliaryClosed;
+          driverCreations += 1;
+          return ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          reset: async () => {
+            focusIndex = consentResolved ? focusIndex : 0;
+          },
+          snapshot: async () => consentSnapshot(),
+          press: async (key: ActionResult["key"]) => {
+            if (consentResolved) {
+              return {
+                key,
+                outcome: "unsupported" as const,
+                timing: { inputSentAtMs: consentPresses.length + 1 },
+                postActionSnapshot: consentSnapshot(),
+              };
+            }
+            if (!consentResolved) consentPresses.push(String(key));
+            if (!consentResolved && String(key) === "TAB") {
+              focusIndex = (focusIndex + 1) % focusNames.length;
+            } else if (!consentResolved && key === "SELECT" && focusIndex === 3) {
+              consentResolved = true;
+            }
+            return {
+              key,
+              outcome: "applied" as const,
+              timing: { inputSentAtMs: consentPresses.length + 1 },
+              postActionSnapshot: consentSnapshot(),
+            };
+          },
+          getPerformanceProfile: () => null,
+          close,
+          } as unknown as PlaywrightWebDriver);
+        },
+      });
+
+      const result = await operation({
+        target: "https://www.youtube.com/",
+        packs: ["navigation"],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        startupDecision: "reject",
+      });
+
+      expect(result.status).not.toBe("failed");
+      expect(consentResolved).toBe(true);
+      expect(consentPresses.filter((key) => key === "SELECT")).toHaveLength(1);
+      expect(consentPresses.filter((key) => key === "TAB").length).toBeGreaterThanOrEqual(3);
+      expect(await readFile(join(root, "bundle", "report.json"), "utf8"))
+        .not.toContain("startup policy.actions must contain at least one remote key");
+      expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("matches only the caller-selected consent action and never infers SELECT from unknown focus", () => {
+    const control = (name: string, focused = false) => ({
+      stableId: name.toLowerCase().replace(/\s+/gu, "-"),
+      role: "button",
+      name,
+      bounds: { x: 0, y: 0, width: 100, height: 40 },
+      enabled: true,
+      focused,
+    });
+
+    expect(preferredStartupControl("reject", "consent-wall", [control("Manage preferences")])).toBeNull();
+    expect(preferredStartupControl("accept", "consent-wall", [control("Continue")])).toBeNull();
+    expect(preferredStartupControl("accept", "login", [control("Accept all")])).toBeNull();
+
+    const reject = control("Reject all");
+    expect(startupActivationSequence([reject], reject)).toEqual([]);
+  });
+
+  it("bounds live consent focus probing without ever selecting an unresolved control", async () => {
+    let focusIndex = 0;
+    const pressed: string[] = [];
+    const liveSnapshot = (): StateSnapshot => ({
+      capturedAt: "2026-09-14T20:00:00.000Z",
+      location: availableObservation("https://www.youtube.com/"),
+      focusedElement: availableObservation({
+        stableId: `focus-${String(focusIndex)}`,
+        role: "button",
+        name: `Unrelated control ${String(focusIndex)}`,
+      }),
+      uiTree: availableObservation([]),
+    });
+    const driver = {
+      snapshot: async () => liveSnapshot(),
+      press: async (key: ActionResult["key"]): Promise<ActionResult> => {
+        pressed.push(String(key));
+        focusIndex += 1;
+        return {
+          key,
+          outcome: "applied",
+          timing: { inputSentAtMs: focusIndex },
+          postActionSnapshot: liveSnapshot(),
+        };
+      },
+      capabilities: async () => new Set(),
+    } as unknown as PlaywrightWebDriver;
+
+    const actions = await resolveStartupDecisionThroughFocus(
+      driver,
+      "reject",
+      "consent-wall",
+      liveSnapshot(),
+    );
+
+    expect(actions).toBeNull();
+    expect(pressed).toHaveLength(63);
+    expect(pressed.every((key) => key === "TAB")).toBe(true);
+  });
+
+  it("stops live consent focus probing when focus cycles", async () => {
+    const names = ["Language", "More options"] as const;
+    let focusIndex = 0;
+    const pressed: string[] = [];
+    const liveSnapshot = (): StateSnapshot => ({
+      capturedAt: "2026-09-14T20:00:00.000Z",
+      location: availableObservation("https://www.youtube.com/"),
+      focusedElement: availableObservation({
+        stableId: `focus-${String(focusIndex)}`,
+        role: "button",
+        name: names[focusIndex] ?? names[0],
+      }),
+      uiTree: availableObservation([]),
+    });
+    const driver = {
+      snapshot: async () => liveSnapshot(),
+      press: async (key: ActionResult["key"]): Promise<ActionResult> => {
+        pressed.push(String(key));
+        focusIndex = (focusIndex + 1) % names.length;
+        return {
+          key,
+          outcome: "applied",
+          timing: { inputSentAtMs: pressed.length },
+          postActionSnapshot: liveSnapshot(),
+        };
+      },
+      capabilities: async () => new Set(),
+    } as unknown as PlaywrightWebDriver;
+
+    const actions = await resolveStartupDecisionThroughFocus(
+      driver,
+      "accept",
+      "consent-wall",
+      liveSnapshot(),
+    );
+
+    expect(actions).toBeNull();
+    expect(pressed).toEqual(["TAB", "TAB"]);
+  });
+
+  it("reuses one evidence browser process while launching a fresh context for each issue", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-evidence-pool-"));
+    try {
+      const store = await createArtifactStore(root);
+      let phase = 0;
+      const launch = vi.fn(async () => { phase = 0; });
+      const close = vi.fn(async () => undefined);
+      const driver = {
+        launch,
+        async press(key: ActionResult["key"]): Promise<ActionResult> {
+          phase = 1;
+          return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+        },
+        async snapshot() {
+          return snapshot(phase === 0 ? "source-target" : "observed-target");
+        },
+        getPage() {
+          return { screenshot: async () => Uint8Array.from([1, 2, 3]) };
+        },
+        async getLogs() { return []; },
+        close,
+      } as unknown as PlaywrightWebDriver;
+      const createDriver = vi.fn(() => driver);
+
+      const results = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        [
+          issue("TVDOCTOR-NAV-POOL00000000000000000001"),
+          issue("TVDOCTOR-NAV-POOL00000000000000000002"),
+        ],
+        createDriver,
+      );
+
+      expect(results.every((entry) => !entry.failed)).toBe(true);
+      expect(createDriver).toHaveBeenCalledOnce();
+      expect(launch).toHaveBeenCalledTimes(2);
+      expect(close).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

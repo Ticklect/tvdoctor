@@ -85,8 +85,32 @@ describe("Android observer canonical state validation", () => {
       nodeCount: 1,
       maxDepth: 0,
     };
-    expect(parseObserverState(state).nodes).toHaveLength(1);
+    const parsed = parseObserverState(state);
+    expect(parsed.nodes).toHaveLength(1);
+    expect(parsed).not.toHaveProperty("targetWindowActive");
     expect(() => parseObserverState({ ...state, nodeCount: 2 })).toThrow(/node count/u);
     expect(ANDROID_OBSERVER_PROTOCOL_VERSION).toBe(2);
+  });
+
+  it("accepts a redacted cross-package boundary without a target ownership flag", () => {
+    expect(parseObserverState({
+      sequence: 4,
+      timestampMs: Date.now(),
+      packageName: "com.google.android.permissioncontroller",
+      windowClassName: "com.android.permissioncontroller.permission.ui.GrantPermissionsActivity",
+      windowId: 9,
+      focused: null,
+      structureFingerprint: "c".repeat(64),
+      stateFingerprint: "d".repeat(64),
+      treeChanged: true,
+      nodes: [],
+      nodeCount: 0,
+      maxDepth: 0,
+    })).toMatchObject({
+      packageName: "com.google.android.permissioncontroller",
+      focused: null,
+      nodes: [],
+      nodeCount: 0,
+    });
   });
 });

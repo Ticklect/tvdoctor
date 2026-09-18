@@ -269,12 +269,12 @@ function validatePolicy(policy: StartupPreparationPolicy): StartupPreparationPol
   if (!Array.isArray(policy.actions) || policy.actions.length === 0) {
     throw new TypeError("startup policy.actions must contain at least one remote key.");
   }
+  if (policy.actions.length > 64) {
+    throw new TypeError("startup policy.actions must contain no more than 64 remote keys.");
+  }
   const allowed = new Set<string>(REMOTE_KEYS);
   if (policy.actions.some((key) => typeof key !== "string" || !allowed.has(key))) {
     throw new TypeError("startup policy.actions must contain only known remote keys.");
-  }
-  if (new Set(policy.actions).size !== policy.actions.length) {
-    throw new TypeError("startup policy.actions must not contain duplicates.");
   }
   return { kind: "remote-sequence", actions: [...policy.actions] };
 }

@@ -60,11 +60,22 @@ arbitrary DPAD keys into another app, so TVDoctor deliberately retains the fast
 ADB `input keyevent` primitive for input. ADB is not used to dump UIAutomator
 hierarchies during normal exploration.
 
-Automatic exploration remains bounded to `UP`, `DOWN`, `LEFT`, `RIGHT`,
-`SELECT`, and `BACK`. Explicit startup/replay actions additionally support
-`HOME`, `PLAY_PAUSE`, `PLAY`, `PAUSE`, `STOP`, `NEXT`, `PREVIOUS`, `REWIND`,
-and `FAST_FORWARD`. HOME and media controls are never added to the automatic
-frontier, so a scan cannot unexpectedly leave the tested app or control media.
+Automatic exploration is state-aware rather than a fixed key list. Directional
+navigation and `BACK` remain bounded exploration actions, while `SELECT` is
+gated per state: TVDoctor suppresses it when the observed control is risky,
+persistent, or too ambiguous to activate safely. `HOME` may be used only as a
+bounded target-boundary probe, with the target package checked before and after
+the probe. Media controls (`PLAY_PAUSE`, `PLAY`, `PAUSE`, `STOP`, `NEXT`,
+`PREVIOUS`, `REWIND`, and `FAST_FORWARD`) may be explored automatically only
+when target-owned media-session or player evidence supports them. `TAB` is never
+an automatic Android exploration action. These keys remain available to
+explicit startup/replay sequences when the caller supplies them.
+
+When accessibility semantics are sparse, the policy can use target-bound
+screenshot fingerprint evidence to decide whether an action is safely
+observable. Blank or unavailable screenshot evidence does not count as proof of
+a safe state: TVDoctor fails closed, leaves the affected safe coverage
+incomplete, and reports the run as partial rather than guessing through it.
 
 To remove the observer:
 
@@ -102,6 +113,18 @@ Screenshots and logcat are captured for evidence, not on every normal action.
 Launch and replay resets require both a stable canonical observer state and a
 continuously focused target-app window before another remote key is sent. A
 bounded relaunch retry handles TV launchers that briefly reclaim focus.
+
+Android exploration uses the core's `verified-local` restoration mode because a
+full app relaunch is expensive. If the current canonical state exactly matches
+the next source state, TVDoctor can continue without relaunching. Otherwise it
+may use the shortest path made only of previously verified exact-state edges and
+revalidates every checkpoint. A mismatch immediately discards that local route
+and falls back once to the normal root relaunch and exact replay. Android also
+uses driver replay settling, so replayed restoration actions are settled and
+validated by the Android driver before the next edge is accepted. The web
+driver continues to use root-relative restoration because browser sibling
+actions can carry hidden page state that is not represented in the semantic
+snapshot.
 
 ## Transport and security
 
@@ -155,8 +178,10 @@ deterministic HIGH finding, and its correlated replay.
 Android reports contain canonical findings, screenshots, hashes, partial-run
 semantics, portable replays, `android-action-performance.json`, and an
 `android-exploration.json` record containing the exact termination reason,
-bounded detail, budgets, action order, and statistics. Replay an Android finding
-with the original APK and an explicit device:
+bounded detail, budgets, action order, and statistics. They also include
+`android-coverage-ledger.json`, which records when the state-aware policy could
+not complete safe Android coverage; incomplete safe coverage forces a partial
+result. Replay an Android finding with the original APK and an explicit device:
 
 ```powershell
 tvdoctor replay ISSUE_ID --report Tests\run\report.json `
@@ -202,7 +227,10 @@ service process alive for the next run.
 - protected/secure surfaces may block screenshots or accessibility content;
 - TVDoctor records transitions out of the tested package but does not expand
   the Android launcher or unrelated system UI during normal exploration;
-- HOME and media keys are explicit-only and are not automatically explored;
+- HOME exploration is limited to the bounded target-boundary probe; media keys
+  require target-owned media/player evidence, and TAB is never automatic;
+- policy-gated SELECT and sparse-evidence fail-closed decisions can leave safe
+  coverage incomplete and therefore produce a partial report;
 - the tested APK and its startup state must be deterministic enough for replay;
 - continuously changing accessibility trees can exhaust the bounded
   post-action stability or scan-duration budget and remain partial;

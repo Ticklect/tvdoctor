@@ -10,7 +10,9 @@ import {
   compileIssueReplay,
   diagnoseNavigation,
   explore,
+  type ExplorationActionContext,
   type ExplorationBudgets,
+  type ExplorationObservedActionContext,
   type ExplorationProgress,
   type ExplorationResult,
 } from "@tvdoctor/core";
@@ -20,10 +22,18 @@ import {
 } from "@tvdoctor/driver-android";
 import type {
   AndroidDeviceMetadata,
+  AndroidScreenshotFingerprint,
   AndroidStateSnapshot,
   AndroidUiNodeSnapshot,
 } from "@tvdoctor/driver-android";
-import type { ArtifactDescriptor, CoverageBudget } from "@tvdoctor/protocol";
+import {
+  NAVIGATION_KEYS,
+  REMOTE_KEYS,
+  type ArtifactDescriptor,
+  type CoverageBudget,
+  type RemoteKey,
+  type StateSnapshot,
+} from "@tvdoctor/protocol";
 import {
   buildTVDoctorReportV1,
   sanitiseEvidenceJson,
@@ -33,6 +43,18 @@ import {
 import { CLI_VERSION } from "./version.js";
 import { reserveAuditOutput } from "./node-audit.js";
 import { writeReportBundle } from "@tvdoctor/reporters";
+import {
+  decideAndroidActions,
+  type AndroidActionDecision,
+} from "./android-action-policy.js";
+import {
+  buildAndroidCoverageLedger,
+  hasIncompleteSafeCoverage,
+  serialiseAndroidCoverageLedger,
+  type AndroidCoverageEntryInput,
+  type AndroidCoverageEvidence,
+  type AndroidCoverageLedger,
+} from "./android-coverage-ledger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +79,43 @@ export const ANDROID_ACTION_SETTLING = {
     BACK: { maxSnapshots: 14, requiredStableSnapshots: 7 },
   },
 } as const;
+
+// Android TV apps that render through WebView can expose a short-lived loading
+// tree before their real Home surface is ready. Keep launch/reset observations
+// stable long enough to avoid treating that transient tree as the root state.
+export const ANDROID_LAUNCH_SETTLING = {
+  resetStableWindowMs: 2_000,
+  resetSettleTimeoutMs: 20_000,
+} as const;
+
+export const ANDROID_LAUNCH_WARMUP_MS = 8_000;
+
+const ANDROID_TRAVERSAL_STRATEGY = "adaptive" as const;
+const ANDROID_AUTOMATIC_ACTIONS = REMOTE_KEYS.filter((key) => key !== "TAB");
+
+function androidSnapshotBelongsToTarget(snapshot: AndroidStateSnapshot, packageName: string): boolean {
+  return snapshot.location.status === "available"
+    && snapshot.location.value.startsWith(`android://${packageName}/`);
+}
+
+export async function restoreAndroidTargetForFinalEvidence(
+  driver: Pick<AndroidTvDriver, "snapshot" | "reset">,
+  packageName: string,
+  waitForWarmup: () => Promise<void> = async () => {
+    await new Promise<void>((resolveWarmup) => setTimeout(resolveWarmup, ANDROID_LAUNCH_WARMUP_MS));
+  },
+): Promise<AndroidStateSnapshot> {
+  let snapshot = await driver.snapshot();
+  if (!androidSnapshotBelongsToTarget(snapshot, packageName)) {
+    await driver.reset("relaunch");
+    await waitForWarmup();
+    snapshot = await driver.snapshot();
+  }
+  if (!androidSnapshotBelongsToTarget(snapshot, packageName)) {
+    throw new Error(`Android scan ended outside ${packageName}.`);
+  }
+  return snapshot;
+}
 
 async function fileArtifact(
   outputRoot: string,
@@ -456,6 +515,337 @@ function flattenAndroidNodes(
   return result;
 }
 
+interface AndroidPolicyStateRecord {
+  readonly screenStateId: string;
+  readonly focusStateId: string;
+  readonly snapshot: AndroidStateSnapshot;
+  readonly decisions: readonly AndroidActionDecision[];
+  readonly evidence: AndroidCoverageEvidence;
+  readonly visualOutcomes: ReadonlyMap<RemoteKey, "changed" | "stable" | "unavailable">;
+  readonly reusedActionIds: ReadonlyMap<string, string>;
+}
+
+export interface AndroidTraversalPolicyRecorder {
+  readonly actionsForState: (context: ExplorationActionContext) => Promise<readonly RemoteKey[]>;
+  readonly onActionObserved: (context: ExplorationObservedActionContext) => Promise<void>;
+  readonly records: readonly AndroidPolicyStateRecord[];
+}
+
+const ANDROID_DPAD_DIRECTIONS = ["UP", "DOWN", "LEFT", "RIGHT"] as const;
+
+function observedPackage(snapshot: StateSnapshot): string | null {
+  if (snapshot.location.status !== "available") return null;
+  const match = /^(?:android|android-app):\/\/([^/]+)/u.exec(snapshot.location.value);
+  if (match?.[1] === undefined) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+function accessibilityIsSparse(snapshot: StateSnapshot): boolean {
+  if (snapshot.uiTree.status !== "available") return true;
+  const nodes = flattenAndroidNodes(snapshot.uiTree.value as readonly AndroidUiNodeSnapshot[]);
+  const observedFocusedId = snapshot.focusedElement.status === "available"
+    ? snapshot.focusedElement.value?.stableId
+    : undefined;
+  const focused = nodes.find((node) => node.focused === true)
+    ?? nodes.find((node) => observedFocusedId !== undefined && node.stableId === observedFocusedId);
+  return focused === undefined
+    || [focused.name, focused.text, focused.role]
+      .every((value) => value === null || value.trim().length === 0);
+}
+
+function adaptiveDirectionalKeys(
+  snapshot: AndroidStateSnapshot,
+): readonly (typeof ANDROID_DPAD_DIRECTIONS)[number][] {
+  if (snapshot.uiTree.status !== "available") return ANDROID_DPAD_DIRECTIONS;
+  const nodes = flattenAndroidNodes(snapshot.uiTree.value);
+  const observedFocusedId = snapshot.focusedElement.status === "available"
+    ? snapshot.focusedElement.value?.stableId
+    : undefined;
+  const focused = nodes.find((node) => node.focused === true)
+    ?? nodes.find((node) => observedFocusedId !== undefined && node.stableId === observedFocusedId);
+  if (focused?.bounds === null || focused?.bounds === undefined) return ANDROID_DPAD_DIRECTIONS;
+  const candidates = nodes.filter((node) => node !== focused
+    && node.visible !== false
+    && node.enabled !== false
+    && node.focusable === true
+    && node.bounds !== null);
+  if (candidates.length === 0) return ANDROID_DPAD_DIRECTIONS;
+  const focusedX = focused.bounds.x + focused.bounds.width / 2;
+  const focusedY = focused.bounds.y + focused.bounds.height / 2;
+  const available = new Set<(typeof ANDROID_DPAD_DIRECTIONS)[number]>();
+  for (const candidate of candidates) {
+    if (candidate.bounds === null) continue;
+    const candidateX = candidate.bounds.x + candidate.bounds.width / 2;
+    const candidateY = candidate.bounds.y + candidate.bounds.height / 2;
+    if (candidateY < focusedY) available.add("UP");
+    if (candidateY > focusedY) available.add("DOWN");
+    if (candidateX < focusedX) available.add("LEFT");
+    if (candidateX > focusedX) available.add("RIGHT");
+  }
+  return ANDROID_DPAD_DIRECTIONS.filter((key) => available.has(key));
+}
+
+function adaptiveHomeBoundaryClass(
+  snapshot: StateSnapshot,
+  screenStateId: string,
+  targetPackage: string,
+): string {
+  if (snapshot.location.status !== "available") return `screen:${screenStateId}`;
+  const location = snapshot.location.value.trim().split(/[?#]/u, 1)[0]?.replace(/\/+$/u, "") ?? "";
+  const match = /^(?:android|android-app):\/\/([^/]+)\/(.+)$/u.exec(location);
+  if (match?.[1] !== targetPackage || match[2]?.trim().length === 0) {
+    return `screen:${screenStateId}`;
+  }
+  return `activity:${location}`;
+}
+
+function adaptiveDecisionRank(key: RemoteKey): number {
+  if (key === "HOME") return 2;
+  if (!NAVIGATION_KEYS.includes(key as (typeof NAVIGATION_KEYS)[number])) return 1;
+  return 0;
+}
+
+export function createAndroidTraversalPolicyRecorder(input: {
+  readonly driver: Pick<AndroidTvDriver, "getActiveMediaSession" | "captureScreenshotFingerprint">;
+  readonly targetPackage: string;
+  readonly authorisedActionIds?: ReadonlySet<string>;
+}): AndroidTraversalPolicyRecorder {
+  const records: AndroidPolicyStateRecord[] = [];
+  const adaptiveHomeClasses = new Set<string>();
+  const adaptiveScreenBacks = new Set<string>();
+  const adaptiveMediaActions = new Map<RemoteKey, string>();
+  const visualBaselines = new Map<string, AndroidScreenshotFingerprint>();
+  const recordsByFocus = new Map<string, AndroidPolicyStateRecord>();
+  return {
+    records,
+    onActionObserved: async (context) => {
+      const baseline = visualBaselines.get(context.focusStateId);
+      const record = recordsByFocus.get(context.focusStateId);
+      if (baseline === undefined || record === undefined) return;
+      if (observedPackage(context.afterSnapshot) !== input.targetPackage) return;
+      const observed = await input.driver.captureScreenshotFingerprint();
+      const outcome = observed.status !== "available" || observed.value.visuallyBlank
+        ? "unavailable"
+        : observed.value.sha256 === baseline.sha256 ? "stable" : "changed";
+      (record.visualOutcomes as Map<RemoteKey, "changed" | "stable" | "unavailable">)
+        .set(context.key, outcome);
+    },
+    actionsForState: async (context) => {
+      const snapshot = context.snapshot as AndroidStateSnapshot;
+      const mediaSession = await input.driver.getActiveMediaSession(input.targetPackage);
+      let screenshot: AndroidCoverageEvidence["screenshot"] = "not-collected";
+      const sparseAccessibility = accessibilityIsSparse(snapshot);
+      let visualEvidenceUsable = true;
+      if (sparseAccessibility) {
+        const fingerprint = await input.driver.captureScreenshotFingerprint();
+        screenshot = fingerprint.status === "available" ? "available" : "unavailable";
+        visualEvidenceUsable = fingerprint.status === "available" && !fingerprint.value.visuallyBlank;
+        if (visualEvidenceUsable && fingerprint.status === "available") {
+          visualBaselines.set(context.focusStateId, fingerprint.value);
+        }
+      }
+      const policyDecisions = decideAndroidActions({
+        strategy: ANDROID_TRAVERSAL_STRATEGY,
+        snapshot,
+        screenStateId: context.screenStateId,
+        targetPackage: input.targetPackage,
+        mediaSession,
+        authorisedActionIds: input.authorisedActionIds ?? new Set(),
+      });
+      const evidenceDecisions: readonly AndroidActionDecision[] = sparseAccessibility && !visualEvidenceUsable
+        ? policyDecisions.map((decision) => ({
+            ...decision,
+            disposition: "inaccessible",
+            reasonCode: "semantic-and-visual-evidence-unavailable",
+            detail: "Accessibility semantics and a usable screenshot fingerprint were both unavailable.",
+          }))
+        : policyDecisions;
+      const adaptiveDirections = new Set(adaptiveDirectionalKeys(snapshot));
+      const reusedActionIds = new Map<string, string>();
+      const decisions = evidenceDecisions.filter((decision) => {
+        if (decision.disposition !== "automatic" && decision.disposition !== "target-boundary") {
+          return true;
+        }
+        if (decision.key === "HOME") {
+          const boundaryClass = adaptiveHomeBoundaryClass(
+            snapshot,
+            context.screenStateId,
+            input.targetPackage,
+          );
+          if (adaptiveHomeClasses.has(boundaryClass)) {
+            reusedActionIds.set(decision.actionId, boundaryClass.startsWith("activity:")
+              ? "equivalent-activity-home-probe"
+              : "equivalent-screen-home-probe");
+          } else {
+            adaptiveHomeClasses.add(boundaryClass);
+          }
+          return true;
+        }
+        if (ANDROID_DPAD_DIRECTIONS.includes(
+          decision.key as (typeof ANDROID_DPAD_DIRECTIONS)[number],
+        )) {
+          return adaptiveDirections.has(decision.key as (typeof ANDROID_DPAD_DIRECTIONS)[number]);
+        }
+        if (decision.key === "BACK") {
+          if (adaptiveScreenBacks.has(context.screenStateId)) {
+            reusedActionIds.set(decision.actionId, "equivalent-screen-back-probe");
+          } else {
+            adaptiveScreenBacks.add(context.screenStateId);
+          }
+          return true;
+        }
+        const mediaAction = !NAVIGATION_KEYS.includes(
+          decision.key as (typeof NAVIGATION_KEYS)[number],
+        );
+        if (!mediaAction) return true;
+        const coveredBy = adaptiveMediaActions.get(decision.key);
+        if (coveredBy !== undefined) {
+          reusedActionIds.set(decision.actionId, coveredBy);
+        } else {
+          adaptiveMediaActions.set(decision.key, decision.actionId);
+        }
+        return true;
+      }).map((decision, index) => ({ decision, index }))
+        .sort((left, right) => (
+          adaptiveDecisionRank(left.decision.key) - adaptiveDecisionRank(right.decision.key)
+          || left.index - right.index
+        ))
+        .map(({ decision }) => decision);
+      const record: AndroidPolicyStateRecord = {
+        screenStateId: context.screenStateId,
+        focusStateId: context.focusStateId,
+        snapshot,
+        decisions,
+        visualOutcomes: new Map(),
+        reusedActionIds,
+        evidence: {
+          accessibility: snapshot.uiTree.status === "available" ? "available" : "unavailable",
+          screenshot,
+          media: mediaSession.status === "available" ? "available" : "unavailable",
+        },
+      };
+      records.push(record);
+      recordsByFocus.set(context.focusStateId, record);
+      return decisions
+        .filter((decision) => decision.disposition === "automatic"
+          || decision.disposition === "target-boundary")
+        .filter((decision) => !reusedActionIds.has(decision.actionId))
+        .map((decision) => decision.key);
+    },
+  };
+}
+
+export function buildAndroidTraversalLedger(input: {
+  readonly targetPackage: string;
+  readonly records: readonly AndroidPolicyStateRecord[];
+  readonly result: ExplorationResult;
+  readonly finalTargetValidated: boolean;
+}): AndroidCoverageLedger {
+  const attempts = new Map(input.result.graph.actions.map((attempt) => [
+    `${attempt.fromFocusStateId}\u0000${attempt.key}`,
+    attempt,
+  ]));
+  const entries: AndroidCoverageEntryInput[] = [];
+  let unattemptedSafeActions = 0;
+  for (const record of input.records) {
+    for (const decision of record.decisions) {
+      const attempt = attempts.get(`${record.focusStateId}\u0000${decision.key}`);
+      const reusedBy = record.reusedActionIds.get(decision.actionId);
+      if (attempt === undefined && reusedBy !== undefined) {
+        entries.push({
+          entryId: `coverage:${record.focusStateId}:${decision.actionId}`,
+          actionId: decision.actionId,
+          screenStateId: record.screenStateId,
+          focusStateId: record.focusStateId,
+          action: decision.key,
+          disposition: "verified-state-reuse",
+          reasonCode: "equivalent-safe-action-reuse",
+          detail: reusedBy.startsWith("equivalent-screen-") || reusedBy.startsWith("equivalent-activity-")
+            ? `Equivalent Android state coverage reused: ${reusedBy}.`
+            : `The same target-owned media-session action was already exercised as ${reusedBy}.`,
+          sourcePackage: observedPackage(record.snapshot),
+          destinationPackage: observedPackage(record.snapshot),
+          evidence: record.evidence,
+        });
+        continue;
+      }
+      if (attempt === undefined
+        && (decision.disposition === "automatic" || decision.disposition === "target-boundary")) {
+        unattemptedSafeActions += 1;
+        continue;
+      }
+      if (attempt === undefined) {
+        entries.push({
+          entryId: `coverage:${record.focusStateId}:${decision.actionId}`,
+          actionId: decision.actionId,
+          screenStateId: record.screenStateId,
+          focusStateId: record.focusStateId,
+          action: decision.key,
+          disposition: decision.disposition === "operator-gated" ? "operator-gated" : "inaccessible",
+          reasonCode: decision.reasonCode,
+          detail: decision.detail,
+          sourcePackage: observedPackage(record.snapshot),
+          destinationPackage: null,
+          evidence: record.evidence,
+        });
+        continue;
+      }
+      const destinationPackage = observedPackage(attempt.afterSnapshot);
+      const boundary = decision.disposition === "target-boundary"
+        || destinationPackage !== null && destinationPackage !== input.targetPackage;
+      const failed = attempt.actionResult.outcome !== "applied"
+        || (boundary && !input.finalTargetValidated);
+      const visualOutcome = record.visualOutcomes.get(decision.key);
+      const visualUnavailable = visualOutcome === "unavailable"
+        && record.evidence.accessibility === "unavailable";
+      entries.push({
+        entryId: `coverage:${record.focusStateId}:${decision.actionId}`,
+        actionId: decision.actionId,
+        screenStateId: record.screenStateId,
+        focusStateId: record.focusStateId,
+        action: decision.key,
+        disposition: failed
+          ? "failed"
+          : visualUnavailable
+            ? "inaccessible"
+            : boundary ? "boundary-restored" : "exercised",
+        reasonCode: failed
+          ? boundary && !input.finalTargetValidated
+            ? "boundary-restoration-failed"
+            : `action-${attempt.actionResult.outcome}`
+          : visualUnavailable
+            ? "post-action-visual-evidence-unavailable"
+            : visualOutcome === undefined ? decision.reasonCode : `${decision.reasonCode}-visual-${visualOutcome}`,
+        detail: failed
+          ? boundary && !input.finalTargetValidated
+            ? "The target package could not be re-established after boundary traversal."
+            : attempt.actionResult.message ?? "The action did not produce conclusive coverage."
+          : visualUnavailable
+            ? "The sparse target state was visible before input, but post-action visual evidence was unavailable."
+            : visualOutcome === undefined
+              ? decision.detail
+              : `${decision.detail} Post-action visual fingerprint was ${visualOutcome}.`,
+        sourcePackage: observedPackage(attempt.beforeSnapshot),
+        destinationPackage,
+        evidence: record.evidence,
+      });
+    }
+  }
+  return buildAndroidCoverageLedger({
+    strategy: ANDROID_TRAVERSAL_STRATEGY,
+    targetPackage: input.targetPackage,
+    budgets: input.result.budgets,
+    entries,
+    remainingSafeFrontier: unattemptedSafeActions
+      + (input.result.termination.remainingCandidateActions ?? 0)
+      + (input.result.statistics.deferredStates ?? 0),
+  });
+}
+
 export function classifyAndroidStartup(
   snapshot: AndroidStateSnapshot,
 ): AndroidSetupDetection | null {
@@ -467,7 +857,11 @@ export function classifyAndroidStartup(
     .replace(/\s+/gu, " ")
     .toLowerCase();
   const packages = [...new Set(nodes.map((node) => node.packageName).filter((value): value is string => value !== null))];
+  const locationOwner = snapshot.location.status === "available"
+    ? /^android:\/\/([^/]+)/u.exec(snapshot.location.value)?.[1] ?? null
+    : null;
   const isPermissionUi = packages.some((value) => /(?:permissioncontroller|packageinstaller)/iu.test(value))
+    || (locationOwner !== null && /(?:permissioncontroller|packageinstaller)/iu.test(locationOwner))
     || /\b(?:allow .* to (?:access|take pictures|record audio)|runtime permission|system permission)\b/u.test(text);
   let kind: string | null = null;
   if (isPermissionUi) kind = "system permission";
@@ -487,9 +881,10 @@ export function classifyAndroidStartup(
     .slice(0, 5);
   const headingNode = nodes.find((node) => node.visible !== false
     && (node.name ?? node.text ?? "").trim().length > 0);
+  const fallbackHeading = kind.replace(/^./u, (character) => character.toUpperCase());
   return {
     kind,
-    heading: (headingNode?.name ?? headingNode?.text ?? kind).replace(/\s+/gu, " ").trim(),
+    heading: (headingNode?.name ?? headingNode?.text ?? fallbackHeading).replace(/\s+/gu, " ").trim(),
     controls,
   };
 }
@@ -499,26 +894,30 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
   const startedAt = new Date();
   let latestFindings = 0;
   let latestProgress: ExplorationProgress | null = null;
-  let exploration: ExplorationResult | null = null;
+  let latestActivityLabel: string | null = null;
   let progressTimer: ReturnType<typeof setInterval> | undefined;
   let selectedPackage: string | null = null;
   const driver = new AndroidTvDriver({
     ...(options.adbPath === undefined ? {} : { adbPath: options.adbPath }),
     serial: options.serial,
+    ...ANDROID_LAUNCH_SETTLING,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   try {
     const apk = await inspectApk(options.apkPath);
     if (apk.packageName === null) throw new Error("TVDoctor could not determine the APK package name.");
-    selectedPackage = apk.packageName;
+    const packageName = apk.packageName;
+    selectedPackage = packageName;
     const component = apk.leanbackActivity ?? apk.launchableActivities.at(0) ?? null;
     await driver.getDeviceMetadata(true);
     await driver.install(options.apkPath);
     await driver.launch({
-      id: apk.packageName,
+      id: packageName,
       ...(component === null ? {} : { launchUri: component }),
     });
+    await new Promise<void>((resolveWarmup) => setTimeout(resolveWarmup, ANDROID_LAUNCH_WARMUP_MS));
     const initial = await driver.snapshot();
+    latestActivityLabel = initial.location.status === "available" ? initial.location.value : null;
     if (initial.uiTree.status !== "available") throw new Error("Android observer UI state was unavailable after launch.");
     let setup = classifyAndroidStartup(initial);
     if (setup !== null && options.onSetupScreen !== undefined) {
@@ -535,7 +934,15 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
           ],
         };
       }
-      await driver.press(decision === "select-highlighted" ? "SELECT" : "BACK");
+      const setupKey = decision === "select-highlighted" ? "SELECT" : "BACK";
+      const setupIsExternal = initial.location.status === "available"
+        && !initial.location.value.startsWith(`android://${packageName}/`);
+      const setupAction = setupIsExternal
+        ? await driver.pressSystemSetup(setupKey)
+        : await driver.press(setupKey);
+      if (setupAction.outcome !== "applied") {
+        throw new Error(`TVDoctor could not safely operate the ${setup.kind} screen: ${setupAction.message ?? setupAction.outcome}.`);
+      }
       const observed = await driver.snapshot();
       setup = classifyAndroidStartup(observed);
       if (setup !== null) throw new Error(`TVDoctor could not safely clear the ${setup.kind} screen.`);
@@ -569,22 +976,32 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       // A screenshot is supplementary evidence and must not invalidate navigation results.
     }
 
+    const policyRecorder = createAndroidTraversalPolicyRecorder({
+      driver,
+      targetPackage: packageName,
+    });
     const explorationPromise = explore(driver, {
       profile: options.mode,
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
+      actions: ANDROID_AUTOMATIC_ACTIONS,
       settling: ANDROID_ACTION_SETTLING,
+      restorationMode: "verified-local",
+      replaySettling: { strategy: "driver" },
+      actionsForState: policyRecorder.actionsForState,
+      onActionObserved: policyRecorder.onActionObserved,
       restoreInitialState: async () => {
         await driver.reset("relaunch");
+        await new Promise<void>((resolveWarmup) => setTimeout(resolveWarmup, ANDROID_LAUNCH_WARMUP_MS));
       },
-      shouldExpand: (snapshot) => snapshot.location.status === "available"
-        && snapshot.location.value.startsWith(`android://${apk.packageName}/`),
+      shouldExpand: (snapshot) => {
+        latestActivityLabel = snapshot.location.status === "available" ? snapshot.location.value : null;
+        return snapshot.location.status === "available"
+          && snapshot.location.value.startsWith(`android://${packageName}/`);
+      },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       onProgress: (progress) => {
         latestProgress = progress;
       },
-    }).then((result) => {
-      exploration = result;
-      return result;
     });
     if (options.onProgress !== undefined) {
       progressTimer = setInterval(() => {
@@ -594,7 +1011,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
           states: latestProgress?.focusStates ?? 0,
           actions: latestProgress?.physicalActions ?? 0,
           findings: latestFindings,
-          currentActivityLabel: exploration?.graph.screens.states.at(-1)?.fingerprint.value ?? null,
+          currentActivityLabel: latestActivityLabel,
         });
       }, 500);
     }
@@ -602,16 +1019,18 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     const findings = diagnoseNavigation(result).findings;
     latestFindings = findings.length;
     const issues = findings.map((finding) => finding.issue);
-    const completedAt = new Date();
-    const complete = result.termination.complete;
-    const exhausted: CoverageBudget[] = [];
-    if (!complete) {
-      if (result.termination.reason === "max-actions") exhausted.push("actions");
-      if (result.termination.reason === "max-states") exhausted.push("states");
-      if (result.termination.reason === "max-depth") exhausted.push("depth");
-      if (result.termination.reason === "max-duration") exhausted.push("duration");
-    }
-    try {
+    const validateFinalTarget = async (): Promise<string | null> => {
+      try {
+        await restoreAndroidTargetForFinalEvidence(driver, packageName);
+        return null;
+      } catch (error) {
+        return (error instanceof Error ? error.message : String(error))
+          .replace(/\s+/gu, " ")
+          .slice(0, 500);
+      }
+    };
+    let finalTargetValidationError = await validateFinalTarget();
+    if (finalTargetValidationError === null) try {
       const afterScreenshotPath = join(outputRoot, "after-screenshot.png");
       await driver.captureScreenshot(afterScreenshotPath);
       runArtifacts.push(await fileArtifact(
@@ -641,9 +1060,57 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     } catch {
       // Log capture is supplementary; the scan result remains authoritative.
     }
+    if (finalTargetValidationError === null) {
+      finalTargetValidationError = await validateFinalTarget();
+    }
+    let coverageLedger: AndroidCoverageLedger | null = null;
+    let coverageLedgerFailure: string | null = null;
+    try {
+      coverageLedger = buildAndroidTraversalLedger({
+        targetPackage: packageName,
+        records: policyRecorder.records,
+        result,
+        finalTargetValidated: finalTargetValidationError === null,
+      });
+      const ledgerPath = join(outputRoot, "android-coverage-ledger.json");
+      await writeFile(ledgerPath, `${serialiseAndroidCoverageLedger(coverageLedger)}\n`);
+      runArtifacts.push(await fileArtifact(
+        outputRoot,
+        ledgerPath,
+        "run:android-coverage-ledger",
+        "report",
+        "application/json",
+      ));
+    } catch (error) {
+      coverageLedgerFailure = (error instanceof Error ? error.message : String(error))
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 500) || "Android coverage ledger persistence failed.";
+      runArtifacts.push({
+        id: "run:android-coverage-ledger",
+        kind: "report",
+        status: "failed",
+        reason: coverageLedgerFailure,
+      });
+    }
+    const completedAt = new Date();
+    const complete = result.termination.complete
+      && finalTargetValidationError === null
+      && coverageLedger !== null
+      && !hasIncompleteSafeCoverage(coverageLedger);
+    const exhausted: CoverageBudget[] = [];
+    if (!complete) {
+      if (result.termination.reason === "max-actions") exhausted.push("actions");
+      if (result.termination.reason === "max-states") exhausted.push("states");
+      if (result.termination.reason === "max-depth") exhausted.push("depth");
+      if (result.termination.reason === "max-duration") exhausted.push("duration");
+    }
     try {
       const explorationEvidence = sanitiseEvidenceJson(JSON.parse(JSON.stringify({
         termination: result.termination,
+        finalTargetValidation: finalTargetValidationError === null
+          ? { status: "verified" }
+          : { status: "failed", detail: finalTargetValidationError },
         budgets: result.budgets,
         actionOrder: result.actionOrder,
         statistics: result.statistics,
@@ -754,7 +1221,13 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       reportPath: bundle.reportJson.absolutePath,
       details: complete
         ? ["All reachable navigation work was exhausted."]
-        : result.termination.reason === "interrupted"
+        : finalTargetValidationError !== null
+          ? [`Final target-window validation failed: ${finalTargetValidationError}`]
+          : coverageLedger !== null && hasIncompleteSafeCoverage(coverageLedger)
+            ? ["The Android traversal retained incomplete safe coverage; see android-coverage-ledger.json."]
+            : coverageLedgerFailure !== null
+              ? [`Android coverage ledger failed: ${coverageLedgerFailure}`]
+          : result.termination.reason === "interrupted"
           ? ["The scan was interrupted; completed coverage was retained in this partial report."]
         : [
           `Safety ceiling reached: ${result.termination.reason}. Unexplored work remained.`,

@@ -64,11 +64,15 @@ The core keeps two identities separate:
 - a `ScreenState` describes structural UI identity without focus;
 - a `FocusState` describes the focused target inside a screen.
 
-Every retained state has a reset-relative key sequence. Before expanding a
-state, the explorer restores the same root and replays that sequence, preventing
-sibling actions from inheriting hidden side effects. Actions, retained states,
-depth, duration, and driver calls are bounded. Quick, standard, and deep profiles
-are explicit resource envelopes rather than accuracy labels.
+Every retained state has a reset-relative key sequence. Root-relative restoration
+is the default and remains the web strategy, preventing sibling actions from
+inheriting hidden side effects. Expensive deterministic device drivers may opt
+into verified-local restoration: the explorer may reuse an exact live canonical
+state or traverse the shortest previously verified exact-state path. Every local
+edge is checkpointed again; any mismatch discards local trust and falls back once
+to the normal root reset/replay path. Actions, retained states, depth, duration,
+and driver calls are bounded. Quick, standard, and deep profiles are explicit
+resource envelopes rather than accuracy labels.
 
 Repeated carousel cells are compressed only when their sibling structure,
 generated identifier pattern, role, interaction state, and layout provide a

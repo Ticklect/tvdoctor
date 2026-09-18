@@ -2,11 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   AndroidTvDriver,
+  MAX_MEDIA_SESSION_DUMP_BYTES,
+  MAX_SCREENSHOT_PNG_BYTES,
+  type AdbCommandOptions,
   type AdbCommandExecutor,
   type AdbCommandResult,
+  type AndroidObserverAsset,
   type AndroidObserverConnection,
   type ObserverRequestPayload,
   type ObserverResponse,
@@ -15,6 +20,28 @@ import {
 const TOKEN = "a".repeat(64);
 const OBSERVER_APK = Buffer.from("packaged-tvdoctor-observer");
 const OBSERVER_SHA256 = createHash("sha256").update(OBSERVER_APK).digest("hex");
+
+function screenshotPng(red: number, green: number, blue: number): Buffer {
+  const uint32 = (value: number): Buffer => {
+    const result = Buffer.alloc(4);
+    result.writeUInt32BE(value);
+    return result;
+  };
+  const chunk = (type: string, body: Uint8Array): Buffer => Buffer.concat([
+    uint32(body.byteLength), Buffer.from(type, "ascii"), Buffer.from(body), Buffer.alloc(4),
+  ]);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(Buffer.from([0, red, green, blue]))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 const NODE = {
   stableId: "org.example.tv:id/play",
   role: "button",
@@ -41,6 +68,7 @@ function state(full: boolean, sequence = 1) {
     sequence,
     timestampMs: Date.now(),
     packageName: "org.example.tv",
+    targetWindowActive: true,
     windowClassName: "org.example.tv.MainActivity",
     windowId: 1,
     focused: { stableId: NODE.stableId, role: NODE.role, name: NODE.name, bounds: NODE.bounds },
@@ -55,24 +83,40 @@ function state(full: boolean, sequence = 1) {
 
 class FakeExecutor implements AdbCommandExecutor {
   readonly calls: string[][] = [];
+  readonly options: (AdbCommandOptions | undefined)[] = [];
   enabled = true;
   focusAfterLaunchAttempt = 1;
+  focusedPackageOverride: string | null = null;
   launchAttempts = 0;
   deviceState = "device";
   bootCompleted = "1";
   installedApk = OBSERVER_APK;
   appPid = "321";
+  mediaSessionResult: AdbCommandResult | null = null;
+  screenshotResult: AdbCommandResult | null = null;
+  focusedPackageAfterScreenshot: string | null = null;
   logcat = [
     "1788537600.100 321 7 I Target: target message",
     "1788537600.200 999 8 W Other: unrelated message",
   ].join("\n");
 
-  async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
+  async execute(arguments_: readonly string[], options?: AdbCommandOptions): Promise<AdbCommandResult> {
     const call = [...arguments_];
     this.calls.push(call);
+    this.options.push(options);
     const joined = call.join(" ");
     if (joined.includes("am start -W") && joined.includes("org.example.tv/.MainActivity")) {
       this.launchAttempts += 1;
+    }
+    if (joined.includes("dumpsys media_session") && this.mediaSessionResult !== null) {
+      return this.mediaSessionResult;
+    }
+    if (joined.includes("exec-out screencap -p") && this.screenshotResult !== null) {
+      const result = this.screenshotResult;
+      if (this.focusedPackageAfterScreenshot !== null) {
+        this.focusedPackageOverride = this.focusedPackageAfterScreenshot;
+      }
+      return result;
     }
     let stdout: string | Uint8Array = "";
     if (joined.includes("install -r D:/packaged/tvdoctor-observer.apk")) stdout = "Success";
@@ -99,10 +143,11 @@ class FakeExecutor implements AdbCommandExecutor {
     else if (joined.includes("ro.product.cpu.abilist")) stdout = "x86_64";
     else if (joined.includes("wm size")) stdout = "Physical size: 1920x1080";
     else if (joined.includes("dumpsys window")) {
-      const focusedPackage = this.launchAttempts >= this.focusAfterLaunchAttempt
-        ? "org.example.tv/org.example.tv.MainActivity"
-        : "com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity";
-      stdout = `mCurrentFocus=Window{1234567 u0 ${focusedPackage}}`;
+      const packageName = this.focusedPackageOverride
+        ?? (this.launchAttempts >= this.focusAfterLaunchAttempt
+          ? "org.example.tv"
+          : "com.google.android.tvlauncher");
+      stdout = `mCurrentFocus=Window{1234567 u0 ${packageName}/${packageName}.MainActivity}`;
     }
     else if (joined.includes("pidof -s org.example.tv")) stdout = this.appPid;
     else if (joined.includes("dumpsys package org.example.tv")) stdout = "versionName=1.2.3 versionCode=7";
@@ -224,24 +269,137 @@ class CrossPackageObserver extends FakeObserver {
   override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
     const result = await super.request(request);
     return this.escape && result.state !== undefined
-      ? { ...result, state: { ...result.state, packageName: "org.other.private" } }
+      ? {
+          ...result,
+          state: {
+            ...result.state,
+            packageName: "org.other.private",
+            windowClassName: "org.other.private.ExternalActivity",
+            windowId: 8,
+            focused: null,
+            nodes: [],
+            nodeCount: 0,
+            maxDepth: 0,
+            structureFingerprint: "c".repeat(64),
+            stateFingerprint: "d".repeat(64),
+          },
+        }
       : result;
   }
 }
 
-function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTvDriver {
+class LeakyCrossPackageObserver extends CrossPackageObserver {
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    const result = await super.request(request);
+    return this.escape && result.state !== undefined
+      ? { ...result, state: { ...result.state, nodes: [NODE], nodeCount: 1 } }
+      : result;
+  }
+}
+
+class PermissionBoundaryObserver extends FakeObserver {
+  readonly #executor: FakeExecutor;
+  escaped = false;
+
+  constructor(executor: FakeExecutor) {
+    super();
+    this.#executor = executor;
+  }
+
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    const result = await super.request(request);
+    if (request.type === "resync") {
+      this.escaped = true;
+      this.#executor.focusedPackageOverride = "com.google.android.permissioncontroller";
+    }
+    if (!this.escaped || result.state === undefined) return result;
+    return {
+      ...result,
+      state: {
+        ...result.state,
+        packageName: "com.google.android.permissioncontroller",
+        windowClassName: "com.android.permissioncontroller.permission.ui.GrantPermissionsActivity",
+        windowId: 9,
+        focused: null,
+        nodes: [],
+        nodeCount: 0,
+        maxDepth: 0,
+        structureFingerprint: "e".repeat(64),
+        stateFingerprint: "f".repeat(64),
+      },
+    };
+  }
+}
+
+class ForceStopTimeoutExecutor extends FakeExecutor {
+  stoppedAfterTimeout = true;
+
+  override async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
+    const joined = arguments_.join(" ");
+    if (joined.includes("shell am force-stop org.example.tv")) {
+      this.calls.push([...arguments_]);
+      if (this.stoppedAfterTimeout) this.appPid = "";
+      throw new Error("ADB command timed out after 15000 ms");
+    }
+    return await super.execute(arguments_);
+  }
+}
+
+class ObserverSignatureMismatchExecutor extends FakeExecutor {
+  installAttempts = 0;
+
+  override async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
+    const joined = arguments_.join(" ");
+    if (joined.includes("install -r D:/packaged/tvdoctor-observer.apk")) {
+      this.installAttempts += 1;
+      if (this.installAttempts === 1) {
+        this.calls.push([...arguments_]);
+        throw new Error(
+          "ADB command failed (1): -s emulator-5554 install -r D:/packaged/tvdoctor-observer.apk — adb: failed to install D:/packaged/tvdoctor-observer.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package org.tvdoctor.observer signatures do not match newer version; ignoring!]",
+        );
+      }
+    }
+    return await super.execute(arguments_);
+  }
+}
+
+class ObserverInstallFailureExecutor extends FakeExecutor {
+  readonly apkPath: string;
+  readonly failure: string;
+
+  constructor(apkPath: string, failure: string) {
+    super();
+    this.apkPath = apkPath;
+    this.failure = failure;
+  }
+
+  override async execute(arguments_: readonly string[]): Promise<AdbCommandResult> {
+    const joined = arguments_.join(" ");
+    if (joined.includes(`install -r ${this.apkPath}`)) {
+      this.calls.push([...arguments_]);
+      throw new Error(this.failure);
+    }
+    return await super.execute(arguments_);
+  }
+}
+
+function createDriver(
+  executor: FakeExecutor,
+  observer: FakeObserver,
+  observerAsset: AndroidObserverAsset = {
+    apkPath: "D:/packaged/tvdoctor-observer.apk",
+    packageName: "org.tvdoctor.observer",
+    versionName: "0.1.0",
+    protocolVersion: 2,
+    sha256: OBSERVER_SHA256,
+    certificateSha256: "d".repeat(64),
+  },
+): AndroidTvDriver {
   return new AndroidTvDriver({
     serial: "emulator-5554",
     executor,
     tokenFactory: () => TOKEN,
-    observerAsset: {
-      apkPath: "D:/packaged/tvdoctor-observer.apk",
-      packageName: "org.tvdoctor.observer",
-      versionName: "0.1.0",
-      protocolVersion: 2,
-      sha256: OBSERVER_SHA256,
-      certificateSha256: "d".repeat(64),
-    },
+    observerAsset,
     createObserverClient: async () => observer,
     settleTimeoutMs: 50,
     quietWindowMs: 5,
@@ -252,13 +410,102 @@ function createDriver(executor: FakeExecutor, observer: FakeObserver): AndroidTv
 }
 
 describe("Android V2 observer-backed driver", () => {
-  it("rejects observer snapshots outside the launched package on the host boundary", async () => {
+  it("records a redacted cross-package boundary without exposing foreign UI content", async () => {
     const observer = new CrossPackageObserver();
     const driver = createDriver(new FakeExecutor(), observer);
     await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
     observer.escape = true;
-    await expect(driver.snapshot()).rejects.toThrow(/outside.*target/u);
-    await expect(driver.press("RIGHT")).resolves.toMatchObject({ outcome: "inconclusive" });
+    await expect(driver.snapshot()).resolves.toMatchObject({
+      location: { status: "available", value: "android://org.other.private/org.other.private.ExternalActivity" },
+      focusedElement: { status: "available", value: null },
+      uiTree: { status: "available", value: [] },
+    });
+    await driver.close();
+  });
+
+  it("rejects a cross-package observer state that leaks foreign UI content", async () => {
+    const observer = new LeakyCrossPackageObserver();
+    const driver = createDriver(new FakeExecutor(), observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.escape = true;
+    await expect(driver.snapshot()).rejects.toThrow(/outside.*target.*content|foreign.*content/iu);
+    await driver.close();
+  });
+
+  it("refuses to send a remote key when the target is no longer the focused window", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    executor.focusedPackageOverride = "com.google.android.tvlauncher";
+
+    await expect(driver.press("RIGHT")).resolves.toMatchObject({ outcome: "failed" });
+    expect(executor.calls.some((call) => call.join(" ").includes("input keyevent KEYCODE_DPAD_RIGHT"))).toBe(false);
+    await driver.close();
+  });
+
+  it("records an action that crosses the target boundary after input", async () => {
+    const executor = new FakeExecutor();
+    const observer = new CrossPackageObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.escape = true;
+
+    await expect(driver.press("RIGHT")).resolves.toMatchObject({
+      outcome: "applied",
+      postActionSnapshot: {
+        location: { status: "available", value: "android://org.other.private/org.other.private.ExternalActivity" },
+        uiTree: { status: "available", value: [] },
+      },
+    });
+    await driver.close();
+  });
+
+  it("refuses to capture report evidence while another package owns the focused window", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    executor.focusedPackageOverride = "com.google.android.tvlauncher";
+
+    await expect(driver.captureScreenshot("artifacts/external-window.png")).rejects.toThrow(/foreground|focused window/iu);
+    expect(executor.calls.some((call) => call.join(" ").includes("exec-out screencap -p"))).toBe(false);
+    await driver.close();
+  });
+
+  it("surfaces a redacted system-permission boundary during launch for startup policy", async () => {
+    const executor = new FakeExecutor();
+    const observer = new PermissionBoundaryObserver(executor);
+    const driver = createDriver(executor, observer);
+
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" })).resolves.toBeUndefined();
+    await expect(driver.snapshot()).resolves.toMatchObject({
+      location: {
+        status: "available",
+        value: "android://com.google.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity",
+      },
+      uiTree: { status: "available", value: [] },
+    });
+    await driver.close();
+  });
+
+  it("allows only the explicit setup-input path to operate on a permission-controller window", async () => {
+    const executor = new FakeExecutor();
+    const observer = new PermissionBoundaryObserver(executor);
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.pressSystemSetup("SELECT")).resolves.toMatchObject({ outcome: "applied" });
+    expect(executor.calls.some((call) => call.join(" ").includes("input keyevent KEYCODE_DPAD_CENTER"))).toBe(true);
+    await driver.close();
+  });
+
+  it("refuses the setup-input path when the foreground window is not a recognised setup package", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    executor.focusedPackageOverride = "com.evil.permissioncontroller.fake";
+
+    await expect(driver.pressSystemSetup("BACK")).resolves.toMatchObject({ outcome: "failed" });
+    expect(executor.calls.some((call) => call.join(" ").includes("input keyevent KEYCODE_BACK"))).toBe(false);
     await driver.close();
   });
   it("reinstalls and byte-verifies the exact packaged observer before provisioning", async () => {
@@ -271,6 +518,66 @@ describe("Android V2 observer-backed driver", () => {
     expect(commands).toContain("-s emulator-5554 install -r D:/packaged/tvdoctor-observer.apk");
     expect(commands).toContain("-s emulator-5554 shell pm path org.tvdoctor.observer");
     expect(commands).toContain("-s emulator-5554 exec-out cat /data/app/org.tvdoctor.observer/base.apk");
+    await driver.close();
+  });
+
+  it("recovers a signature-incompatible update only for the packaged TVDoctor observer", async () => {
+    const executor = new ObserverSignatureMismatchExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const commands = executor.calls.map((call) => call.join(" "));
+    const replaceInstall = "-s emulator-5554 install -r D:/packaged/tvdoctor-observer.apk";
+    const cleanInstall = "-s emulator-5554 install D:/packaged/tvdoctor-observer.apk";
+    const uninstall = "-s emulator-5554 uninstall org.tvdoctor.observer";
+    const installedPath = "-s emulator-5554 shell pm path org.tvdoctor.observer";
+    const installedBytes = "-s emulator-5554 exec-out cat /data/app/org.tvdoctor.observer/base.apk";
+    const provision = `-s emulator-5554 shell content call --uri content://org.tvdoctor.observer.provisioning --method provision --extra token:s:${TOKEN} --extra target_package:s:org.example.tv`;
+    expect(commands.filter((command) => command === replaceInstall)).toHaveLength(1);
+    expect(commands.filter((command) => command === cleanInstall)).toHaveLength(1);
+    expect(commands.filter((command) => command === uninstall)).toHaveLength(1);
+    expect(commands.indexOf(replaceInstall)).toBeLessThan(commands.indexOf(uninstall));
+    expect(commands.indexOf(cleanInstall)).toBeGreaterThan(commands.indexOf(uninstall));
+    expect(commands.indexOf(installedPath)).toBeGreaterThan(commands.indexOf(cleanInstall));
+    expect(commands.indexOf(installedBytes)).toBeGreaterThan(commands.indexOf(installedPath));
+    expect(commands.indexOf(provision)).toBeGreaterThan(commands.indexOf(installedBytes));
+    expect(commands.some((command) => command.includes("uninstall org.example.tv"))).toBe(false);
+    await driver.close();
+  });
+
+  it("does not uninstall packages for unrelated observer install failures", async () => {
+    const apkPath = "D:/packaged/other-observer.apk";
+    const executor = new ObserverInstallFailureExecutor(
+      apkPath,
+      "ADB command failed (1): INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package org.example.other signatures do not match newer version",
+    );
+    const driver = createDriver(executor, new FakeObserver(), {
+      apkPath,
+      packageName: "org.example.other",
+      versionName: "0.1.0",
+      protocolVersion: 2,
+      sha256: OBSERVER_SHA256,
+      certificateSha256: "d".repeat(64),
+    });
+
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" }))
+      .rejects.toThrow(/INSTALL_FAILED_UPDATE_INCOMPATIBLE/u);
+    expect(executor.calls.some((call) => call.includes("uninstall"))).toBe(false);
+    await driver.close();
+  });
+
+  it("does not uninstall the TVDoctor observer for arbitrary install failures", async () => {
+    const apkPath = "D:/packaged/tvdoctor-observer.apk";
+    const executor = new ObserverInstallFailureExecutor(
+      apkPath,
+      "ADB command failed (1): INSTALL_FAILED_INVALID_APK: Package is invalid",
+    );
+    const driver = createDriver(executor, new FakeObserver());
+
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" }))
+      .rejects.toThrow(/INSTALL_FAILED_INVALID_APK/u);
+    expect(executor.calls.some((call) => call.includes("uninstall"))).toBe(false);
     await driver.close();
   });
 
@@ -342,6 +649,126 @@ describe("Android V2 observer-backed driver", () => {
     expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_HOME");
     expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_PLAY_PAUSE");
     expect(commands).toContain("-s emulator-5554 shell input keyevent KEYCODE_MEDIA_FAST_FORWARD");
+    await driver.close();
+  });
+
+  it("captures a bounded screenshot fingerprint only while the target remains foreground", async () => {
+    const executor = new FakeExecutor();
+    executor.screenshotResult = {
+      stdout: screenshotPng(255, 0, 0),
+      stderr: "",
+      exitCode: 0,
+    };
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.captureScreenshotFingerprint()).resolves.toEqual({
+      status: "available",
+      value: expect.objectContaining({
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        width: 1,
+        height: 1,
+        luminanceGrid: expect.any(Array),
+        visuallyBlank: false,
+      }),
+    });
+    const callIndex = executor.calls.findIndex((call) => call.join(" ").includes("exec-out screencap -p"));
+    expect(executor.calls[callIndex]).toEqual(["-s", "emulator-5554", "exec-out", "screencap", "-p"]);
+    expect(executor.options[callIndex]).toMatchObject({
+      timeoutMs: 15_000,
+      maxOutputBytes: MAX_SCREENSHOT_PNG_BYTES,
+    });
+    await driver.close();
+  });
+
+  it("returns unavailable without fingerprinting when a foreign window owns or takes foreground", async () => {
+    const executor = new FakeExecutor();
+    executor.screenshotResult = {
+      stdout: screenshotPng(255, 0, 0),
+      stderr: "private screenshot detail",
+      exitCode: 0,
+    };
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    executor.focusedPackageOverride = "org.other.private";
+    const foreignBeforeCapture = await driver.captureScreenshotFingerprint();
+    expect(foreignBeforeCapture).toEqual({
+      status: "unavailable",
+      reason: "Android screenshot fingerprint capture failed for the target foreground window.",
+    });
+    expect(executor.calls.some((call) => call.join(" ").includes("exec-out screencap -p"))).toBe(false);
+
+    executor.focusedPackageOverride = "org.example.tv";
+    executor.focusedPackageAfterScreenshot = "org.other.private";
+    const foreignAfterCapture = await driver.captureScreenshotFingerprint();
+    expect(foreignAfterCapture).toEqual({
+      status: "unavailable",
+      reason: "Android screenshot fingerprint capture failed for the target foreground window.",
+    });
+    expect(executor.calls.filter((call) => call.join(" ").includes("exec-out screencap -p"))).toHaveLength(1);
+    expect(JSON.stringify(foreignAfterCapture)).not.toContain("private screenshot detail");
+    await driver.close();
+  });
+
+  it("observes only the exact launched target media session through a bounded ADB call", async () => {
+    const executor = new FakeExecutor();
+    executor.mediaSessionResult = {
+      stdout: Buffer.from(`
+  MediaSessionRecord (pid=111, package=org.example.tv.beta, tag=Other)
+    active=true
+    state=PlaybackState {state=3}
+  MediaSessionRecord (pid=222, package=org.example.tv, tag=Player)
+    active=true
+    state=PlaybackState {state=3, position=42}
+`),
+      stderr: "",
+      exitCode: 0,
+    };
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.getActiveMediaSession("org.example.tv")).resolves.toEqual({
+      status: "available",
+      value: { packageName: "org.example.tv", active: true, playbackState: "playing" },
+    });
+    const callIndex = executor.calls.findIndex((call) => call.join(" ").includes("dumpsys media_session"));
+    expect(executor.calls[callIndex]).toEqual(["-s", "emulator-5554", "shell", "dumpsys", "media_session"]);
+    expect(executor.options[callIndex]).toMatchObject({
+      timeoutMs: 15_000,
+      maxOutputBytes: MAX_MEDIA_SESSION_DUMP_BYTES,
+    });
+    await driver.close();
+  });
+
+  it("refuses media-session reads for any package other than the exact launched target", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.getActiveMediaSession("org.example.tv.beta")).resolves.toEqual({
+      status: "unavailable",
+      reason: "Android media-session target must exactly match org.example.tv.",
+    });
+    expect(executor.calls.some((call) => call.join(" ").includes("dumpsys media_session"))).toBe(false);
+    await driver.close();
+  });
+
+  it("propagates per-operation cancellation before screenshot or media-session ADB reads", async () => {
+    const executor = new FakeExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    const controller = new AbortController();
+    controller.abort(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+
+    await expect(driver.captureScreenshotFingerprint({ signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await expect(driver.getActiveMediaSession("org.example.tv", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(executor.calls.some((call) => call.join(" ").includes("exec-out screencap -p"))).toBe(false);
+    expect(executor.calls.some((call) => call.join(" ").includes("dumpsys media_session"))).toBe(false);
     await driver.close();
   });
 
@@ -492,6 +919,38 @@ describe("Android V2 observer-backed driver", () => {
     await driver.close();
   });
 
+  it("serializes screenshot fingerprints and media-session reads behind active driver operations", async () => {
+    const executor = new FakeExecutor();
+    executor.screenshotResult = { stdout: screenshotPng(10, 20, 30), stderr: "", exitCode: 0 };
+    executor.mediaSessionResult = {
+      stdout: Buffer.from("MediaSessionRecord (package=org.example.tv)\n  active=true\n  state=PlaybackState {state=3}"),
+      stderr: "",
+      exitCode: 0,
+    };
+    const observer = new GatedObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+    observer.gateType = "current_state";
+    const gateStarted = new Promise<void>((resolve) => { observer.gateStarted = resolve; });
+
+    const snapshot = driver.snapshot();
+    await gateStarted;
+    const fingerprint = driver.captureScreenshotFingerprint();
+    const mediaSession = driver.getActiveMediaSession("org.example.tv");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(executor.calls.some((call) => call.join(" ").includes("exec-out screencap -p"))).toBe(false);
+    expect(executor.calls.some((call) => call.join(" ").includes("dumpsys media_session"))).toBe(false);
+
+    observer.releaseGate?.();
+    await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
+    await expect(fingerprint).resolves.toMatchObject({ status: "available" });
+    await expect(mediaSession).resolves.toEqual({
+      status: "available",
+      value: { packageName: "org.example.tv", active: true, playbackState: "playing" },
+    });
+    await driver.close();
+  });
+
   it("serializes metadata collection after an active snapshot completes", async () => {
     const executor = new FakeExecutor();
     const observer = new GatedObserver();
@@ -601,6 +1060,34 @@ describe("Android V2 observer-backed driver", () => {
       "am start -W -f 0x10008000 -n org.example.tv/.MainActivity",
     ))).toHaveLength(2);
     expect(executor.calls.some((call) => call.join(" ").includes("dumpsys window"))).toBe(true);
+    await driver.close();
+  });
+
+  it("reconciles a force-stop timeout when the target process is already gone", async () => {
+    const executor = new ForceStopTimeoutExecutor();
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.reset("relaunch")).resolves.toBeUndefined();
+
+    const commands = executor.calls.map((call) => call.join(" "));
+    expect(commands.filter((command) => command.includes("shell am force-stop org.example.tv"))).toHaveLength(1);
+    expect(commands.filter((command) => command.includes(
+      "am start -W -f 0x10008000 -n org.example.tv/.MainActivity",
+    ))).toHaveLength(2);
+    await driver.close();
+  });
+
+  it("labels the reset stage when a force-stop timeout leaves the target process running", async () => {
+    const executor = new ForceStopTimeoutExecutor();
+    executor.stoppedAfterTimeout = false;
+    const driver = createDriver(executor, new FakeObserver());
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    await expect(driver.reset("relaunch")).rejects.toThrow(/reset stage force-stop[\s\S]*timed out/iu);
+    expect(executor.calls.filter((call) => call.join(" ").includes(
+      "am start -W -f 0x10008000 -n org.example.tv/.MainActivity",
+    ))).toHaveLength(1);
     await driver.close();
   });
 

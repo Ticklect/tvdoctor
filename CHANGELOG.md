@@ -69,6 +69,12 @@ that `tvdoctor@0.1.0` has been published.
   remote focus evidence, and caption-control coverage in one report.
 - a product-focused platform request form and public evidence criteria for
   choosing the next Fire TV, Roku, Tizen, webOS, or tvOS driver.
+- state-aware Android traversal with per-state SELECT safety gating, bounded
+  HOME target-boundary probes, target-owned media-key evidence, verified-local
+  restoration, and no automatic TAB exploration;
+- fail-closed Android sparse-observation handling using target-bound screenshot
+  fingerprints and media-session evidence, with `android-coverage-ledger.json`
+  recording incomplete safe coverage and forcing partial results.
 
 ### Verification status
 

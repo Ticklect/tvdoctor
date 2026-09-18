@@ -501,6 +501,32 @@ describe("TVDoctor CLI", () => {
     });
   });
 
+  it("accepts repeated TAB inputs for explicit startup preparation", async () => {
+    const received: import("../src/index.js").TestCommandRequest[] = [];
+    const code = await runCli([
+      "test", "https://example.test", "--startup-actions", "TAB,TAB,TAB,TAB,SELECT",
+    ], {
+      environment: SUPPORTED_ENVIRONMENT,
+      io: { writeStdout: ignoreOutput, writeStderr: ignoreOutput },
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        testTarget: async (request) => {
+          received.push(request);
+          return {
+            status: "completed",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: "tvdoctor-report/report.json",
+            details: [],
+          };
+        },
+      },
+    });
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(received[0]?.startupActions).toEqual(["TAB", "TAB", "TAB", "TAB", "SELECT"]);
+  });
+
   it.each([
     [["test"], "test requires a URL"],
     [["test", "not-a-url"], "test target must be an absolute HTTP(S) URL without credentials"],
@@ -509,7 +535,6 @@ describe("TVDoctor CLI", () => {
     [["test", "https://example.test", "--mode", "turbo"], "unknown test mode: turbo"],
     [["test", "https://example.test", "--pack", "all", "--pack", "streaming"], "--pack all cannot be combined with another pack"],
     [["test", "https://example.test", "--startup-actions", "POWER"], "--startup-actions accepts only known remote keys"],
-    [["test", "https://example.test", "--startup-actions", "SELECT,SELECT"], "--startup-actions must not contain duplicate remote keys"],
     [["test", "https://example.test", "--max-duration-ms", "0"], "--max-duration-ms must be a positive safe integer no greater than 2147483647"],
     [["test", "https://example.test", "--max-duration-ms", "99999999999"], "--max-duration-ms must be a positive safe integer no greater than 2147483647"],
     [["test", "https://example.test", "--unknown"], "unknown test option: --unknown"],

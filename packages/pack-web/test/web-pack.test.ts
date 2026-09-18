@@ -423,6 +423,28 @@ class AccessibilityDefectDriver extends FakeWebDriver {
   }
 }
 
+class DuplicateAccessibilityDefectDriver extends AccessibilityDefectDriver {
+  public constructor() {
+    super("hidden-focusable");
+  }
+
+  public override async snapshot(): Promise<StateSnapshot> {
+    const base = await super.snapshot();
+    if (base.uiTree.status !== "available") return base;
+    const first = base.uiTree.value[0];
+    if (first === undefined) return base;
+    const hidden = first.children.find((child) => child.stableId === "hidden-action");
+    if (hidden === undefined) return base;
+    return {
+      ...base,
+      uiTree: availableObservation([{
+        ...first,
+        children: [...first.children, { ...hidden, children: [...hidden.children] }],
+      }]),
+    };
+  }
+}
+
 function fullOptions() {
   return {
     playerSettingsSequence: ["UP", "SELECT"] as const,
@@ -724,6 +746,13 @@ describe("M7 web pack", () => {
     expect(result.stage).toBe("accessibility");
     expect(result.status).toBe("failed");
     expect(result.issues.map((issue) => issue.rule)).toContain("accessibility.hidden-focusable");
+  });
+
+  test("collapses duplicate observations of the same hidden focusable semantic target", async () => {
+    const result = await runAccessibilityStage(new DuplicateAccessibilityDefectDriver());
+
+    expect(result.status).toBe("failed");
+    expect(result.issues.filter((issue) => issue.rule === "accessibility.hidden-focusable")).toHaveLength(1);
   });
 
   test("retains semantic accessibility findings when visual focus proof is unavailable", async () => {

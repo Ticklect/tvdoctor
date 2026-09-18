@@ -1,21 +1,19 @@
-import type { ActionResult, DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
-import { pressAndObserve } from "./action-settling.js";
+import type { DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
 import { PreparedStateDivergenceError } from "./errors.js";
 import {
   computeSnapshotFingerprint,
   type ComputedSnapshotFingerprint,
 } from "./fingerprint.js";
-import type {
-  ExplorationActionAttempt,
-  ExplorationGraph,
-  FocusState,
-  FocusTransition,
-  ScreenState,
-  ScreenTransition,
-} from "./graph.js";
+import type { ExplorationActionAttempt, ExplorationGraph, FocusState, FocusTransition, ScreenState, ScreenTransition } from "./graph.js";
 import type { ExplorerOptions, ExplorationResult, ExplorationTermination } from "./explorer-contracts.js";
-import { takeFrontier as selectFrontier, type QueueEntry } from "./explorer-frontier.js";
+import {
+  createExplorerActionHooks,
+  executeExplorerAction,
+} from "./explorer-actions.js";
+import { takePreferredFrontier, type QueueEntry } from "./explorer-frontier.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
+import { createVerifiedLocalRestorer } from "./explorer-local-restoration.js";
+import { createExplorerPerformance } from "./explorer-performance.js";
 import {
   OperationDeadlineExceeded,
   runWithOperationDeadline,
@@ -48,8 +46,10 @@ export async function explore(
     budgets,
     actionOrder,
     frontierStrategy,
+    restorationMode,
     repetitionCompression,
     settling,
+    replaySettling,
     monotonicSource,
   } = normaliseExplorerOptions(options);
   const actionRank = new Map(actionOrder.map((key, index) => [key, index]));
@@ -64,6 +64,9 @@ export async function explore(
   let replayActions = 0;
   let resetCount = 0;
   let replayRestorations = 0;
+  let verifiedStateReuses = 0;
+  let verifiedPathRestorations = 0;
+  let restorationFallbacks = 0;
   let totalReplayLength = 0;
   let maximumReplayLength = 0;
   let maximumQueueSize = 0;
@@ -74,64 +77,13 @@ export async function explore(
   let settlingPolls = 0;
   let unsettledActions = 0;
   let frontierInsertionSequence = 0;
-  const phaseTimings = {
-    resetMs: 0,
-    pathReplayMs: 0,
-    driverPressMs: 0,
-    actionDispatchMs: 0,
-    focusSettlingMs: 0,
-    screenSettlingMs: 0,
-    snapshotCaptureMs: 0,
-    semanticNormalizationMs: 0,
-    graphBookkeepingMs: 0,
-  };
-
-  const durationSince = (startedAt: number): number => Math.max(0, monotonicNow() - startedAt);
-  const measureSynchronous = <T>(
-    phase: "semanticNormalizationMs" | "graphBookkeepingMs",
-    operation: () => T,
-  ): T => {
-    const operationStartedAt = monotonicNow();
-    try {
-      return operation();
-    } finally {
-      phaseTimings[phase] += durationSince(operationStartedAt);
-    }
-  };
+  const { phaseTimings, durationSince, measureSynchronous, measuredDriver } = createExplorerPerformance(
+    driver,
+    monotonicNow,
+  );
   const fingerprintSnapshot = (snapshot: StateSnapshot): ComputedSnapshotFingerprint => (
     measureSynchronous("semanticNormalizationMs", () => computeSnapshotFingerprint(snapshot))
   );
-  const recordActionTiming = (result: ActionResult): void => {
-    const inputAt = result.timing.inputSentAtMs;
-    const responseAt = Math.max(inputAt, result.timing.firstResponseAtMs ?? inputAt);
-    const focusAt = Math.max(responseAt, result.timing.focusSettledAtMs ?? responseAt);
-    const screenAt = Math.max(focusAt, result.timing.screenSettledAtMs ?? focusAt);
-    phaseTimings.actionDispatchMs += responseAt - inputAt;
-    phaseTimings.focusSettlingMs += focusAt - responseAt;
-    phaseTimings.screenSettlingMs += screenAt - focusAt;
-  };
-  const measuredDriver: TVDoctorDriver = {
-    capabilities: async (operationOptions) => driver.capabilities(operationOptions),
-    press: async (key, operationOptions) => {
-      const pressStartedAt = monotonicNow();
-      try {
-        const result = await driver.press(key, operationOptions);
-        recordActionTiming(result);
-        return result;
-      } finally {
-        phaseTimings.driverPressMs += durationSince(pressStartedAt);
-      }
-    },
-    snapshot: async (operationOptions) => {
-      const snapshotStartedAt = monotonicNow();
-      try {
-        return await driver.snapshot(operationOptions);
-      } finally {
-        phaseTimings.snapshotCaptureMs += durationSince(snapshotStartedAt);
-      }
-    },
-  };
-
   const screenStates: MutableScreenState[] = [];
   const focusStates: InternalFocusState[] = [];
   const screenTransitions: ScreenTransition[] = [];
@@ -214,6 +166,9 @@ export async function explore(
         replayActions,
         resetCount,
         replayRestorations,
+        verifiedStateReuses,
+        verifiedPathRestorations,
+        restorationFallbacks,
         visitedStates: focusStates.length,
         screenStates: screenStates.length,
         focusStates: focusStates.length,
@@ -251,6 +206,9 @@ export async function explore(
   if (options.shouldExpand !== undefined && typeof options.shouldExpand !== "function") {
     throw new TypeError("shouldExpand must be a function.");
   }
+  const actionHooks = createExplorerActionHooks({ actionOrder,
+    actionsForState: options.actionsForState, onActionObserved: options.onActionObserved,
+    withinDurationBudget });
 
   let capabilities: ReadonlySet<string>;
   try {
@@ -382,14 +340,12 @@ export async function explore(
   maximumQueueSize = 1;
   pendingStates = 1;
   let depthLimited = false;
+  const recordSettlingObservation = (snapshotsObserved: number, settled: boolean): void => {
+    settlingPolls += snapshotsObserved - 1;
+    if (!settled) unsettledActions += 1;
+  };
 
-  const takeFrontier = (): QueueEntry | undefined => measureSynchronous("graphBookkeepingMs", () => {
-    const selected = selectFrontier(frontier, frontierStrategy, actionRank);
-    pendingStates = frontier.length;
-    return selected;
-  });
-
-  const restore = createExplorerRestorer({
+  const restoreFromRoot = createExplorerRestorer({
     restoreAndCapture,
     withinDurationBudget,
     signalAborted,
@@ -400,7 +356,7 @@ export async function explore(
     initialSnapshot,
     stateByIdentity,
     measuredDriver,
-    settling,
+    settling: replaySettling,
     workBudgetTermination,
     onRestorationStart: (replayLength) => {
       replayRestorations += 1;
@@ -415,16 +371,44 @@ export async function explore(
       physicalActions += 1;
       replayActions += 1;
     },
-    onSettlingObservation: (snapshotsObserved, settled) => {
-      settlingPolls += snapshotsObserved - 1;
-      if (!settled) unsettledActions += 1;
-    },
+        onSettlingObservation: recordSettlingObservation,
     onReplayDuration: (durationMs) => {
       phaseTimings.pathReplayMs += durationMs;
     },
   });
+  const localRestorer = createVerifiedLocalRestorer({
+    enabled: restorationMode === "verified-local",
+    actionOrder,
+    initialSnapshot,
+    initialIdentity: initialFingerprint.stateIdentity,
+    measuredDriver,
+    settling: replaySettling,
+    rootRestore: restoreFromRoot,
+    workBudgetTermination,
+    withinDurationBudget,
+    signalAborted,
+    fingerprintSnapshot,
+    monotonicNow,
+    durationSince,
+    onReplayAction: () => { physicalActions += 1; replayActions += 1; },
+    onSettlingObservation: recordSettlingObservation,
+    onReplayDuration: (durationMs) => { phaseTimings.pathReplayMs += durationMs; },
+    onStateReuse: () => { verifiedStateReuses += 1; },
+    onPathRestoration: () => { verifiedPathRestorations += 1; },
+    onFallback: () => { restorationFallbacks += 1; },
+  });
+  const restore = localRestorer.restore;
+  const takeFrontier = (): QueueEntry | undefined => measureSynchronous("graphBookkeepingMs", () => {
+    const selected = takePreferredFrontier(
+      frontier, frontierStrategy, actionRank,
+      restorationMode === "verified-local" ? localRestorer.liveIdentity() : null,
+    );
+    pendingStates = frontier.length;
+    return selected;
+  });
 
   let termination: ExplorationTermination | null = null;
+  let skippedRestoration: ExplorationTermination | null = null;
   exploration: while (frontier.length > 0) {
     const entry = takeFrontier();
     if (entry === undefined) break;
@@ -438,7 +422,13 @@ export async function explore(
       continue;
     }
 
-    for (const key of actionOrder) {
+    const stateActions = await actionHooks.actionsForState(entry, signalAborted);
+    if (stateActions.status === "stop") {
+      termination = stateActions.termination;
+      break;
+    }
+    const stateActionOrder = stateActions.actions;
+    for (const key of stateActionOrder) {
       const beforeActionBudget = workBudgetTermination();
       if (beforeActionBudget !== null) {
         termination = beforeActionBudget;
@@ -450,6 +440,10 @@ export async function explore(
         termination = restored.termination;
         break exploration;
       }
+      if (restored.status === "skip") {
+        skippedRestoration ??= restored.termination;
+        break;
+      }
 
       const afterRestoreBudget = workBudgetTermination();
       if (afterRestoreBudget !== null) {
@@ -460,39 +454,34 @@ export async function explore(
       const actionSequence = sequenceWith(entry.sequence, key);
       physicalActions += 1;
       explorationActions += 1;
-      let actionObservation: Awaited<ReturnType<typeof pressAndObserve>>;
-      try {
-        actionObservation = await withinDurationBudget((signal) => pressAndObserve(measuredDriver, key, {
-          ...settling,
-          allowUnsettledActions: options.allowUnsettledActions === true,
-          signal,
-        }));
-        settlingPolls += actionObservation.snapshotsObserved - 1;
-        if (!actionObservation.settled) unsettledActions += 1;
-      } catch (error) {
-        if (signalAborted()) {
-          termination = incomplete("interrupted");
-          break exploration;
-        }
-        if (error instanceof DurationBudgetExceeded) {
-          termination = incomplete("max-duration");
-          break exploration;
-        }
-        termination = incomplete(
-          "driver-error",
-          error instanceof Error ? error.message : String(error),
-        );
+      const actionExecution = await executeExplorerAction({
+        driver: measuredDriver,
+        key,
+        settling,
+        allowUnsettledActions: options.allowUnsettledActions === true,
+        withinDurationBudget,
+        signalAborted,
+        clearLiveState: localRestorer.clearLive,
+    onSettlingObservation: recordSettlingObservation,
+      });
+      if (actionExecution.status === "stop") {
+        termination = actionExecution.termination;
         break exploration;
       }
-      if (!actionObservation.settled) {
-        if (options.allowUnsettledActions === true) {
-          publishProgress();
-          continue;
-        }
-        termination = incomplete("settling-exhausted");
+      if (actionExecution.status === "unsettled") {
+        publishProgress();
+        continue;
+      }
+      const actionObservation = actionExecution.observation;
+      const observedHookTermination = await actionHooks.onActionObserved(
+        entry, key, restored.snapshot, actionObservation.snapshot, signalAborted,
+      );
+      if (observedHookTermination !== null) {
+        termination = observedHookTermination;
         break exploration;
       }
       const observedFingerprint = fingerprintSnapshot(actionObservation.snapshot);
+      const expandable = options.shouldExpand?.(actionObservation.snapshot) ?? true;
       const bookkeepingStartedAt = monotonicNow();
       const knownDestination = stateByIdentity.get(observedFingerprint.stateIdentity);
       const attemptId = id("action", attempts.length + 1);
@@ -590,7 +579,16 @@ export async function explore(
 
       const replayable = actionObservation.actionResult.key === key
         && actionObservation.actionResult.outcome === "applied";
-      const expandable = options.shouldExpand?.(actionObservation.snapshot) ?? true;
+      if (replayable
+        && expandable
+        && compressedDestination === undefined) {
+        localRestorer.recordEdge({
+          fromIdentity: entry.state.identity,
+          toIdentity: observedFingerprint.stateIdentity,
+          key,
+          expandable: true,
+        });
+      }
       if (replayable && expandable && !destination.state.scheduled) {
         const destinationGroup = destination.state.repetitionGroup === null
           ? undefined
@@ -615,6 +613,8 @@ export async function explore(
       }
       phaseTimings.graphBookkeepingMs += durationSince(bookkeepingStartedAt);
       publishProgress();
+      const refreshTermination = await localRestorer.observeAfterAction(actionObservation.snapshot, observedFingerprint.stateIdentity, entry, expandable, key !== stateActionOrder.at(-1) || frontier.length > 0);
+      if (refreshTermination !== null) { termination = refreshTermination; break exploration; }
 
       if (elapsed() >= budgets.maxDurationMs) {
         termination = incomplete("max-duration");
@@ -624,14 +624,14 @@ export async function explore(
   }
 
   if (termination === null) {
-    termination = depthLimited
+    termination = skippedRestoration ?? (depthLimited
       ? incomplete("max-depth")
       : unsettledActions > 0
         ? incomplete(
           "settling-exhausted",
           `${String(unsettledActions)} action outcome(s) remained unobserved after tolerated transient observation loss.`,
         )
-        : COMPLETE_TERMINATION;
+        : COMPLETE_TERMINATION);
   }
   const safetyLimited = termination.reason === "max-actions"
     || termination.reason === "max-states"

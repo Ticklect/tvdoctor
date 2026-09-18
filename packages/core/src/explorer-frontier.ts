@@ -54,3 +54,16 @@ export function takeFrontier(
   }
   return frontier.splice(bestIndex, 1)[0];
 }
+
+export function takePreferredFrontier(
+  frontier: QueueEntry[],
+  frontierStrategy: ExplorationFrontierStrategy,
+  actionRank: ReadonlyMap<RemoteKey, number>,
+  preferredIdentity: string | null,
+): QueueEntry | undefined {
+  if (preferredIdentity !== null) {
+    const preferredIndex = frontier.findIndex((entry) => entry.state.identity === preferredIdentity);
+    if (preferredIndex >= 0) return frontier.splice(preferredIndex, 1)[0];
+  }
+  return takeFrontier(frontier, frontierStrategy, actionRank);
+}

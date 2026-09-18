@@ -12,8 +12,10 @@ import type {
   WebDriverPerformanceProfile,
 } from "@tvdoctor/driver-web";
 import {
+  discoverStreamingSettingsRoute,
   runStreamingPack,
   type StreamingPackResult,
+  type StreamingSettingsRouteResult,
 } from "@tvdoctor/pack-streaming";
 import {
   runWebPack,
@@ -44,9 +46,8 @@ import {
 import {
   createSafeExplorationDriver,
   navigationInventory,
-  preferredStartupControl,
+  resolveStartupDecisionThroughFocus,
   specialisedReachabilityScreen,
-  startupActivationSequence,
 } from "./node-audit-navigation.js";
 import {
   highestSeverity,
@@ -93,7 +94,8 @@ export async function runAudit(
   const startedAt = new Date();
   const packs = selectedPacks(request);
   const webStages = selectedWebStages(packs);
-  const needStreamingJourney = packs.has("streaming") || webStages.includes("layout") || webStages.includes("performance");
+  const needSettingsRoute = !packs.has("streaming")
+    && (webStages.includes("layout") || webStages.includes("performance"));
   const driver = createDriver();
   let capabilities: ReadonlySet<Capability> = new Set();
   let navigation: ExplorationResult | null = null;
@@ -105,6 +107,8 @@ export async function runAudit(
   let navigationExplorationMs = 0;
   let navigationDiagnosticsMs = 0;
   let streaming: StreamingPackResult | null = null;
+  let settingsRouteDiscovery: StreamingSettingsRouteResult | null = null;
+  let playerSettingsSequence: readonly RemoteKey[] | undefined;
   let web: WebPackResult | null = null;
   let runFailure: { readonly error: unknown } | null = null;
   let journey: JourneyV1 | null = null;
@@ -140,22 +144,21 @@ export async function runAudit(
       ) {
         const blocker = navigationStartup.blockers[0];
         if (blocker === undefined) throw new TypeError("Startup blocker disappeared before preparation.");
-        const control = preferredStartupControl(
+        const actions = await resolveStartupDecisionThroughFocus(
+          driver,
           request.startupDecision,
           blocker.kind,
-          navigationStartup.controls,
+          navigationStartup.representativeSnapshot,
         );
-        const actions = control === null ? [] : startupActivationSequence(
-          navigationStartup.controls,
-          control,
-        );
-        navigationStartup = await prepareStartup(driver, {
-          policy: { kind: "remote-sequence", actions },
-          resetStrategy: "reload",
-          stability: request.mode === "quick"
-            ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
-            : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
-        });
+        if (actions !== null && actions.length > 0) {
+          navigationStartup = await prepareStartup(driver, {
+            policy: { kind: "remote-sequence", actions },
+            resetStrategy: "reload",
+            stability: request.mode === "quick"
+              ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
+              : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
+          });
+        }
       }
       if (navigationStartup.status === "ready" && journey !== null) {
         sessionState = await driver.getPage().context().storageState();
@@ -235,7 +238,7 @@ export async function runAudit(
         );
       }
     }
-    if (request.signal?.aborted !== true && needStreamingJourney) {
+    if (request.signal?.aborted !== true && packs.has("streaming")) {
       streaming = await runStreamingPack(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
         resetStrategy: "reload",
@@ -244,9 +247,20 @@ export async function runAudit(
           : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
         pointerProbe: createStreamingAuditPointerProbe(request.target, createIsolatedDriver),
       });
+      playerSettingsSequence = streamingSettingsSequence(streaming);
+    } else if (request.signal?.aborted !== true && needSettingsRoute) {
+      settingsRouteDiscovery = await discoverStreamingSettingsRoute(driver, {
+        budgets: STREAMING_BUDGETS[request.mode],
+        resetStrategy: "reload",
+        ...(navigationStartup?.restoreToPreparedState === undefined
+          ? {}
+          : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
+      });
+      if (settingsRouteDiscovery.status === "found") {
+        playerSettingsSequence = settingsRouteDiscovery.sequence;
+      }
     }
     if (request.signal?.aborted !== true && webStages.length > 0) {
-      const playerSettingsSequence = streamingSettingsSequence(streaming);
       web = await runWebPack(driver, {
         stages: webStages,
         budgets: WEB_BUDGETS[request.mode],
@@ -334,6 +348,12 @@ export async function runAudit(
     navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
     navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
     streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
+    settingsRouteDiscovery: settingsRouteDiscovery === null ? null : {
+      status: settingsRouteDiscovery.status,
+      detail: settingsRouteDiscovery.detail,
+      sequence: settingsRouteDiscovery.sequence ?? null,
+      statistics: settingsRouteDiscovery.statistics,
+    },
     web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
   });
   const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
@@ -373,30 +393,31 @@ export async function runAudit(
     coverage: {
       screenStatesDiscovered: navigation?.statistics.screenStates ?? 0,
       focusStatesDiscovered: navigation?.statistics.focusStates
-        ?? (streaming?.statistics.uniqueStates ?? 0) + (web?.statistics.uniqueStates ?? 0),
+        ?? (streaming?.statistics.uniqueStates ?? settingsRouteDiscovery?.statistics.uniqueStates ?? 0)
+          + (web?.statistics.uniqueStates ?? 0),
       transitionsTested: navigation?.graph.actions.length ?? 0,
       actionsSent: (journeyExecution?.actions ?? 0)
         + (navigation?.statistics.physicalActions ?? 0)
-        + (streaming?.statistics.physicalActions ?? 0)
+        + (streaming?.statistics.physicalActions ?? settingsRouteDiscovery?.statistics.physicalActions ?? 0)
         + (web?.statistics.physicalActions ?? 0),
       capabilitiesObserved: [...capabilities],
       packs: coverage,
       budget: {
         maxActions: (journeyExecution?.maxActions ?? 0)
           + (navigation?.budgets.maxActions ?? 0)
-          + (streaming?.budgets.maxActions ?? 0)
+          + (streaming?.budgets.maxActions ?? settingsRouteDiscovery?.budgets.maxActions ?? 0)
           + (web?.budgets.maxActions ?? 0),
         maxStates: (navigation?.budgets.maxStates ?? 0)
-          + (streaming?.budgets.maxStates ?? 0)
+          + (streaming?.budgets.maxStates ?? settingsRouteDiscovery?.budgets.maxStates ?? 0)
           + (web?.budgets.maxStates ?? 0),
         maxDepth: Math.max(
           navigation?.budgets.maxDepth ?? 0,
-          streaming?.budgets.maxLocalDepth ?? 0,
+          streaming?.budgets.maxLocalDepth ?? settingsRouteDiscovery?.budgets.maxLocalDepth ?? 0,
           web?.budgets.maxLocalDepth ?? 0,
         ),
         maxDurationMs: (journeyExecution?.maxDurationMs ?? 0)
           + (navigation?.budgets.maxDurationMs ?? 0)
-          + (streaming?.budgets.maxDurationMs ?? 0)
+          + (streaming?.budgets.maxDurationMs ?? settingsRouteDiscovery?.budgets.maxDurationMs ?? 0)
           + (web?.budgets.maxDurationMs ?? 0),
         maxRepetitiveItems: request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
         exhausted: exhaustedBudgets(products, packs),

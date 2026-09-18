@@ -64,6 +64,7 @@ export const WEB_REMOTE_KEYBOARD_MAP: Readonly<Record<RemoteKey, string>> = {
   RIGHT: "ArrowRight",
   SELECT: "Enter",
   BACK: "Escape",
+  TAB: "Tab",
   HOME: "Home",
   PLAY_PAUSE: "MediaPlayPause",
   PLAY: "MediaPlay",

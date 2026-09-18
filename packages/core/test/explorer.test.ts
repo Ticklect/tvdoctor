@@ -134,6 +134,34 @@ class MachineDriver implements TVDoctorDriver {
   }
 }
 
+class FlakyLocalPathDriver implements TVDoctorDriver {
+  #state: "A" | "B" | "C" = "A";
+  #rightFromA = 0;
+  readonly eventLog: string[] = [];
+
+  async capabilities(): Promise<ReadonlySet<Capability>> {
+    return new Set(["remote-input", "ui-tree"]);
+  }
+
+  async press(key: RemoteKey): Promise<ActionResult> {
+    this.eventLog.push(`press:${this.#state}:${key}`);
+    if (this.#state === "A" && key === "RIGHT") {
+      this.#rightFromA += 1;
+      this.#state = this.#rightFromA === 2 ? "C" : "B";
+    }
+    return { key, outcome: "applied", timing: { inputSentAtMs: this.#rightFromA } };
+  }
+
+  async snapshot(): Promise<StateSnapshot> {
+    return stateSnapshot({ screen: "home", focus: this.#state });
+  }
+
+  async reset(): Promise<void> {
+    this.eventLog.push("reset");
+    this.#state = "A";
+  }
+}
+
 class CounterDriver implements TVDoctorDriver {
   #position = 0;
   #actionSequence = 0;
@@ -644,6 +672,198 @@ describe("bounded deterministic explorer", () => {
     expect(unrestorable.statistics.physicalActions).toBe(0);
   });
 
+  it("restores after exact visible self-loops before exploring sibling actions", async () => {
+    const states = { root: { screen: "home", focus: "home-nav" } } as const;
+    const transitions = {
+      root: { UP: "root", RIGHT: "root", DOWN: "root" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("root", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["UP", "RIGHT", "DOWN"],
+      restorationMode: "verified-local",
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.complete).toBe(true);
+    expect(result.graph.actions.map((attempt) => attempt.key)).toEqual(["UP", "RIGHT", "DOWN"]);
+    expect(result.statistics.physicalActions).toBe(3);
+    expect(result.statistics.resetCount).toBe(3);
+    expect(result.statistics.replayRestorations).toBe(2);
+    expect(result.statistics.verifiedStateReuses).toBe(3);
+    expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(3);
+  });
+
+  it("does not let a visible self-loop carry hidden action history into a sibling branch", async () => {
+    type VisibleState = "root" | "expected" | "contaminated";
+    let visibleState: VisibleState = "root";
+    let hiddenLeftHistory = false;
+    const presses: string[] = [];
+    let resets = 0;
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset() {
+        resets += 1;
+        visibleState = "root";
+        hiddenLeftHistory = false;
+      },
+      async snapshot() {
+        return stateSnapshot({ screen: "home", focus: visibleState });
+      },
+      async press(key) {
+        presses.push(`${visibleState}:${key}`);
+        if (visibleState === "root" && key === "LEFT") {
+          // The target consumes LEFT without exposing any canonical UI change.
+          // A subsequent RIGHT still behaves differently unless restoration
+          // re-establishes the root action history as well as its snapshot.
+          hiddenLeftHistory = true;
+        } else if (visibleState === "root" && key === "RIGHT") {
+          visibleState = hiddenLeftHistory ? "contaminated" : "expected";
+        }
+        return { key, outcome: "applied", timing: { inputSentAtMs: presses.length } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["LEFT", "RIGHT"],
+      restorationMode: "verified-local",
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 1, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(presses.slice(0, 2)).toEqual(["root:LEFT", "root:RIGHT"]);
+    expect(result.graph.focus.states.some((state) => (
+      state.representativeSnapshot.focusedElement.status === "available"
+      && state.representativeSnapshot.focusedElement.value?.stableId === "contaminated"
+    ))).toBe(false);
+    expect(result.graph.focus.states.some((state) => (
+      state.representativeSnapshot.focusedElement.status === "available"
+      && state.representativeSnapshot.focusedElement.value?.stableId === "expected"
+    ))).toBe(true);
+    expect(resets).toBeGreaterThanOrEqual(2);
+  });
+
+  it("restores a queued state through the shortest previously verified local path", async () => {
+    const states = {
+      A: { screen: "home", focus: "A" },
+      B: { screen: "home", focus: "B" },
+    } as const;
+    const transitions = {
+      A: { RIGHT: "B", UP: "A" },
+      B: { RIGHT: "B", UP: "B" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("A", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "UP"],
+      restorationMode: "verified-local",
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.complete).toBe(true);
+    expect(result.statistics.verifiedPathRestorations).toBe(1);
+    expect(result.statistics.restorationFallbacks).toBe(0);
+    expect(result.statistics.resetCount).toBe(4);
+    expect(result.statistics.physicalActions).toBe(6);
+  });
+
+  it("falls back once to root replay when a verified local path no longer matches", async () => {
+    const driver = new FlakyLocalPathDriver();
+    const result = await explore(driver, {
+      actions: ["RIGHT", "UP"],
+      restorationMode: "verified-local",
+      budgets: { maxActions: 30, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.complete).toBe(true);
+    expect(result.statistics.restorationFallbacks).toBe(1);
+    expect(result.statistics.verifiedPathRestorations).toBe(0);
+    expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(5);
+    expect(result.graph.focus.states.some((state) => state.representativeSnapshot.focusedElement.status === "available"
+      && state.representativeSnapshot.focusedElement.value?.stableId === "C")).toBe(false);
+  });
+
+  it("prefers an exact queued live state so activation destinations do not need replay", async () => {
+    type StateName = "A" | "B" | "C";
+    let state: StateName = "A";
+    const presses: string[] = [];
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset() {
+        state = "A";
+      },
+      async snapshot() {
+        return stateSnapshot({ screen: "home", focus: state });
+      },
+      async press(key) {
+        presses.push(`${state}:${key}`);
+        if (state === "A" && key === "RIGHT") state = "B";
+        else if (state === "A" && key === "SELECT") state = "C";
+        return { key, outcome: "applied", timing: { inputSentAtMs: presses.length } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "SELECT"],
+      replayActions: ["RIGHT"],
+      restorationMode: "verified-local",
+      frontierStrategy: "priority",
+      budgets: { maxActions: 40, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    } as ExplorerOptions);
+
+    expect(result.termination.complete).toBe(true);
+    expect(presses.filter((entry) => entry === "A:SELECT")).toHaveLength(1);
+    expect(result.statistics.verifiedStateReuses).toBeGreaterThan(0);
+  });
+
+  it("skips an unsafe queued replay path and continues other frontier work", async () => {
+    type StateName = "A" | "B" | "C";
+    let state: StateName = "A";
+    const presses: string[] = [];
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset() {
+        state = "A";
+      },
+      async snapshot() {
+        return stateSnapshot({ screen: "home", focus: state });
+      },
+      async press(key) {
+        presses.push(`${state}:${key}`);
+        if (state === "A" && key === "SELECT") state = "C";
+        else if (state === "A" && key === "RIGHT") state = "B";
+        return { key, outcome: "applied", timing: { inputSentAtMs: presses.length } };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["SELECT", "RIGHT"],
+      replayActions: ["RIGHT"],
+      restorationMode: "verified-local",
+      frontierStrategy: "priority",
+      budgets: { maxActions: 40, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    } as ExplorerOptions);
+
+    expect(result.termination).toMatchObject({
+      reason: "restoration-unavailable",
+      complete: false,
+    });
+    expect(result.termination.detail).toMatch(/unsafe.*SELECT|SELECT.*unsafe/iu);
+    expect(presses.filter((entry) => entry === "A:SELECT")).toHaveLength(1);
+    expect(presses.some((entry) => entry === "B:RIGHT")).toBe(true);
+  });
+
   it("terminates when root restoration no longer reproduces the initial state", async () => {
     let resetCount = 0;
     const driver: TVDoctorDriver = {
@@ -708,21 +928,82 @@ describe("bounded deterministic explorer", () => {
         } else if ((state === "mid" || state === "wrong") && key === "SELECT") {
           state = "target";
         }
-        return { key, outcome: "applied", timing: { inputSentAtMs: pressed.length } };
+        return {
+          key,
+          outcome: "applied",
+          timing: { inputSentAtMs: pressed.length },
+          postActionSnapshot: snapshots[state],
+        };
       },
     };
 
     const result = await explore(driver, {
       actions: ["RIGHT", "SELECT"],
       budgets: { maxActions: 100, maxStates: 10, maxDepth: 4, maxDurationMs: 10_000 },
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 3,
+        requiredStableSnapshots: 2,
+      },
+      replaySettling: { strategy: "driver" },
       monotonicNow: () => 0,
-    });
+    } as ExplorerOptions);
 
     expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
     expect(result.termination.detail).toContain("Replay checkpoint 1/2 after RIGHT produced state-");
     expect(pressed).toContain("6:root:RIGHT");
     expect(pressed).not.toContain("6:wrong:SELECT");
     expect(result.statistics.pendingStates).toBeGreaterThanOrEqual(0);
+  });
+
+  it("uses the driver-settled post-action snapshot for replay without discovery polling", async () => {
+    type StateName = "A" | "B";
+    let state: StateName = "A";
+    const events: string[] = [];
+    const currentSnapshot = (): StateSnapshot => stateSnapshot({ screen: "home", focus: state });
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset() {
+        state = "A";
+        events.push("reset");
+      },
+      async snapshot() {
+        events.push(`snapshot:${state}`);
+        return currentSnapshot();
+      },
+      async press(key) {
+        events.push(`press:${state}:${key}`);
+        if (state === "A" && key === "RIGHT") state = "B";
+        return {
+          key,
+          outcome: "applied",
+          timing: { inputSentAtMs: events.length },
+          postActionSnapshot: currentSnapshot(),
+        };
+      },
+    };
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "UP"],
+      budgets: { maxActions: 30, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      settling: {
+        strategy: "stable-snapshot",
+        maxSnapshots: 3,
+        requiredStableSnapshots: 3,
+      },
+      replaySettling: { strategy: "driver" },
+      monotonicNow: () => 0,
+    } as ExplorerOptions);
+
+    expect(result.termination.complete).toBe(true);
+    expect(events.some((event, index) => (
+      event === "reset"
+      && events[index + 1] === "snapshot:A"
+      && events[index + 2] === "press:A:RIGHT"
+      && events[index + 3] === "press:B:RIGHT"
+    ))).toBe(true);
   });
 
   it("resets branch-local mutation before exploring a sibling action", async () => {
@@ -813,6 +1094,40 @@ describe("bounded deterministic explorer", () => {
       ]);
   });
 
+  it("filters configured actions per exact state without pressing omitted controls", async () => {
+    const driver = new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS);
+    const result = await explore(driver, {
+      actions: ["RIGHT", "LEFT", "SELECT", "BACK"],
+      actionsForState: async ({ snapshot }) => {
+        await Promise.resolve();
+        const focus = snapshot.focusedElement.status === "available"
+          ? snapshot.focusedElement.value?.stableId
+          : null;
+        return focus === "hero-watch" ? ["LEFT", "BACK"] : ["RIGHT"];
+      },
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(driver.eventLog.some((entry) => entry.startsWith("press:SELECT:"))).toBe(false);
+    expect(result.graph.screens.states.map((state) => state.representativeSnapshot.location))
+      .not.toContain(availableObservation("app://details"));
+  });
+
+  it("fails closed when a state-aware action hook returns an unconfigured action", async () => {
+    const result = await explore(new MachineDriver("homeNav", MACHINE_STATES, MACHINE_TRANSITIONS), {
+      actions: ["RIGHT"],
+      actionsForState: () => ["SELECT"],
+      budgets: { maxActions: 5, maxStates: 5, maxDepth: 1, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+    expect(result.termination).toMatchObject({
+      reason: "driver-error",
+      complete: false,
+      detail: "actionsForState must return a duplicate-free subset of configured actions.",
+    });
+  });
+
   it.each([
     ["maxActions", 0],
     ["maxActions", -1],
@@ -849,9 +1164,12 @@ describe("bounded deterministic explorer", () => {
     ["duplicate actions", { actions: ["RIGHT", "RIGHT"] }, "Explorer actions must not contain duplicates."],
     ["unknown profile", { profile: "turbo" as never }, "profile must be quick, standard, or deep."],
     ["unknown frontier strategy", { frontierStrategy: "random" as never }, "frontierStrategy must be breadth-first or priority."],
+    ["unknown restoration mode", { restorationMode: "unsafe-local" as never }, "restorationMode must be root-only or verified-local."],
     ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, "resetStrategy must be reload, relaunch, or clear-data."],
     ["non-function restore hook", { restoreInitialState: 1 as never }, "restoreInitialState must be a function."],
     ["non-function restore snapshot hook", { restoreInitialSnapshot: 1 as never }, "restoreInitialSnapshot must be a function."],
+    ["non-function state action hook", { actionsForState: 1 as never }, "actionsForState must be a function."],
+    ["non-function observed-action hook", { onActionObserved: 1 as never }, "onActionObserved must be a function."],
     ["non-function clock hook", { monotonicNow: 1 as never }, "monotonicNow must be a function."],
     ["non-function settling wait hook", { settling: { wait: 1 as never } }, "wait must be a function."],
     ["non-function settling comparison hook", { settling: { equivalent: 1 as never } }, "equivalent must be a function."],

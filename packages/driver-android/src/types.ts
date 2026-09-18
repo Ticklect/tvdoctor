@@ -85,6 +85,23 @@ export interface AndroidAppMetadata {
   readonly versionCode: number | null;
 }
 
+export interface AndroidMediaSessionMetadata {
+  /** Exact provisioned target package owning this parsed media session. */
+  readonly packageName: string;
+  readonly active: boolean;
+  readonly playbackState: string | null;
+}
+
+export interface AndroidScreenshotFingerprint {
+  readonly sha256: string;
+  readonly width: number;
+  readonly height: number;
+  readonly luminanceGrid: readonly number[];
+  readonly meanLuminance: number;
+  readonly luminanceVariance: number;
+  readonly visuallyBlank: boolean;
+}
+
 export interface AndroidUiNodeSnapshot extends UiNodeSnapshot {
   readonly className: string | null;
   readonly packageName: string | null;
@@ -95,6 +112,8 @@ export interface AndroidUiNodeSnapshot extends UiNodeSnapshot {
 }
 
 export interface AndroidHierarchyMetadata {
+  /** True only when the active accessibility root belongs to the provisioned target app. */
+  readonly targetWindowActive: boolean;
   readonly capturedNodeCount: number;
   readonly maxNodeCount: number;
   readonly maxDepth: number;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normaliseActionSettlingOptions } from "@tvdoctor/core";
 
 import {
   EXIT_CODES,
@@ -11,13 +12,20 @@ import {
 import { defaultOutputDirectory } from "../src/product-output.js";
 import {
   ANDROID_ACTION_SETTLING,
+  ANDROID_LAUNCH_SETTLING,
+  ANDROID_LAUNCH_WARMUP_MS,
   ANDROID_EXPLORATION_BUDGETS,
   androidPreflight,
+  buildAndroidTraversalLedger,
   checkApkCompatibility,
   classifyAndroidStartup,
+  createAndroidTraversalPolicyRecorder,
   inspectApk,
+  restoreAndroidTargetForFinalEvidence,
 } from "../src/android-product.js";
+import { hasIncompleteSafeCoverage } from "../src/android-coverage-ledger.js";
 import type { StartTerminal } from "../src/interactive.js";
+import type { StateSnapshot } from "@tvdoctor/protocol";
 
 const environment: RuntimeEnvironment = {
   nodeVersion: "v24.18.0",
@@ -36,6 +44,57 @@ function contextWithTerminal(terminal: StartTerminal): CliContext {
   };
 }
 
+function playerSnapshot(
+  activity: string,
+  focusedStableId: string,
+  changingDecoration: string,
+): StateSnapshot {
+  return {
+    capturedAt: "2026-09-09T18:00:00.000Z",
+    location: { status: "available", value: `android://io.github.ticklect.goatedtv/${activity}` },
+    focusedElement: {
+      status: "available",
+      value: {
+        stableId: focusedStableId,
+        role: "button",
+        name: "Play",
+      },
+    },
+    uiTree: {
+      status: "available",
+      value: [{
+        stableId: "player-root",
+        role: null,
+        name: null,
+        text: changingDecoration,
+        enabled: true,
+        focusable: false,
+        focused: false,
+        visible: true,
+        modal: false,
+        selectionState: null,
+        valueNow: null,
+        bounds: null,
+        children: [{
+          stableId: changingDecoration,
+          role: "image",
+          name: null,
+          text: null,
+          enabled: true,
+          focusable: false,
+          focused: false,
+          visible: true,
+          modal: false,
+          selectionState: null,
+          valueNow: null,
+          bounds: null,
+          children: [],
+        }],
+      }],
+    },
+  };
+}
+
 describe("guided product output", () => {
   it("creates readable collision-safe Tests names", () => {
     expect(defaultOutputDirectory({
@@ -51,7 +110,7 @@ describe("guided product output", () => {
       maxDepth: 8,
     });
     expect(ANDROID_EXPLORATION_BUDGETS.deep.maxDurationMs).toBe(1_800_000);
-    expect(ANDROID_ACTION_SETTLING).toEqual({
+    expect(ANDROID_ACTION_SETTLING).toMatchObject({
       strategy: "stable-snapshot",
       maxSnapshots: 6,
       requiredStableSnapshots: 3,
@@ -61,6 +120,25 @@ describe("guided product output", () => {
         BACK: { maxSnapshots: 14, requiredStableSnapshots: 7 },
       },
     });
+    expect(ANDROID_LAUNCH_SETTLING).toEqual({
+      resetStableWindowMs: 2_000,
+      resetSettleTimeoutMs: 20_000,
+    });
+    expect(ANDROID_LAUNCH_WARMUP_MS).toBe(8_000);
+  });
+
+  it("keeps polling when the canonical Android tree changes under the same activity and focus", () => {
+    const equivalent = normaliseActionSettlingOptions(ANDROID_ACTION_SETTLING).equivalent;
+    const first = playerSnapshot(".MainActivity", "player-play", "frame 101");
+    const unchanged = playerSnapshot(".MainActivity", "player-play", "frame 101");
+    const nextFrame = playerSnapshot(".MainActivity", "player-play", "frame 102");
+    const movedFocus = playerSnapshot(".MainActivity", "player-settings", "frame 103");
+    const changedActivity = playerSnapshot(".DetailsActivity", "player-play", "frame 104");
+
+    expect(equivalent(first, unchanged)).toBe(true);
+    expect(equivalent(first, nextFrame)).toBe(false);
+    expect(equivalent(first, movedFocus)).toBe(false);
+    expect(equivalent(first, changedActivity)).toBe(false);
   });
 });
 
@@ -299,6 +377,192 @@ describe("Android startup policy", () => {
 
     expect(detection?.kind).toBe("system permission");
     expect(detection?.controls).toContainEqual({ label: "While using the app", focused: false });
+  });
+
+  it("recognises a redacted permission-controller boundary from its window owner", () => {
+    const detection = classifyAndroidStartup({
+      capturedAt: "2026-09-15T19:00:00.000Z",
+      location: {
+        status: "available",
+        value: "android://com.google.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity",
+      },
+      focusedElement: { status: "available", value: null },
+      uiTree: { status: "available", value: [] },
+      device: { status: "unavailable", reason: "unused" },
+      app: { status: "unavailable", reason: "unused" },
+      hierarchyMetadata: { status: "unavailable", reason: "unused" },
+    } as never);
+
+    expect(detection).toEqual({
+      kind: "system permission",
+      heading: "System permission",
+      controls: [],
+    });
+  });
+});
+
+describe("Android traversal safety policy", () => {
+  const targetPackage = "org.example.tv";
+  const targetSnapshot = (name: string) => ({
+    capturedAt: "2026-09-18T17:00:00.000Z",
+    location: { status: "available", value: `android://${targetPackage}/org.example.tv.MainActivity` },
+    focusedElement: {
+      status: "available",
+      value: { stableId: "root/action", role: "button", name },
+    },
+    uiTree: {
+      status: "available",
+      value: [{
+        stableId: "root/action",
+        role: "button",
+        name,
+        text: null,
+        enabled: true,
+        focusable: true,
+        focused: true,
+        visible: true,
+        modal: false,
+        selectionState: null,
+        valueNow: null,
+        bounds: null,
+        className: "android.widget.Button",
+        packageName: targetPackage,
+        clickable: true,
+        scrollable: false,
+        selected: false,
+        children: [],
+      }],
+    },
+    device: { status: "unavailable", reason: "unused" },
+    app: { status: "unavailable", reason: "unused" },
+    hierarchyMetadata: {
+      status: "available",
+      value: {
+        targetWindowActive: true,
+        capturedNodeCount: 1,
+        maxNodeCount: 2_048,
+        maxDepth: 64,
+        truncated: false,
+      },
+    },
+  } as const);
+
+  it("gates risky SELECT instead of sending it automatically", async () => {
+    const recorder = createAndroidTraversalPolicyRecorder({
+      driver: {
+        getActiveMediaSession: async () => ({ status: "unavailable", reason: "none" }),
+        captureScreenshotFingerprint: async () => {
+          throw new Error("rich semantics should not need screenshot evidence");
+        },
+      } as never,
+      targetPackage,
+    });
+
+    const actions = await recorder.actionsForState({
+      screenStateId: "screen-risky",
+      focusStateId: "focus-risky",
+      snapshot: targetSnapshot("Sign in"),
+      defaultActions: [],
+    } as never);
+
+    expect(actions).not.toContain("SELECT");
+    expect(recorder.records[0]?.decisions.find((decision) => decision.key === "SELECT"))
+      .toMatchObject({ disposition: "operator-gated", reasonCode: "risky-activation" });
+  });
+
+  it("fails closed when sparse semantics are paired with a blank screenshot", async () => {
+    const recorder = createAndroidTraversalPolicyRecorder({
+      driver: {
+        getActiveMediaSession: async () => ({ status: "unavailable", reason: "none" }),
+        captureScreenshotFingerprint: async () => ({
+          status: "available",
+          value: {
+            sha256: "0".repeat(64),
+            width: 1280,
+            height: 720,
+            luminanceGrid: [0],
+            meanLuminance: 0,
+            luminanceVariance: 0,
+            visuallyBlank: true,
+          },
+        }),
+      } as never,
+      targetPackage,
+    });
+    const sparseSnapshot = {
+      ...targetSnapshot("Open"),
+      focusedElement: { status: "unavailable", reason: "observer sparse" },
+      uiTree: { status: "unavailable", reason: "observer sparse" },
+    } as const;
+
+    const actions = await recorder.actionsForState({
+      screenStateId: "screen-sparse",
+      focusStateId: "focus-sparse",
+      snapshot: sparseSnapshot,
+      defaultActions: [],
+    } as never);
+    expect(actions).toEqual([]);
+    expect(recorder.records[0]?.decisions.every((decision) => (
+      decision.disposition === "inaccessible"
+      && decision.reasonCode === "semantic-and-visual-evidence-unavailable"
+    ))).toBe(true);
+
+    const ledger = buildAndroidTraversalLedger({
+      targetPackage,
+      records: recorder.records,
+      result: {
+        graph: { actions: [] },
+        budgets: ANDROID_EXPLORATION_BUDGETS.quick,
+        termination: { reason: "queue-exhausted", complete: true },
+        statistics: { deferredStates: 0 },
+      } as never,
+      finalTargetValidated: true,
+    });
+    expect(ledger.counts.inaccessible).toBeGreaterThan(0);
+    expect(hasIncompleteSafeCoverage(ledger)).toBe(true);
+  });
+});
+
+describe("Android final target validation", () => {
+  const snapshotAt = (location: string) => ({
+    location: { status: "available", value: location },
+  }) as never;
+
+  it("restores the target before final evidence when exploration ends on an external boundary", async () => {
+    let restored = false;
+    let resetCalls = 0;
+    const driver = {
+      snapshot: async () => snapshotAt(restored
+        ? "android://org.example.tv/org.example.tv.MainActivity"
+        : "android://com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity"),
+      reset: async () => {
+        resetCalls += 1;
+        restored = true;
+      },
+    };
+
+    await expect(restoreAndroidTargetForFinalEvidence(
+      driver as never,
+      "org.example.tv",
+      async () => undefined,
+    )).resolves.toMatchObject({
+      location: { status: "available", value: "android://org.example.tv/org.example.tv.MainActivity" },
+    });
+    expect(resetCalls).toBe(1);
+  });
+
+  it("fails final validation when relaunch cannot prove target ownership", async () => {
+    const external = snapshotAt("android://com.google.android.tvlauncher/com.google.android.tvlauncher.MainActivity");
+    const driver = {
+      snapshot: async () => external,
+      reset: async () => undefined,
+    };
+
+    await expect(restoreAndroidTargetForFinalEvidence(
+      driver as never,
+      "org.example.tv",
+      async () => undefined,
+    )).rejects.toThrow(/ended outside org\.example\.tv/u);
   });
 });
 
