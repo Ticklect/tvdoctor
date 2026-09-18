@@ -30,7 +30,22 @@ jobs:
       - name: Install pinned Android SDK components
         shell: pwsh
         run: |
-          sdkmanager.bat "platforms;android-36" "build-tools;36.0.0"
+          $sdkRoot = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_SDK_ROOT)) {
+            $env:ANDROID_SDK_ROOT
+          } elseif (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
+            $env:ANDROID_HOME
+          } else {
+            throw "Neither ANDROID_SDK_ROOT nor ANDROID_HOME is configured on the runner."
+          }
+          $sdkManager = Join-Path $sdkRoot "cmdline-tools\latest\bin\sdkmanager.bat"
+          if (-not (Test-Path -LiteralPath $sdkManager)) {
+            $sdkManager = Get-ChildItem -LiteralPath (Join-Path $sdkRoot "cmdline-tools") -Filter sdkmanager.bat -File -Recurse |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ([string]::IsNullOrWhiteSpace($sdkManager) -or -not (Test-Path -LiteralPath $sdkManager)) {
+            throw "sdkmanager.bat was not found under Android SDK root '$sdkRoot'."
+          }
+          & $sdkManager "platforms;android-36" "build-tools;36.0.0"
           if ($LASTEXITCODE -ne 0) { throw "Pinned Android SDK installation failed." }
 
       - name: Materialize the protected release keystore
