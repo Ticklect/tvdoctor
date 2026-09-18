@@ -202,14 +202,16 @@ try {
     $apkStream.Dispose()
     $sha256Algorithm.Dispose()
 }
-$manifest = [ordered]@{
-    packageName = "org.tvdoctor.observer"
-    versionName = "0.1.0"
-    protocolVersion = 2
-    sha256 = $sha256
-    certificateSha256 = $certificateSha256
-}
-$manifestJson = $manifest | ConvertTo-Json
+$manifestLines = @(
+    '{',
+    '  "packageName": "org.tvdoctor.observer",',
+    '  "versionName": "0.1.0",',
+    '  "protocolVersion": 2,',
+    "  `"sha256`": `"$sha256`",",
+    "  `"certificateSha256`": `"$certificateSha256`"",
+    '}'
+)
+$manifestJson = $manifestLines -join "`n"
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText((Join-Path $observerRoot "observer-manifest.json"), $manifestJson + [Environment]::NewLine, $utf8WithoutBom)
+[System.IO.File]::WriteAllText((Join-Path $observerRoot "observer-manifest.json"), $manifestJson + "`n", $utf8WithoutBom)
 Write-Output "Built TVDoctor observer: $outputApk"
