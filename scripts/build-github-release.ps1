@@ -88,7 +88,7 @@ try {
     Where-Object { $_.FullName -ne $checksumFile } |
     Sort-Object FullName |
     ForEach-Object {
-      $relative = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace("\", "/")
+      $relative = $_.FullName.Substring($stage.Length).TrimStart("\", "/").Replace("\", "/")
       $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
       "$hash  $relative"
     }
