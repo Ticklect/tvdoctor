@@ -69,4 +69,4 @@ if [[ "$scan_status" -ne 3 ]]; then
   exit 1
 fi
 
-node scripts/verify-android-ci-report.mjs +  "$scan_output/report.json" +  "$scan_output/android-coverage-ledger.json"
+node scripts/verify-android-ci-report.mjs "$scan_output/report.json" "$scan_output/android-coverage-ledger.json"
