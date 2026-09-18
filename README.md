@@ -61,6 +61,8 @@ TVDoctor  HIGH  remote.reachability
 The fixture gate completes 17 stages and reports four in-scope seeded defects.
 That is deterministic fixture evidence, not a general accuracy claim.
 
+**[Watch the 22-second TVDoctor demo →](docs/assets/tvdoctor-demo.mp4)**
+
 **[See the full demo and exact reproduction guide →](docs/demo.md)**
 
 ## Install v0.1.0 on Windows
