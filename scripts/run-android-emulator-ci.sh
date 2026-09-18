@@ -64,9 +64,9 @@ node packages/cli/dist/bin.js test \
 scan_status=$?
 set -e
 
-if [[ "$scan_status" -ne 1 ]]; then
-  echo "Expected deterministic finding exit code 1; received $scan_status."
+if [[ "$scan_status" -ne 3 ]]; then
+  echo "Expected fail-closed partial-coverage exit code 3; received $scan_status."
   exit 1
 fi
 
-node scripts/verify-android-ci-report.mjs "$scan_output/report.json"
+node scripts/verify-android-ci-report.mjs +  "$scan_output/report.json" +  "$scan_output/android-coverage-ledger.json"

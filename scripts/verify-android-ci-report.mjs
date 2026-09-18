@@ -2,13 +2,14 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 
 const reportPath = process.argv[2];
-if (reportPath === undefined) {
-  throw new Error("Usage: node scripts/verify-android-ci-report.mjs <report.json>");
+const ledgerPath = process.argv[3];
+if (reportPath === undefined || ledgerPath === undefined) {
+  throw new Error("Usage: node scripts/verify-android-ci-report.mjs <report.json> <android-coverage-ledger.json>");
 }
 
 const report = JSON.parse(await readFile(reportPath, "utf8"));
-if (report?.run?.status !== "completed") {
-  throw new Error(`Android CI scan was not complete: ${String(report?.run?.status)}`);
+if (report?.run?.status !== "partial") {
+  throw new Error(`Android CI scan was expected to fail closed as partial: ${String(report?.run?.status)}`);
 }
 if (report?.target?.environment?.package !== "org.tvdoctor.fixture") {
   throw new Error("Android CI report did not target the controlled fixture package.");
@@ -27,8 +28,42 @@ if (!Array.isArray(report?.replays)
   || report.replays[0]?.issueId !== issue.id) {
   throw new Error("Android CI did not emit the correlated replay for the seeded issue.");
 }
-if (report?.coverage?.packs?.some((pack) => pack.status !== "completed") !== false) {
-  throw new Error("Android CI report contains incomplete coverage packs.");
+if (!Array.isArray(report?.coverage?.packs)
+  || report.coverage.packs.length !== 1
+  || report.coverage.packs[0]?.pack !== "navigation"
+  || report.coverage.packs[0]?.status !== "partial") {
+  throw new Error("Android CI navigation coverage did not preserve the expected partial status.");
 }
 
-process.stdout.write(`Android hosted-emulator report: PASS (${issue.id})\n`);
+const ledgerArtifact = report?.artifacts?.find?.((artifact) => artifact?.id === "run:android-coverage-ledger");
+if (ledgerArtifact?.status !== "available"
+  || ledgerArtifact?.path !== "android-coverage-ledger.json") {
+  throw new Error("Android CI report did not register the coverage ledger artifact.");
+}
+
+const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+if (ledger?.schema !== "tvdoctor.android-coverage/v1"
+  || ledger?.strategy !== "adaptive"
+  || ledger?.targetPackage !== "org.tvdoctor.fixture") {
+  throw new Error("Android CI coverage ledger identity or strategy is invalid.");
+}
+if (!Number.isSafeInteger(ledger?.remainingSafeFrontier) || ledger.remainingSafeFrontier <= 0) {
+  throw new Error("Android CI expected a non-empty safe frontier to justify partial status.");
+}
+if ((ledger?.counts?.failed ?? -1) !== 0 || (ledger?.counts?.inaccessible ?? -1) !== 0) {
+  throw new Error("Android CI coverage ledger contains failed or inaccessible actions.");
+}
+if (!Number.isSafeInteger(ledger?.counts?.["operator-gated"]) || ledger.counts["operator-gated"] <= 0) {
+  throw new Error("Android CI expected at least one safety-gated action.");
+}
+if (!Array.isArray(ledger?.entries)
+  || !ledger.entries.some((entry) =>
+    entry?.action === "SELECT"
+    && entry?.disposition === "operator-gated"
+    && entry?.reasonCode === "ambiguous-activation")) {
+  throw new Error("Android CI did not preserve the expected ambiguous SELECT safety gate.");
+}
+
+process.stdout.write(
+  `Android hosted-emulator report: PASS (${issue.id}; partial safe coverage preserved)\n`,
+);
