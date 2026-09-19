@@ -1,0 +1,50 @@
+{
+  "schema": "tvdoctor.northstar-restoration-recall-config/v1",
+  "baseCommit": "610144eeb5c77de13b0f8f1d127d667df2f3dac7",
+  "groundTruthManifest": "fixtures/broken-streaming-web/seeded-defects.json",
+  "groundTruthManifestSha256": "a189bd7e4f2686cddb1b2c53d1dca161e6344dd81b4a6911531640291971804e",
+  "fixtureRuntimeSha256": "93ed6dfcd4cbd60eb10a61e5c6a02cc0197b3ccbfad634af31ae0bda9e15582c",
+  "provenanceResourcePaths": [
+    "/src/main.ts",
+    "/src/styles.css"
+  ],
+  "servedDocumentSha256": "7fd50e0da1f46b3a5d8dbb276a95b62f62d4830547958a38eac06c49e5ed7c47",
+  "servedResourceSha256": "1f6bf5acce8adfb127af37e748a9700cecc9a7dc22224dc5530b183ab3b5be19",
+  "comparisonBaselineServedDocumentSha256": "d17eb165b464db3dfc572a8ecf267e29463a04b76e8993896714c45cf134da1e",
+  "comparisonBaselineServedResourceSha256": "8b20675f63b053ea4771bd3229d6b46dd15955cc683facf6241524a00f001f0d",
+  "target": "http://127.0.0.1:4182/",
+  "equalWallClockBudgetMs": 120000,
+  "profile": "deep",
+  "actionPolicy": "production-safe-web-navigation",
+  "baselineRestorationMode": "verified-live-only",
+  "treatmentRestorationMode": "verified-local",
+  "manifestUsedOnlyByAnalyzer": true,
+  "experimentBoundary": "Controlled follow-up on the frozen Northstar web fixture after general traversal scheduling and navigation diagnostic changes. The fixture and detector scope remain unchanged from the seeded-defect baseline; no Northstar-specific production logic is permitted.",
+  "inScopeDetectorRules": [
+    "remote.reachability",
+    "remote.focus-trap",
+    "remote.unexpected-jump",
+    "remote.back-behaviour"
+  ],
+  "minimumDepthByDefectId": {
+    "fixture-home-more-info-unreachable": 2,
+    "fixture-profile-focus-trap": 4,
+    "fixture-carousel-right-jump": 5,
+    "fixture-details-back-wrong-screen": 3,
+    "fixture-caption-text-colour-remote-unreachable": 11
+  },
+  "pairs": [
+    {
+      "id": "j1",
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-traversal-detector-benchmark/j1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-traversal-detector-benchmark/j1-restoration"
+    },
+    {
+      "id": "j2",
+      "order": "restoration-baseline",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-traversal-detector-benchmark/j2-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-traversal-detector-benchmark/j2-restoration"
+    }
+  ]
+}
