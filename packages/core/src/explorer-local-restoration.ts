@@ -29,6 +29,7 @@ const SAFE_LOCAL_RESTORATION_KEYS = new Set<RemoteKey>(["UP", "DOWN", "LEFT", "R
 
 interface VerifiedLocalRestorationContext {
   readonly enabled: boolean;
+  readonly allowPathRestoration: boolean;
   readonly allowRootRestorationFallback: boolean;
   readonly refreshVisibleSelfLoops: boolean;
   readonly actionOrder: readonly RemoteKey[];
@@ -90,7 +91,7 @@ export function createVerifiedLocalRestorer(
     trustedLiveIdentity = identity;
   };
   const recordEdge = (edge: VerifiedStateEdge): void => {
-    if (!context.enabled || !SAFE_LOCAL_RESTORATION_KEYS.has(edge.key)) return;
+    if (!context.enabled || !context.allowPathRestoration || !SAFE_LOCAL_RESTORATION_KEYS.has(edge.key)) return;
     const key = `${edge.fromIdentity}\u001f${edge.key}\u001f${edge.toIdentity}`;
     if (verifiedEdgeKeys.has(key)) return;
     verifiedEdgeKeys.add(key);
@@ -168,7 +169,7 @@ export function createVerifiedLocalRestorer(
       return { status: "ok", snapshot: trustedLiveSnapshot };
     }
 
-    if (trustedLiveIdentity !== null) {
+    if (context.allowPathRestoration && trustedLiveIdentity !== null) {
       const localStartedAt = context.monotonicNow();
       const localBefore = trustedLiveSnapshot === null
         ? undefined

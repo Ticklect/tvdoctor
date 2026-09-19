@@ -727,6 +727,39 @@ describe("bounded deterministic explorer", () => {
     expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(1);
   });
 
+  it("can benchmark traversal without reconstructing abandoned branches", async () => {
+    const states = {
+      A: { screen: "home", focus: "A" },
+      B: { screen: "details", focus: "B" },
+    } as const;
+    const transitions = {
+      A: { RIGHT: "B", DOWN: "A" },
+      B: { RIGHT: "B", DOWN: "B" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("A", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "DOWN"],
+      restorationMode: "verified-live-only",
+      allowRootRestorationFallback: false,
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 20, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.graph.actions.map((attempt) => attempt.key)).toEqual(["RIGHT"]);
+    expect(result.statistics.visitedStates).toBe(2);
+    expect(result.statistics.resetCount).toBe(1);
+    expect(result.statistics.replayActions).toBe(0);
+    expect(result.statistics.verifiedPathRestorations).toBe(0);
+    expect(result.restorationDiagnostics?.some((entry) => entry.strategy === "verified-local-path")).toBe(false);
+    expect(result.termination).toMatchObject({
+      complete: false,
+      reason: "restoration-unavailable",
+      restorationRejectionReason: "root-fallback-disabled",
+    });
+  });
+
   it("can stop an unrestorable verified-local branch instead of relaunching the root", async () => {
     const states = {
       A: { screen: "home", focus: "A" },
@@ -1399,7 +1432,7 @@ describe("bounded deterministic explorer", () => {
     ["unconfigured replay action", { actions: ["RIGHT"], replayActions: ["SELECT"] }, "Explorer replayActions must be a subset of configured actions."],
     ["unknown profile", { profile: "turbo" as never }, "profile must be quick, standard, or deep."],
     ["unknown frontier strategy", { frontierStrategy: "random" as never }, "frontierStrategy must be breadth-first or priority."],
-    ["unknown restoration mode", { restorationMode: "unsafe-local" as never }, "restorationMode must be root-only or verified-local."],
+    ["unknown restoration mode", { restorationMode: "unsafe-local" as never }, "restorationMode must be root-only, verified-live-only, or verified-local."],
     ["unknown reset strategy", { resetStrategy: "factory-reset" as never }, "resetStrategy must be reload, relaunch, or clear-data."],
     ["non-function restore hook", { restoreInitialState: 1 as never }, "restoreInitialState must be a function."],
     ["non-function restore snapshot hook", { restoreInitialSnapshot: 1 as never }, "restoreInitialSnapshot must be a function."],

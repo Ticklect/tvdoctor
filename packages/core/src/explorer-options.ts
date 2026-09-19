@@ -203,8 +203,10 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     options.profile,
   );
   const restorationMode = options.restorationMode ?? "root-only";
-  if (restorationMode !== "root-only" && restorationMode !== "verified-local") {
-    throw new TypeError("restorationMode must be root-only or verified-local.");
+  if (restorationMode !== "root-only"
+    && restorationMode !== "verified-live-only"
+    && restorationMode !== "verified-local") {
+    throw new TypeError("restorationMode must be root-only, verified-live-only, or verified-local.");
   }
   const repetitionCompression = normaliseRepetitionCompression(
     options.profile,

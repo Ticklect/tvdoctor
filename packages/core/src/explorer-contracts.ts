@@ -57,7 +57,7 @@ export const EXPLORATION_BUDGET_PROFILES: Readonly<Record<
 };
 
 export type ExplorationFrontierStrategy = "breadth-first" | "priority";
-export type ExplorationRestorationMode = "root-only" | "verified-local";
+export type ExplorationRestorationMode = "root-only" | "verified-live-only" | "verified-local";
 
 /** Deterministic restoration strategy attempted for a queued exploration branch. */
 export type RestorationStrategy =
@@ -231,8 +231,11 @@ export interface ExplorerOptions {
   readonly frontierStrategy?: ExplorationFrontierStrategy;
   /**
    * `root-only` preserves fresh reset-relative restoration before every branch.
-   * `verified-local` may reuse an exact live canonical state before falling back
-   * to the same root restoration path. Intended for expensive Android relaunches.
+   * `verified-live-only` may continue only when the exact queued canonical state
+   * is already live. It does not reconstruct that state through a verified path.
+   * `verified-local` may additionally reconstruct through verified local paths
+   * before falling back to the same root restoration path. Intended for expensive
+   * Android relaunches.
    */
   readonly restorationMode?: ExplorationRestorationMode;
   /**

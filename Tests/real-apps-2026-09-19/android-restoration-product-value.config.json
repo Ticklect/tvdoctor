@@ -1,0 +1,53 @@
+{
+  "schema": "tvdoctor.android-restoration-product-value-config/v1",
+  "baseCommit": "f60c280ed7696339f6ac6d0df068230694a13313",
+  "treatmentRuntimeEquivalentToRestorationCommit": "8b24c1585e4130bfa69e51d0bac55d2db0ec2a78",
+  "baselineDefinition": "Current traversal with exact verified live-state continuation only; verified local-path reconstruction and root replay disabled. All other policy, budgets, settling, detector and reporting settings match treatment.",
+  "pairs": [
+    {
+      "app": "VLC 3.7.1",
+      "trial": 1,
+      "primary": true,
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/vlc-t1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/vlc-t1-restoration",
+      "findingReviews": []
+    },
+    {
+      "app": "Moonlight 12.2",
+      "trial": 1,
+      "primary": true,
+      "order": "restoration-baseline",
+      "baseline": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/moonlight-t1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/moonlight-t1-restoration",
+      "findingReviews": []
+    },
+    {
+      "app": "Moonlight 12.2",
+      "trial": 2,
+      "primary": false,
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/moonlight-t2-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/moonlight-t2-restoration",
+      "findingReviews": []
+    },
+    {
+      "app": "FLauncher 2025.07.001",
+      "trial": 1,
+      "primary": true,
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/flauncher-t1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/flauncher-t1-restoration",
+      "findingReviews": []
+    },
+    {
+      "app": "Nova 6.4.64",
+      "trial": 1,
+      "primary": true,
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/nova-t1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/android/restoration-value-benchmark/nova-t1-restoration",
+      "findingReviews": []
+    }
+  ]
+}

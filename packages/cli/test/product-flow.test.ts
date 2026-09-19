@@ -15,6 +15,7 @@ import {
   ANDROID_ACTION_SETTLING,
   ANDROID_LAUNCH_SETTLING,
   ANDROID_LAUNCH_WARMUP_MS,
+  ANDROID_TRAVERSAL_VERIFIED_LIVE_ONLY,
   ANDROID_TRAVERSAL_RESTORATION,
   ANDROID_EXPLORATION_BUDGETS,
   androidPreflight,
@@ -132,6 +133,13 @@ describe("guided product output", () => {
     expect(ANDROID_TRAVERSAL_RESTORATION).toEqual({
       restorationMode: "verified-local",
       allowRootRestorationFallback: true,
+      refreshVisibleSelfLoops: false,
+      replayActions: ["UP", "DOWN", "LEFT", "RIGHT", "SELECT"],
+      replaySettling: ANDROID_ACTION_SETTLING,
+    });
+    expect(ANDROID_TRAVERSAL_VERIFIED_LIVE_ONLY).toEqual({
+      restorationMode: "verified-live-only",
+      allowRootRestorationFallback: false,
       refreshVisibleSelfLoops: false,
       replayActions: ["UP", "DOWN", "LEFT", "RIGHT", "SELECT"],
       replaySettling: ANDROID_ACTION_SETTLING,

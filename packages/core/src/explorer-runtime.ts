@@ -372,7 +372,7 @@ export async function explore(
     onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
   });
   const localRestorer = createVerifiedLocalRestorer({
-    enabled: restorationMode === "verified-local",
+    enabled: restorationMode !== "root-only", allowPathRestoration: restorationMode === "verified-local",
     allowRootRestorationFallback,
     refreshVisibleSelfLoops,
     actionOrder,
@@ -401,7 +401,7 @@ export async function explore(
   const takeFrontier = (): QueueEntry | undefined => measureSynchronous("graphBookkeepingMs", () => {
     const selected = takePreferredFrontier(
       frontier, frontierStrategy, actionRank,
-      restorationMode === "verified-local" ? localRestorer.liveIdentity() : null,
+      restorationMode === "root-only" ? null : localRestorer.liveIdentity(),
     );
     pendingStates = frontier.length;
     return selected;

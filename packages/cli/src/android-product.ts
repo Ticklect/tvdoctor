@@ -56,6 +56,10 @@ import {
   type AndroidCoverageEvidence,
   type AndroidCoverageLedger,
 } from "./android-coverage-ledger.js";
+import {
+  buildAndroidRestorationBenchmarkEvidence,
+  type AndroidRestorationBenchmarkMode,
+} from "./android-restoration-benchmark.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -102,6 +106,12 @@ export const ANDROID_TRAVERSAL_RESTORATION = {
   // trusting only the driver's first settled snapshot can verify the checkpoint
   // against the old Activity and falsely report replay divergence.
   replaySettling: ANDROID_ACTION_SETTLING,
+} as const;
+
+export const ANDROID_TRAVERSAL_VERIFIED_LIVE_ONLY = {
+  ...ANDROID_TRAVERSAL_RESTORATION,
+  restorationMode: "verified-live-only",
+  allowRootRestorationFallback: false,
 } as const;
 
 function androidSnapshotBelongsToTarget(snapshot: AndroidStateSnapshot, packageName: string): boolean {
@@ -1048,6 +1058,18 @@ export interface AndroidScanOptions {
   ) => Promise<"select-highlighted" | "press-back" | "leave-unchanged">;
 }
 
+interface AndroidRestorationBenchmarkScanOptions extends AndroidScanOptions {
+  readonly restorationMode: AndroidRestorationBenchmarkMode;
+  readonly launchComponent?: string;
+}
+
+interface AndroidScanExecutionOptions extends AndroidScanOptions {
+  readonly restorationBenchmark?: {
+    readonly mode: AndroidRestorationBenchmarkMode;
+    readonly launchComponent?: string;
+  };
+}
+
 export interface AndroidScanProgress {
   readonly elapsedSeconds: number;
   readonly screens: number;
@@ -1443,7 +1465,7 @@ export function classifyAndroidStartup(
   };
 }
 
-export async function scanAndroidApk(options: AndroidScanOptions): Promise<AndroidScanResult> {
+async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<AndroidScanResult> {
   const startedAtMs = performance.now();
   const startedAt = new Date();
   const runId = `android-${startedAt.getTime().toString(36)}`;
@@ -1463,7 +1485,10 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     if (apk.packageName === null) throw new Error("TVDoctor could not determine the APK package name.");
     const packageName = apk.packageName;
     selectedPackage = packageName;
-    const component = apk.leanbackActivity ?? apk.launchableActivities.at(0) ?? null;
+    const component = options.restorationBenchmark?.launchComponent
+      ?? apk.leanbackActivity
+      ?? apk.launchableActivities.at(0)
+      ?? null;
     await driver.getDeviceMetadata(true);
     await driver.install(options.apkPath);
     await driver.launch({
@@ -1543,7 +1568,9 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
       actions: ANDROID_AUTOMATIC_ACTIONS,
       settling: ANDROID_ACTION_SETTLING,
-      ...ANDROID_TRAVERSAL_RESTORATION,
+      ...(options.restorationBenchmark?.mode === "verified-live-only"
+        ? ANDROID_TRAVERSAL_VERIFIED_LIVE_ONLY
+        : ANDROID_TRAVERSAL_RESTORATION),
       actionsForState: policyRecorder.actionsForState,
       onActionObserved: policyRecorder.onActionObserved,
       restoreInitialSnapshot,
@@ -1688,6 +1715,31 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
         reason,
       });
     }
+    if (options.restorationBenchmark !== undefined) {
+      const benchmarkPath = join(outputRoot, "android-restoration-product-value.json");
+      const benchmarkEvidence = sanitiseEvidenceJson(buildAndroidRestorationBenchmarkEvidence(
+        result,
+        packageName,
+        options.restorationBenchmark.mode,
+        policyRecorder.records.map((record) => ({
+          focusStateId: record.focusStateId,
+          safeActions: record.decisions
+            .filter((decision) => decision.disposition === "automatic" || decision.disposition === "target-boundary")
+            .map((decision) => decision.key),
+          reusedSafeActions: record.decisions
+            .filter((decision) => record.reusedActionIds.has(decision.actionId))
+            .map((decision) => decision.key),
+        })),
+      ));
+      await writeFile(benchmarkPath, `${stableJson(benchmarkEvidence)}\n`);
+      runArtifacts.push(await fileArtifact(
+        outputRoot,
+        benchmarkPath,
+        "run:android-restoration-product-value",
+        "report",
+        "application/json",
+      ));
+    }
     try {
       const actionProfiles = result.graph.actions.map((action) => ({
         id: action.id,
@@ -1810,4 +1862,26 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     await driver.forceStop(appPackage ?? undefined).catch(() => undefined);
     await driver.close();
   }
+}
+
+export async function scanAndroidApk(options: AndroidScanOptions): Promise<AndroidScanResult> {
+  return await runAndroidScan(options);
+}
+
+/** @internal Matched benchmark entry point; intentionally omitted from the package root exports. */
+export async function scanAndroidApkForRestorationBenchmark(
+  options: AndroidRestorationBenchmarkScanOptions,
+): Promise<AndroidScanResult> {
+  const {
+    restorationMode,
+    launchComponent,
+    ...scanOptions
+  } = options;
+  return await runAndroidScan({
+    ...scanOptions,
+    restorationBenchmark: {
+      mode: restorationMode,
+      ...(launchComponent === undefined ? {} : { launchComponent }),
+    },
+  });
 }
