@@ -8,8 +8,8 @@ if (reportPath === undefined || ledgerPath === undefined) {
 }
 
 const report = JSON.parse(await readFile(reportPath, "utf8"));
-if (report?.run?.status !== "partial") {
-  throw new Error(`Android CI scan was expected to fail closed as partial: ${String(report?.run?.status)}`);
+if (report?.run?.status !== "completed") {
+  throw new Error(`Android CI scan was expected to complete safe coverage: ${String(report?.run?.status)}`);
 }
 if (report?.target?.environment?.package !== "org.tvdoctor.fixture") {
   throw new Error("Android CI report did not target the controlled fixture package.");
@@ -31,8 +31,8 @@ if (!Array.isArray(report?.replays)
 if (!Array.isArray(report?.coverage?.packs)
   || report.coverage.packs.length !== 1
   || report.coverage.packs[0]?.pack !== "navigation"
-  || report.coverage.packs[0]?.status !== "partial") {
-  throw new Error("Android CI navigation coverage did not preserve the expected partial status.");
+  || report.coverage.packs[0]?.status !== "completed") {
+  throw new Error("Android CI navigation coverage did not complete the safe action frontier.");
 }
 
 const ledgerArtifact = report?.artifacts?.find?.((artifact) => artifact?.id === "run:android-coverage-ledger");
@@ -47,8 +47,8 @@ if (ledger?.schema !== "tvdoctor.android-coverage/v1"
   || ledger?.targetPackage !== "org.tvdoctor.fixture") {
   throw new Error("Android CI coverage ledger identity or strategy is invalid.");
 }
-if (!Number.isSafeInteger(ledger?.remainingSafeFrontier) || ledger.remainingSafeFrontier <= 0) {
-  throw new Error("Android CI expected a non-empty safe frontier to justify partial status.");
+if (!Number.isSafeInteger(ledger?.remainingSafeFrontier) || ledger.remainingSafeFrontier !== 0) {
+  throw new Error("Android CI expected the safe action frontier to be exhausted.");
 }
 if ((ledger?.counts?.failed ?? -1) !== 0 || (ledger?.counts?.inaccessible ?? -1) !== 0) {
   throw new Error("Android CI coverage ledger contains failed or inaccessible actions.");
@@ -65,5 +65,5 @@ if (!Array.isArray(ledger?.entries)
 }
 
 process.stdout.write(
-  `Android hosted-emulator report: PASS (${issue.id}; partial safe coverage preserved)\n`,
+  `Android hosted-emulator report: PASS (${issue.id}; completed safe coverage preserved)\n`,
 );

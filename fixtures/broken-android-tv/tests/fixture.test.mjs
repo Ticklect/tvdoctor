@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = join(fixtureRoot, "..", "..");
 
 async function text(path) {
   return await readFile(join(fixtureRoot, path), "utf8");
+}
+
+async function repositoryText(path) {
+  return await readFile(join(repositoryRoot, path), "utf8");
 }
 
 test("manifest declares a native exported Leanback launcher without requiring touch", async () => {
@@ -98,4 +106,60 @@ test("runtime recreation verifier proves a new Activity instance in the same pac
   assert.match(verifier, /const sameProcess = `pid=\$\{pidAfter\}; package=\$\{PACKAGE\}`/u);
   assert.match(verifier, /pidBefore !== pidAfter/u);
   assert.match(verifier, /Activity recreation completed\. Focus Probe has initial focus\./u);
+});
+
+test("hosted Android CI accepts completed safe coverage while preserving the seeded issue gate", async () => {
+  const runner = await repositoryText("scripts/run-android-emulator-ci.sh");
+  assert.match(runner, /\[\[ "\$scan_status" -ne 1 \]\]/u);
+  assert.match(runner, /Expected completed seeded-issue exit code 1/u);
+
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "tvdoctor-android-ci-verifier-"));
+  const reportPath = join(temporaryDirectory, "report.json");
+  const ledgerPath = join(temporaryDirectory, "android-coverage-ledger.json");
+  const issueId = "TVDOCTOR-NAV-SEEDED";
+  try {
+    await writeFile(reportPath, JSON.stringify({
+      run: { status: "completed" },
+      target: { environment: { package: "org.tvdoctor.fixture" } },
+      issues: [{
+        id: issueId,
+        rule: "remote.lost-focus",
+        severity: "high",
+        confidence: "deterministic",
+      }],
+      replays: [{ issueId }],
+      coverage: { packs: [{ pack: "navigation", status: "completed" }] },
+      artifacts: [{
+        id: "run:android-coverage-ledger",
+        status: "available",
+        path: "android-coverage-ledger.json",
+      }],
+    }), "utf8");
+    await writeFile(ledgerPath, JSON.stringify({
+      schema: "tvdoctor.android-coverage/v1",
+      strategy: "adaptive",
+      targetPackage: "org.tvdoctor.fixture",
+      remainingSafeFrontier: 0,
+      counts: {
+        failed: 0,
+        inaccessible: 0,
+        "operator-gated": 1,
+      },
+      entries: [{
+        action: "SELECT",
+        disposition: "operator-gated",
+        reasonCode: "ambiguous-activation",
+      }],
+    }), "utf8");
+
+    const verification = spawnSync(
+      process.execPath,
+      [join(repositoryRoot, "scripts", "verify-android-ci-report.mjs"), reportPath, ledgerPath],
+      { encoding: "utf8" },
+    );
+    assert.equal(verification.status, 0, verification.stderr);
+    assert.match(verification.stdout, /completed safe coverage preserved/u);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });

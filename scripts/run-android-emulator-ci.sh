@@ -64,8 +64,8 @@ node packages/cli/dist/bin.js test \
 scan_status=$?
 set -e
 
-if [[ "$scan_status" -ne 3 ]]; then
-  echo "Expected fail-closed partial-coverage exit code 3; received $scan_status."
+if [[ "$scan_status" -ne 1 ]]; then
+  echo "Expected completed seeded-issue exit code 1; received $scan_status."
   exit 1
 fi
 
