@@ -28,6 +28,7 @@ export interface DirectionalCandidate {
   readonly score: number;
   readonly mainDistance: number;
   readonly crossOverlap: number;
+  readonly crossGap: number;
 }
 
 export const DIRECTIONAL_KEYS: ReadonlySet<RemoteKey> = new Set([
@@ -325,9 +326,6 @@ export function directionalCandidate(
   const signedMainDistance = key === "LEFT" || key === "UP" ? -mainDelta : mainDelta;
   if (signedMainDistance <= 1) return null;
 
-  const crossDelta = horizontal
-    ? Math.abs(targetCenterY - sourceCenterY)
-    : Math.abs(targetCenterX - sourceCenterX);
   const sourceCrossStart = horizontal ? source.y : source.x;
   const sourceCrossEnd = sourceCrossStart + (horizontal ? source.height : source.width);
   const targetCrossStart = horizontal ? target.y : target.x;
@@ -340,13 +338,14 @@ export function directionalCandidate(
     0,
     Math.max(sourceCrossStart, targetCrossStart) - Math.min(sourceCrossEnd, targetCrossEnd),
   );
-  if (crossOverlap === 0 && crossDelta > signedMainDistance) return null;
+  if (crossOverlap === 0 && crossGap > signedMainDistance) return null;
 
   return {
     indexed,
-    score: signedMainDistance + crossDelta * 2 + crossGap * 4,
+    score: signedMainDistance + crossGap * 4,
     mainDistance: signedMainDistance,
     crossOverlap,
+    crossGap,
   };
 }
 

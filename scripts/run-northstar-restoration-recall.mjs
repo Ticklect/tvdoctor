@@ -367,6 +367,34 @@ try {
   }
 
   const restorationDiagnostics = exploration.restorationDiagnostics ?? [];
+  const focusStateById = new Map(exploration.graph.focus.states.map((state) => [state.id, state]));
+  const screenStateById = new Map(exploration.graph.screens.states.map((state) => [state.id, state]));
+  const samePath = (left, right) => (
+    left.length === right.length && left.every((key, index) => key === right[index])
+  );
+  const novelStateProducingActions = exploration.graph.actions.filter((action) => {
+    if (action.toFocusStateId === null) return false;
+    const state = focusStateById.get(action.toFocusStateId);
+    return state !== undefined && samePath(state.discoveredBy, action.actionSequence);
+  }).length;
+  const novelScreenProducingActions = exploration.graph.actions.filter((action) => {
+    if (action.toScreenStateId === null) return false;
+    const screen = screenStateById.get(action.toScreenStateId);
+    return screen !== undefined && samePath(screen.discoveredBy, action.actionSequence);
+  }).length;
+  const selfLoopActions = exploration.graph.actions.filter((action) => (
+    action.toFocusStateId !== null && action.toFocusStateId === action.fromFocusStateId
+  )).length;
+  const knownNonSelfStateActions = Math.max(
+    0,
+    exploration.statistics.explorationActions - novelStateProducingActions - selfLoopActions,
+  );
+  const findingActionAttempts = new Set(findings.flatMap((finding) => (
+    finding.source.actionAttemptId === null ? [] : [finding.source.actionAttemptId]
+  )));
+  const resetTimeMs = exploration.statistics.timings.resetMs;
+  const replayTimeMs = exploration.statistics.timings.pathReplayMs;
+  const explorationTimeMs = Math.max(0, explorationWallRuntimeMs - resetTimeMs - replayTimeMs);
   const cyclesByState = new Map();
   for (const diagnostic of restorationDiagnostics) {
     const cycles = cyclesByState.get(diagnostic.destinationStateId) ?? new Map();
@@ -430,13 +458,39 @@ try {
       maximumDepth: exploration.statistics.maximumPathDepth,
       completedBranches,
       findings: findings.length,
-      restorationCycles: new Set(restorationDiagnostics.map((entry) => entry.restorationCycleNumber)).size,
+      restorationCycles: exploration.statistics.restorationCycles
+        ?? exploration.statistics.explorationActions,
       restorationAttempts: exploration.statistics.restorationAttempts ?? 0,
       restorationSuccesses: exploration.statistics.restorationSuccesses ?? 0,
       restorationFailures: exploration.statistics.restorationFailures ?? 0,
       resetCount: exploration.statistics.resetCount,
-      resetTimeMs: exploration.statistics.timings.resetMs,
-      replayTimeMs: exploration.statistics.timings.pathReplayMs,
+      resetTimeMs,
+      replayTimeMs,
+      explorationTimeMs,
+      averageReplayLength: exploration.statistics.averageReplayLength,
+      maximumReplayLength: exploration.statistics.maximumReplayLength,
+      novelStateProducingActions,
+      novelScreenProducingActions,
+      duplicateStateActions: Math.max(0, exploration.statistics.explorationActions - novelStateProducingActions),
+      selfLoopActions,
+      knownNonSelfStateActions,
+      restorationCyclesLeadingToNewState: novelStateProducingActions,
+      restorationCyclesLeadingToNoNewState: Math.max(
+        0,
+        exploration.statistics.explorationActions - novelStateProducingActions,
+      ),
+      restorationCyclesContributingToFinding: findingActionAttempts.size,
+      unfinishedFrontierCount: exploration.termination.remainingFrontierEntries
+        ?? exploration.statistics.pendingStates,
+      unfinishedCandidateActions: exploration.termination.remainingCandidateActions ?? 0,
+      repeatedStates: exploration.statistics.repeatedStates ?? 0,
+      settlingPolls: exploration.statistics.settlingPolls ?? 0,
+      unsettledActions: exploration.statistics.unsettledActions ?? 0,
+      driverPressTimeMs: exploration.statistics.timings.driverPressMs,
+      actionDispatchTimeMs: exploration.statistics.timings.actionDispatchMs,
+      focusSettlingTimeMs: exploration.statistics.timings.focusSettlingMs,
+      screenSettlingTimeMs: exploration.statistics.timings.screenSettlingMs,
+      snapshotCaptureTimeMs: exploration.statistics.timings.snapshotCaptureMs,
       systemSurfaceEscapes: externalStates.length,
     },
     termination: exploration.termination,

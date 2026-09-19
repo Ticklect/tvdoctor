@@ -11,6 +11,8 @@ import {
   metadataForNode,
   metadataForTarget,
   nodeIdentity,
+  normalise,
+  reachedIdentitiesForScreen,
   sameSequence,
   shortestAttempt,
   subtreeText,
@@ -24,6 +26,10 @@ import {
   type NavigationRuleContext,
 } from "./navigation-diagnostic-findings.js";
 
+const HEURISTIC_TRAP_APPLIED_KEYS = [...REQUIRED_DIRECTIONAL_KEYS, "BACK"] as const;
+const DISMISS_CONTROL_ROLES: ReadonlySet<string> = new Set(["button", "link"]);
+const DISMISS_SEMANTICS = /\b(?:close|dismiss)\b/u;
+
 export function addFocusTrapFindings(
   { result, resetStrategy, append: add }: NavigationRuleContext,
 ): void {
@@ -31,7 +37,6 @@ export function addFocusTrapFindings(
 
   for (const screen of result.graph.screens.states) {
     const coverage = localCoverage(result, screen);
-    if (!coverage.complete) continue;
     const nodes = flattenSnapshot(screen.representativeSnapshot);
     const dialog = visibleDialog(nodes);
     if (dialog === null) continue;
@@ -64,48 +69,142 @@ export function addFocusTrapFindings(
     ));
     const entry = shortestAttempt(incoming);
     if (entry === null) continue;
-    if (coverage.attempts.some((attempt) => !destinationRemainsInsideDialog(attempt))) continue;
-    const backAttempts = coverage.attempts.filter((attempt) => attempt.key === "BACK");
-    if (backAttempts.length !== screen.focusStateIds.length
-      || backAttempts.some((attempt) => !destinationRemainsInsideDialog(attempt))) continue;
+    const dialogElement = metadataForNode(dialog.node);
+    if (coverage.complete) {
+      if (coverage.attempts.some((attempt) => !destinationRemainsInsideDialog(attempt))) continue;
+      const backAttempts = coverage.attempts.filter((attempt) => attempt.key === "BACK");
+      if (backAttempts.length !== screen.focusStateIds.length
+        || backAttempts.some((attempt) => !destinationRemainsInsideDialog(attempt))) continue;
 
+      const proof = shortestAttempt(backAttempts);
+      if (proof === null) continue;
+      const sourceElement = focusedTarget(proof.beforeSnapshot);
+      const sourceMetadata = sourceElement === null ? null : metadataForTarget(sourceElement);
+      const observedElement = focusedTarget(proof.afterSnapshot);
+      if (observedElement === null) continue;
+      const observedMetadata = metadataForTarget(observedElement);
+      const classification = "deterministic";
+      add({
+        classification,
+        issue: issue(
+          NAVIGATION_DIAGNOSTIC_RULES.focusTrap,
+          classification,
+          "high",
+          "Remote focus is trapped in a dialog",
+          "Every local focus state in the entered dialog was expanded, no configured remote action exits it, and Back remains inside it.",
+          screen.id,
+          "Back or another documented remote action exits the dialog.",
+          "All locally expanded actions, including Back, remain in the dialog screen.",
+          {
+            fromElement: elementLabel(sourceMetadata),
+            action: "BACK",
+            expectedElement: null,
+            observedElement: elementLabel(observedMetadata),
+          },
+          proof.actionSequence,
+          `${String(screen.focusStateIds.length)} focus states have complete local action coverage and none has a remote exit.`,
+          proof.id,
+          resetStrategy,
+        ),
+        source: actionSource(proof, "action-attempt", entry.id, true),
+        target: diagnosticTarget(
+          screen.id,
+          proof.toFocusStateId,
+          dialogElement,
+          null,
+          observedMetadata,
+        ),
+      });
+      continue;
+    }
+
+    const attemptsFor = (focusStateId: string, key: ExplorationActionAttempt["key"]): readonly ExplorationActionAttempt[] => (
+      coverage.attempts.filter((attempt) => attempt.fromFocusStateId === focusStateId && attempt.key === key)
+    );
+    const appliedAttempts: ExplorationActionAttempt[] = [];
+    let appliedCoverageComplete = true;
+    for (const focusStateId of screen.focusStateIds) {
+      for (const key of HEURISTIC_TRAP_APPLIED_KEYS) {
+        const matches = attemptsFor(focusStateId, key);
+        const attempt = matches[0];
+        if (matches.length !== 1
+          || attempt === undefined
+          || attempt.actionResult.key !== key
+          || attempt.actionResult.outcome !== "applied"
+          || attempt.toFocusStateId === null
+          || attempt.toScreenStateId === null
+          || !destinationRemainsInsideDialog(attempt)) {
+          appliedCoverageComplete = false;
+          break;
+        }
+        appliedAttempts.push(attempt);
+      }
+      if (!appliedCoverageComplete) break;
+      const selectAttempts = attemptsFor(focusStateId, "SELECT");
+      const selectAttempt = selectAttempts[0];
+      if (selectAttempts.length !== 1
+        || selectAttempt === undefined
+        || selectAttempt.actionResult.key !== "SELECT"
+        || selectAttempt.actionResult.outcome !== "unsupported") {
+        appliedCoverageComplete = false;
+        break;
+      }
+    }
+    if (!appliedCoverageComplete) continue;
+
+    const reached = reachedIdentitiesForScreen(result, screen.id);
+    const dismissCandidates = nodes.filter((candidate) => {
+      if (!inSubtree(candidate, dialog)) return false;
+      const node = candidate.node;
+      if (node.visible !== true
+        || node.enabled !== true
+        || node.focusable !== false
+        || !DISMISS_CONTROL_ROLES.has(normalise(node.role))) return false;
+      const identity = nodeIdentity(node);
+      if (identity === null || reached.has(identity)) return false;
+      const semantics = normalise([node.stableId, node.name, node.text].filter((value) => value !== null).join(" "));
+      return DISMISS_SEMANTICS.test(semantics);
+    });
+    if (dismissCandidates.length !== 1) continue;
+
+    const backAttempts = appliedAttempts.filter((attempt) => attempt.key === "BACK");
     const proof = shortestAttempt(backAttempts);
     if (proof === null) continue;
-    const dialogElement = metadataForNode(dialog.node);
     const sourceElement = focusedTarget(proof.beforeSnapshot);
     const sourceMetadata = sourceElement === null ? null : metadataForTarget(sourceElement);
     const observedElement = focusedTarget(proof.afterSnapshot);
     if (observedElement === null) continue;
     const observedMetadata = metadataForTarget(observedElement);
-    const classification = "deterministic";
+    const dismissMetadata = metadataForNode(dismissCandidates[0]?.node ?? dialog.node);
+    const classification = "heuristic";
     add({
       classification,
       issue: issue(
         NAVIGATION_DIAGNOSTIC_RULES.focusTrap,
         classification,
         "high",
-        "Remote focus is trapped in a dialog",
-        "Every local focus state in the entered dialog was expanded, no configured remote action exits it, and Back remains inside it.",
+        "Dialog may be a remote focus trap",
+        "Every directional action and Back was applied from every reached focus state and remained inside the entered dialog. Select was explicitly unsupported at every state, while a visible enabled close or dismiss control is pointer-only.",
         screen.id,
-        "Back or another documented remote action exits the dialog.",
-        "All locally expanded actions, including Back, remain in the dialog screen.",
+        "A documented remote action, including activation where safe, exits the dialog.",
+        "Tested directional actions and Back remain in the dialog; activation was withheld and the observed dismiss affordance is not remote-focusable.",
         {
           fromElement: elementLabel(sourceMetadata),
           action: "BACK",
-          expectedElement: null,
+          expectedElement: elementLabel(dismissMetadata),
           observedElement: elementLabel(observedMetadata),
         },
         proof.actionSequence,
-        `${String(screen.focusStateIds.length)} focus states have complete local action coverage and none has a remote exit.`,
+        `${String(screen.focusStateIds.length)} focus states have complete applied directional and Back coverage inside the dialog; Select is unsupported for every state and ${elementLabel(dismissMetadata) ?? "one close control"} is visible, enabled, and non-focusable.`,
         proof.id,
         resetStrategy,
       ),
-      source: actionSource(proof, "action-attempt", entry.id, true),
+      source: actionSource(proof, "action-attempt", entry.id, false),
       target: diagnosticTarget(
         screen.id,
         proof.toFocusStateId,
         dialogElement,
-        null,
+        dismissMetadata,
         observedMetadata,
       ),
     });

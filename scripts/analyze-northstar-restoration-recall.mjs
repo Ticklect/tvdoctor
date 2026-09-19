@@ -94,6 +94,7 @@ function runSummary(run, seeds, detectorRules) {
     detectedDefectIds: detected.map((seed) => seed.id).sort(),
     missedDefectIds: missed.map((seed) => seed.id).sort(),
     recall: safeRatio(truePositiveCount, seeds.length),
+    precision: safeRatio(truePositiveCount, truePositiveCount + falsePositives.length),
     falsePositiveCount: falsePositives.length,
     uniqueFalsePositiveCount,
     falsePositives,
@@ -109,6 +110,8 @@ function runSummary(run, seeds, detectorRules) {
     trueSeededDefectsPerMinute: safeRatio(truePositiveCount, runtimeMinutes),
     actionsPerTrueDefect: safeRatio(run.metrics.actions, truePositiveCount),
     runtimeMsPerTrueDefect: safeRatio(run.metrics.explorationWallRuntimeMs, truePositiveCount),
+    novelStatesPerMinute: safeRatio(run.metrics.novelStateProducingActions ?? 0, runtimeMinutes),
+    novelScreensPerMinute: safeRatio(run.metrics.novelScreenProducingActions ?? 0, runtimeMinutes),
   };
 }
 
@@ -382,6 +385,7 @@ const aggregateMode = (mode) => {
   const summaries = pairs.map((pair) => pair[mode]);
   return {
     meanRecall: mean(summaries.map((summary) => summary.recall ?? 0)),
+    meanPrecision: meanOrNull(summaries.filter((summary) => summary.precision !== null).map((summary) => summary.precision)),
     meanTruePositives: mean(summaries.map((summary) => summary.truePositiveCount)),
     meanFalsePositives: mean(summaries.map((summary) => summary.falsePositiveCount)),
     meanRuntimeMs: mean(summaries.map((summary) => summary.metrics.explorationWallRuntimeMs)),
@@ -390,13 +394,33 @@ const aggregateMode = (mode) => {
     meanScreens: mean(summaries.map((summary) => summary.metrics.appOwnedScreens)),
     meanDepth: mean(summaries.map((summary) => summary.metrics.maximumDepth)),
     meanCompletedBranches: mean(summaries.map((summary) => summary.metrics.completedBranches)),
+    meanFindingsPerMinute: mean(summaries.map((summary) => summary.findingsPerMinute ?? 0)),
     meanTrueSeededDefectsPerMinute: mean(summaries.map((summary) => summary.trueSeededDefectsPerMinute ?? 0)),
     meanActionsPerTrueDefect: meanOrNull(summaries.filter((summary) => summary.actionsPerTrueDefect !== null).map((summary) => summary.actionsPerTrueDefect)),
     meanRuntimeMsPerTrueDefect: meanOrNull(summaries.filter((summary) => summary.runtimeMsPerTrueDefect !== null).map((summary) => summary.runtimeMsPerTrueDefect)),
     meanRestorationCycles: mean(summaries.map((summary) => summary.metrics.restorationCycles)),
+    meanRestorationAttempts: mean(summaries.map((summary) => summary.metrics.restorationAttempts ?? 0)),
+    meanRestorationSuccesses: mean(summaries.map((summary) => summary.metrics.restorationSuccesses ?? 0)),
+    meanRestorationFailures: mean(summaries.map((summary) => summary.metrics.restorationFailures ?? 0)),
+    meanResetCount: mean(summaries.map((summary) => summary.metrics.resetCount ?? 0)),
     meanReplayActions: mean(summaries.map((summary) => summary.metrics.replayActions)),
+    meanAverageReplayLength: mean(summaries.map((summary) => summary.metrics.averageReplayLength ?? 0)),
+    meanMaximumReplayLength: mean(summaries.map((summary) => summary.metrics.maximumReplayLength ?? 0)),
     meanReplayTimeMs: mean(summaries.map((summary) => summary.metrics.replayTimeMs)),
     meanResetTimeMs: mean(summaries.map((summary) => summary.metrics.resetTimeMs)),
+    meanExplorationTimeMs: mean(summaries.map((summary) => summary.metrics.explorationTimeMs ?? 0)),
+    meanNovelStateProducingActions: mean(summaries.map((summary) => summary.metrics.novelStateProducingActions ?? 0)),
+    meanNovelScreenProducingActions: mean(summaries.map((summary) => summary.metrics.novelScreenProducingActions ?? 0)),
+    meanDuplicateStateActions: mean(summaries.map((summary) => summary.metrics.duplicateStateActions ?? 0)),
+    meanSelfLoopActions: mean(summaries.map((summary) => summary.metrics.selfLoopActions ?? 0)),
+    meanKnownNonSelfStateActions: mean(summaries.map((summary) => summary.metrics.knownNonSelfStateActions ?? 0)),
+    meanRestorationCyclesLeadingToNewState: mean(summaries.map((summary) => summary.metrics.restorationCyclesLeadingToNewState ?? 0)),
+    meanRestorationCyclesLeadingToNoNewState: mean(summaries.map((summary) => summary.metrics.restorationCyclesLeadingToNoNewState ?? 0)),
+    meanRestorationCyclesContributingToFinding: mean(summaries.map((summary) => summary.metrics.restorationCyclesContributingToFinding ?? 0)),
+    meanNovelStatesPerMinute: mean(summaries.map((summary) => summary.novelStatesPerMinute ?? 0)),
+    meanNovelScreensPerMinute: mean(summaries.map((summary) => summary.novelScreensPerMinute ?? 0)),
+    meanUnfinishedFrontierCount: mean(summaries.map((summary) => summary.metrics.unfinishedFrontierCount ?? 0)),
+    meanUnfinishedCandidateActions: mean(summaries.map((summary) => summary.metrics.unfinishedCandidateActions ?? 0)),
   };
 };
 

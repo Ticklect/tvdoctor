@@ -10,7 +10,7 @@ import {
   createExplorerActionHooks,
   executeExplorerAction,
 } from "./explorer-actions.js";
-import { takePreferredFrontier, type QueueEntry } from "./explorer-frontier.js";
+import { annotateFrontierTermination, scheduleDestinationFrontier, scheduleFrontierContinuation, takePreferredFrontierWithCount, type QueueEntry } from "./explorer-frontier.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
 import { createVerifiedLocalRestorer } from "./explorer-local-restoration.js";
 import { createExplorerPerformance } from "./explorer-performance.js";
@@ -69,6 +69,7 @@ export async function explore(
   let settlingPolls = 0;
   let unsettledActions = 0;
   let frontierInsertionSequence = 0;
+  let restorationCycleCount = (): number => 0;
   const { phaseTimings, durationSince, measureSynchronous, measuredDriver } = createExplorerPerformance(
     driver,
     monotonicNow,
@@ -162,6 +163,7 @@ export async function explore(
         verifiedPathRestorations,
         restorationFallbacks,
         restorationAttempts: restorationDiagnostics.attempts, restorationSuccesses: restorationDiagnostics.successes, restorationFailures: restorationDiagnostics.failures,
+        restorationCycles: restorationCycleCount(),
         visitedStates: focusStates.length,
         screenStates: screenStates.length,
         focusStates: focusStates.length,
@@ -397,20 +399,18 @@ export async function explore(
     onFallback: () => { restorationFallbacks += 1; },
     onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
   });
+  restorationCycleCount = localRestorer.cycleCount;
   const restore = localRestorer.restore;
-  const takeFrontier = (): QueueEntry | undefined => measureSynchronous("graphBookkeepingMs", () => {
-    const selected = takePreferredFrontier(
-      frontier, frontierStrategy, actionRank,
-      restorationMode === "root-only" ? null : localRestorer.liveIdentity(),
-    );
-    pendingStates = frontier.length;
-    return selected;
-  });
 
   let termination: ExplorationTermination | null = null;
   let skippedRestoration: ExplorationTermination | null = null;
   exploration: while (frontier.length > 0) {
-    const entry = takeFrontier();
+    const selected = measureSynchronous("graphBookkeepingMs", () => takePreferredFrontierWithCount(
+      frontier, frontierStrategy, actionRank,
+      restorationMode === "root-only" ? null : localRestorer.liveIdentity(),
+    ));
+    pendingStates = selected.pendingStates;
+    const entry = selected.entry;
     if (entry === undefined) break;
     const budgetTermination = workBudgetTermination();
     if (budgetTermination !== null) {
@@ -422,13 +422,16 @@ export async function explore(
       continue;
     }
 
-    const stateActions = await actionHooks.actionsForState(entry, signalAborted);
-    if (stateActions.status === "stop") {
-      termination = stateActions.termination;
-      break;
+    let stateActionOrder = entry.remainingActions;
+    if (stateActionOrder === undefined) {
+      const stateActions = await actionHooks.actionsForState(entry, signalAborted);
+      if (stateActions.status === "stop") {
+        termination = stateActions.termination;
+        break;
+      }
+      stateActionOrder = stateActions.actions;
     }
-    const stateActionOrder = stateActions.actions;
-    for (const key of stateActionOrder) {
+    for (const [stateActionIndex, key] of stateActionOrder.entries()) {
       const beforeActionBudget = workBudgetTermination();
       if (beforeActionBudget !== null) {
         termination = beforeActionBudget;
@@ -589,37 +592,46 @@ export async function explore(
           expandable: true,
         });
       }
-      if (replayable && expandable && !destination.state.scheduled) {
-        const destinationGroup = destination.state.repetitionGroup === null
-          ? undefined
-          : repetitionGroups.get(destination.state.repetitionGroup);
-        if (destinationGroup !== undefined
-          && destinationGroup.expandedRepresentatives
-            >= repetitionCompression.maxExpandedRepresentativesPerGroup) {
-          markDeferred(destination.state.identity);
-        } else {
-          destination.state.scheduled = true;
-          if (destinationGroup !== undefined) destinationGroup.expandedRepresentatives += 1;
-          frontier.push({
-            state: destination.state,
-            sequence: actionSequence,
-            checkpoints: [...entry.checkpoints, observedFingerprint.stateIdentity],
-            insertionOrder: frontierInsertionSequence,
-          });
-          frontierInsertionSequence += 1;
-          maximumQueueSize = Math.max(maximumQueueSize, frontier.length);
-          pendingStates = frontier.length;
-        }
+      if (replayable && expandable) {
+        const scheduled = scheduleDestinationFrontier({
+          frontier, state: destination.state, sequence: actionSequence,
+          checkpoints: [...entry.checkpoints, observedFingerprint.stateIdentity],
+          insertionOrder: frontierInsertionSequence,
+          repetitionGroup: destination.state.repetitionGroup === null
+            ? undefined
+            : repetitionGroups.get(destination.state.repetitionGroup),
+          maxExpandedRepresentativesPerGroup: repetitionCompression.maxExpandedRepresentativesPerGroup,
+          markDeferred,
+        });
+        frontierInsertionSequence = scheduled.insertionOrder;
+        maximumQueueSize = Math.max(maximumQueueSize, scheduled.queueSize);
+        pendingStates = scheduled.queueSize;
       }
+      const continuation = scheduleFrontierContinuation({
+        frontier, entry, stateActionOrder, stateActionIndex,
+        insertionOrder: frontierInsertionSequence,
+        restorationEnabled: restorationMode !== "root-only",
+        replayable, expandable, observedIdentity: observedFingerprint.stateIdentity,
+      });
+      frontierInsertionSequence = continuation.insertionOrder;
+      maximumQueueSize = Math.max(maximumQueueSize, continuation.queueSize);
+      pendingStates = continuation.queueSize;
       phaseTimings.graphBookkeepingMs += durationSince(bookkeepingStartedAt);
       publishProgress();
-      const refreshTermination = await localRestorer.observeAfterAction(actionObservation.snapshot, observedFingerprint.stateIdentity, entry, expandable, key !== stateActionOrder.at(-1) || frontier.length > 0);
+      const refreshTermination = await localRestorer.observeAfterAction(
+        actionObservation.snapshot,
+        observedFingerprint.stateIdentity,
+        entry,
+        expandable,
+        continuation.remainingActions.length > 0 || frontier.length > 0,
+      );
       if (refreshTermination !== null) { termination = refreshTermination; break exploration; }
 
       if (elapsed() >= budgets.maxDurationMs) {
         termination = incomplete("max-duration");
         break exploration;
       }
+      if (continuation.yieldToLiveDestination) continue exploration;
     }
   }
 
@@ -633,18 +645,6 @@ export async function explore(
         )
         : COMPLETE_TERMINATION);
   }
-  const safetyLimited = termination.reason === "max-actions"
-    || termination.reason === "max-states"
-    || termination.reason === "max-depth"
-    || termination.reason === "max-duration";
-  if (safetyLimited && frontier.length > 0) {
-    const eligibleEntries = frontier.filter((entry) => entry.sequence.length < budgets.maxDepth);
-    termination = {
-      ...termination,
-      remainingFrontierEntries: frontier.length,
-      remainingCandidateActions: eligibleEntries.length * actionOrder.length,
-      detail: `Bounded-incomplete: ${String(frontier.length)} frontier entries remain after ${termination.reason}.`,
-    };
-  }
+  termination = annotateFrontierTermination(termination, frontier, budgets.maxDepth, actionOrder.length);
   return finish(termination);
 }

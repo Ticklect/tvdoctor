@@ -3,6 +3,7 @@ import {
   focusedTarget,
   metadataForTarget,
   sameSequence,
+  semanticScreenIdentity,
   sequenceWith,
 } from "./navigation-diagnostic-context.js";
 import {
@@ -25,10 +26,24 @@ export function addBackBehaviourFindings(
     && attempt.toScreenStateId !== attempt.fromScreenStateId
   ));
   const focusById = new Map(result.graph.focus.states.map((state) => [state.id, state]));
+  const screenById = new Map(result.graph.screens.states.map((state) => [state.id, state]));
+  const semanticScreenKey = (screenStateId: string): string | null => {
+    const identity = semanticScreenIdentity(screenById.get(screenStateId));
+    if (identity === null || (identity.location === null && identity.landmarks.length === 0)) return null;
+    const landmarks = identity.landmarks
+      .map((landmark) => landmark.join("\u0000"))
+      .sort();
+    return JSON.stringify({ location: identity.location, landmarks });
+  };
 
   for (const entry of selectEntries) {
     const enteredState = entry.toFocusStateId === null ? undefined : focusById.get(entry.toFocusStateId);
     if (enteredState === undefined || !sameSequence(enteredState.discoveredBy, entry.actionSequence)) continue;
+    const enteredScreenStateId = entry.toScreenStateId;
+    if (enteredScreenStateId === null) continue;
+    const entryScreenKey = semanticScreenKey(entry.fromScreenStateId);
+    const enteredScreenKey = semanticScreenKey(enteredScreenStateId);
+    if (entryScreenKey === null || enteredScreenKey === null || entryScreenKey === enteredScreenKey) continue;
     const expectedBackSequence = sequenceWith(entry.actionSequence, "BACK");
     const back = result.graph.actions.find((attempt) => (
       attempt.key === "BACK"
@@ -38,13 +53,12 @@ export function addBackBehaviourFindings(
       && attempt.fromFocusStateId === entry.toFocusStateId
       && sameSequence(attempt.actionSequence, expectedBackSequence)
     ));
-    if (back === undefined
-      || back.toScreenStateId === null
-      || back.toScreenStateId === entry.fromScreenStateId
-      || back.toScreenStateId === entry.toScreenStateId) continue;
+    if (back === undefined || back.toScreenStateId === null) continue;
+    const observedScreenKey = semanticScreenKey(back.toScreenStateId);
+    if (observedScreenKey === null
+      || observedScreenKey === entryScreenKey
+      || observedScreenKey === enteredScreenKey) continue;
 
-    const enteredScreenStateId = entry.toScreenStateId;
-    if (enteredScreenStateId === null) continue;
     const sourceTarget = focusedTarget(back.beforeSnapshot);
     const expectedTarget = focusedTarget(entry.beforeSnapshot);
     const observedTarget = focusedTarget(back.afterSnapshot);

@@ -71,6 +71,8 @@ export interface VerifiedLocalRestorer {
   ) => Promise<ExplorationTermination | null>;
   readonly recordEdge: (edge: VerifiedStateEdge) => void;
   readonly liveIdentity: () => string | null;
+  /** Total queued-branch restoration cycles, including cycles that fail before an exploration action. */
+  readonly cycleCount: () => number;
 }
 
 export function createVerifiedLocalRestorer(
@@ -98,6 +100,7 @@ export function createVerifiedLocalRestorer(
     verifiedEdges.push(edge);
   };
   const liveIdentity = (): string | null => trustedLiveIdentity;
+  const cycleCount = (): number => restorationCycleNumber;
 
   const rootRestore = async (entry: QueueEntry, cycleNumber: number): Promise<RestoreResult> => {
     const startedAt = context.monotonicNow();
@@ -412,5 +415,5 @@ export function createVerifiedLocalRestorer(
     return refreshed.status === "ok" ? null : refreshed.termination;
   };
 
-  return { restore, clearLive, observeAfterAction, recordEdge, liveIdentity };
+  return { restore, clearLive, observeAfterAction, recordEdge, liveIdentity, cycleCount };
 }

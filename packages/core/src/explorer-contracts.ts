@@ -328,6 +328,8 @@ export interface ExplorationStatistics {
   readonly restorationAttempts?: number;
   readonly restorationSuccesses?: number;
   readonly restorationFailures?: number;
+  /** Queued-branch restoration cycles; one cycle can try more than one strategy. */
+  readonly restorationCycles?: number;
   readonly visitedStates: number;
   readonly screenStates: number;
   readonly focusStates: number;

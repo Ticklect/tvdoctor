@@ -1,7 +1,7 @@
 import type { RemoteKey } from "@tvdoctor/protocol";
 
-import type { ExplorationFrontierStrategy } from "./explorer-contracts.js";
-import type { InternalFocusState } from "./explorer-state.js";
+import type { ExplorationFrontierStrategy, ExplorationTermination } from "./explorer-contracts.js";
+import type { InternalFocusState, RepetitionGroup } from "./explorer-state.js";
 
 export interface QueueEntry {
   readonly state: InternalFocusState;
@@ -9,6 +9,128 @@ export interface QueueEntry {
   /** Exact semantic state expected after each corresponding replay action. */
   readonly checkpoints: readonly string[];
   readonly insertionOrder: number;
+  /** Already-selected sibling actions still awaiting expansion for this state. */
+  readonly remainingActions?: readonly RemoteKey[];
+}
+
+export function scheduleDestinationFrontier(input: {
+  readonly frontier: QueueEntry[];
+  readonly state: InternalFocusState;
+  readonly sequence: readonly RemoteKey[];
+  readonly checkpoints: readonly string[];
+  readonly insertionOrder: number;
+  readonly repetitionGroup: RepetitionGroup | undefined;
+  readonly maxExpandedRepresentativesPerGroup: number;
+  readonly markDeferred: (stateIdentity: string) => void;
+}): { readonly insertionOrder: number; readonly queueSize: number } {
+  if (input.state.scheduled) {
+    return { insertionOrder: input.insertionOrder, queueSize: input.frontier.length };
+  }
+  if (input.repetitionGroup !== undefined
+    && input.repetitionGroup.expandedRepresentatives >= input.maxExpandedRepresentativesPerGroup) {
+    input.markDeferred(input.state.identity);
+    return { insertionOrder: input.insertionOrder, queueSize: input.frontier.length };
+  }
+  input.state.scheduled = true;
+  if (input.repetitionGroup !== undefined) input.repetitionGroup.expandedRepresentatives += 1;
+  input.frontier.push({
+    state: input.state,
+    sequence: input.sequence,
+    checkpoints: input.checkpoints,
+    insertionOrder: input.insertionOrder,
+  });
+  return { insertionOrder: input.insertionOrder + 1, queueSize: input.frontier.length };
+}
+
+export function scheduleFrontierContinuation(input: {
+  readonly frontier: QueueEntry[];
+  readonly entry: QueueEntry;
+  readonly stateActionOrder: readonly RemoteKey[];
+  readonly stateActionIndex: number;
+  readonly insertionOrder: number;
+  readonly restorationEnabled: boolean;
+  readonly replayable: boolean;
+  readonly expandable: boolean;
+  readonly observedIdentity: string;
+}): {
+  readonly remainingActions: readonly RemoteKey[];
+  readonly yieldToLiveDestination: boolean;
+  readonly insertionOrder: number;
+  readonly queueSize: number;
+} {
+  const remainingActions = input.stateActionOrder.slice(input.stateActionIndex + 1);
+  const yieldToLiveDestination = input.restorationEnabled
+    && remainingActions.length >= 2
+    && input.replayable
+    && input.expandable
+    && input.observedIdentity !== input.entry.state.identity
+    && input.frontier.some((candidate) => candidate.state.identity === input.observedIdentity);
+  if (!yieldToLiveDestination) {
+    return {
+      remainingActions,
+      yieldToLiveDestination: false,
+      insertionOrder: input.insertionOrder,
+      queueSize: input.frontier.length,
+    };
+  }
+  input.frontier.push({
+    state: input.entry.state,
+    sequence: input.entry.sequence,
+    checkpoints: input.entry.checkpoints,
+    insertionOrder: input.insertionOrder,
+    remainingActions,
+  });
+  return {
+    remainingActions,
+    yieldToLiveDestination: true,
+    insertionOrder: input.insertionOrder + 1,
+    queueSize: input.frontier.length,
+  };
+}
+
+export function remainingFrontierCandidateActions(
+  frontier: readonly QueueEntry[],
+  maxDepth: number,
+  defaultActionCount: number,
+): number {
+  return frontier.reduce((total, entry) => (
+    entry.sequence.length >= maxDepth
+      ? total
+      : total + (entry.remainingActions?.length ?? defaultActionCount)
+  ), 0);
+}
+
+export function annotateFrontierTermination(
+  termination: ExplorationTermination,
+  frontier: readonly QueueEntry[],
+  maxDepth: number,
+  defaultActionCount: number,
+): ExplorationTermination {
+  const safetyLimited = termination.reason === "max-actions"
+    || termination.reason === "max-states"
+    || termination.reason === "max-depth"
+    || termination.reason === "max-duration";
+  if (!safetyLimited || frontier.length === 0) return termination;
+  return {
+    ...termination,
+    remainingFrontierEntries: frontier.length,
+    remainingCandidateActions: remainingFrontierCandidateActions(
+      frontier, maxDepth, defaultActionCount,
+    ),
+    detail: `Bounded-incomplete: ${String(frontier.length)} frontier entries remain after ${termination.reason}.`,
+  };
+}
+
+export function takePreferredFrontierWithCount(
+  frontier: QueueEntry[],
+  frontierStrategy: ExplorationFrontierStrategy,
+  actionRank: ReadonlyMap<RemoteKey, number>,
+  preferredIdentity: string | null,
+): { readonly entry: QueueEntry | undefined; readonly pendingStates: number } {
+  return {
+    entry: takePreferredFrontier(frontier, frontierStrategy, actionRank, preferredIdentity),
+    pendingStates: frontier.length,
+  };
 }
 
 function compareSequences(
