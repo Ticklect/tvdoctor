@@ -1,0 +1,85 @@
+{
+  "schema": "tvdoctor.northstar-restoration-recall-config/v1",
+  "baseCommit": "f90c006c127d206921ef26c961a34328339836ef",
+  "groundTruthManifest": "fixtures/broken-streaming-web/seeded-defects.json",
+  "groundTruthManifestSha256": "a189bd7e4f2686cddb1b2c53d1dca161e6344dd81b4a6911531640291971804e",
+  "fixtureRuntimeSha256": "93ed6dfcd4cbd60eb10a61e5c6a02cc0197b3ccbfad634af31ae0bda9e15582c",
+  "provenanceResourcePaths": [
+    "/src/main.ts",
+    "/src/styles.css"
+  ],
+  "servedDocumentSha256": "d17eb165b464db3dfc572a8ecf267e29463a04b76e8993896714c45cf134da1e",
+  "servedResourceSha256": "8b20675f63b053ea4771bd3229d6b46dd15955cc683facf6241524a00f001f0d",
+  "target": "http://127.0.0.1:4182/",
+  "equalWallClockBudgetMs": 120000,
+  "profile": "deep",
+  "actionPolicy": "production-safe-web-navigation",
+  "baselineRestorationMode": "verified-live-only",
+  "treatmentRestorationMode": "verified-local",
+  "manifestUsedOnlyByAnalyzer": true,
+  "experimentBoundary": "Controlled core-restoration experiment on the Northstar web fixture. verified-local is not the current public web default; the same platform-neutral core restoration engine is intentionally enabled here to isolate restoration's effect on traversal and generic navigation diagnostics.",
+  "inScopeDetectorRules": [
+    "remote.reachability",
+    "remote.focus-trap",
+    "remote.unexpected-jump",
+    "remote.back-behaviour"
+  ],
+  "minimumDepthByDefectId": {
+    "fixture-home-more-info-unreachable": 2,
+    "fixture-profile-focus-trap": 4,
+    "fixture-carousel-right-jump": 5,
+    "fixture-details-back-wrong-screen": 3,
+    "fixture-caption-text-colour-remote-unreachable": 11
+  },
+  "pilotPairs": [
+    {
+      "id": "t1",
+      "excludedReason": "Pre-final harness review found incomplete config/provenance binding and post-deadline artifact handling; retained only as diagnostic pilot evidence.",
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/t1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/t1-restoration"
+    },
+    {
+      "id": "t2",
+      "excludedReason": "Pre-final harness review found incomplete config/provenance binding; restoration arm also failed while capturing a supplementary screenshot after deadline cancellation.",
+      "order": "restoration-baseline",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/t2-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/t2-restoration"
+    },
+    {
+      "id": "f1",
+      "excludedReason": "Second pre-final audit found missing config/manifest SHA binding and incomplete served-resource binding. Raw evidence is retained but excluded from final aggregates.",
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/f1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/f1-restoration"
+    },
+    {
+      "id": "g1",
+      "excludedReason": "Pre-final audit found canonical manifest SHA mismatch and no exact finding-action restoration linkage; retained only as diagnostic evidence.",
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/g1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/g1-restoration"
+    },
+    {
+      "id": "g2",
+      "excludedReason": "Pre-final audit found canonical manifest SHA mismatch and no exact finding-action restoration linkage; retained only as diagnostic evidence.",
+      "order": "restoration-baseline",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/g2-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/g2-restoration"
+    }
+  ],
+  "pairs": [
+    {
+      "id": "h1",
+      "order": "baseline-restoration",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/h1-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/h1-restoration"
+    },
+    {
+      "id": "h2",
+      "order": "restoration-baseline",
+      "baseline": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/h2-baseline",
+      "restoration": "Tests/real-apps-2026-09-19/northstar-restoration-benchmark/h2-restoration"
+    }
+  ]
+}

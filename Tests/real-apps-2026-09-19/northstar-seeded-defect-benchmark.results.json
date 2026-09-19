@@ -1,0 +1,2343 @@
+{
+  "schema": "tvdoctor.northstar-restoration-recall-analysis/v1",
+  "generatedAt": "2026-09-19T16:40:36.012Z",
+  "integrityValid": true,
+  "source": {
+    "config": "Tests/real-apps-2026-09-19/northstar-seeded-defect-benchmark.config.json",
+    "configSha256": "59395f226a47a91c937c4edf952d29c7fc057349cc0a6205e8cb47da3aaac032",
+    "groundTruthManifest": "fixtures/broken-streaming-web/seeded-defects.json",
+    "groundTruthManifestSha256": "a189bd7e4f2686cddb1b2c53d1dca161e6344dd81b4a6911531640291971804e",
+    "canonicalGroundTruthManifestSha256": "a189bd7e4f2686cddb1b2c53d1dca161e6344dd81b4a6911531640291971804e",
+    "groundTruthReadFrom": "f90c006c127d206921ef26c961a34328339836ef:fixtures/broken-streaming-web/seeded-defects.json",
+    "manifestSeedCount": 13
+  },
+  "scope": {
+    "detectorRules": [
+      "remote.reachability",
+      "remote.focus-trap",
+      "remote.unexpected-jump",
+      "remote.back-behaviour"
+    ],
+    "inScopeSeedCount": 5,
+    "outOfScopeSeedCount": 8,
+    "seeds": [
+      {
+        "id": "fixture-home-more-info-unreachable",
+        "expectedRule": "remote.reachability",
+        "severity": "medium",
+        "confidence": "deterministic",
+        "screen": "home",
+        "target": "hero-more-info",
+        "summary": "The visible More info button works with a pointer but is absent from every D-pad edge.",
+        "minimumDepth": 2
+      },
+      {
+        "id": "fixture-profile-focus-trap",
+        "expectedRule": "remote.focus-trap",
+        "severity": "high",
+        "confidence": "deterministic",
+        "screen": "home > profile-picker",
+        "target": "profile-primary",
+        "summary": "All remote directions remain inside the profile picker and Back is ignored; only its pointer close control exits.",
+        "minimumDepth": 4
+      },
+      {
+        "id": "fixture-carousel-right-jump",
+        "expectedRule": "remote.unexpected-jump",
+        "severity": "medium",
+        "confidence": "deterministic",
+        "screen": "home",
+        "target": "home-card-3",
+        "summary": "RIGHT from the third continue-watching card jumps to the distant footer Privacy control instead of the adjacent fourth card.",
+        "minimumDepth": 5
+      },
+      {
+        "id": "fixture-details-back-wrong-screen",
+        "expectedRule": "remote.back-behaviour",
+        "severity": "high",
+        "confidence": "deterministic",
+        "screen": "details",
+        "target": "details-play",
+        "summary": "Back from content details opens Search even when details was entered from Home.",
+        "minimumDepth": 3
+      },
+      {
+        "id": "fixture-caption-text-colour-remote-unreachable",
+        "expectedRule": "remote.reachability",
+        "severity": "high",
+        "confidence": "deterministic",
+        "screen": "player > settings > captions > appearance",
+        "target": "caption-text-colour",
+        "summary": "Text Colour is visible and pointer-clickable but Font Size DOWN skips to Background, leaving no D-pad path to it.",
+        "minimumDepth": 11
+      }
+    ]
+  },
+  "pairs": [
+    {
+      "id": "h1",
+      "order": "baseline-restoration",
+      "integrity": {
+        "valid": true,
+        "errors": [],
+        "warnings": [
+          "runtime/fixture source paths were dirty; hashes, status text, and Git HEAD are retained in each run"
+        ]
+      },
+      "baseline": {
+        "trial": "h1",
+        "variant": "baseline",
+        "termination": {
+          "reason": "restoration-unavailable",
+          "complete": false,
+          "detail": "The queued branch could not be restored from the current verified live state without a root relaunch.",
+          "restorationSubtype": "strategy-exhausted",
+          "restorationRejectionReason": "root-fallback-disabled"
+        },
+        "metrics": {
+          "explorationWallRuntimeMs": 495.8924999999999,
+          "totalRunnerRuntimeMs": 1230.9124000000002,
+          "actions": 2,
+          "explorationActions": 2,
+          "replayActions": 0,
+          "states": 2,
+          "appOwnedScreens": 1,
+          "maximumDepth": 1,
+          "completedBranches": 0,
+          "findings": 0,
+          "restorationCycles": 4,
+          "restorationAttempts": 4,
+          "restorationSuccesses": 2,
+          "restorationFailures": 2,
+          "resetCount": 1,
+          "resetTimeMs": 211.6566999999999,
+          "replayTimeMs": 0,
+          "systemSurfaceEscapes": 0
+        },
+        "truePositiveCount": 0,
+        "detectedDefectIds": [],
+        "missedDefectIds": [
+          "fixture-caption-text-colour-remote-unreachable",
+          "fixture-carousel-right-jump",
+          "fixture-details-back-wrong-screen",
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap"
+        ],
+        "recall": 0,
+        "falsePositiveCount": 0,
+        "uniqueFalsePositiveCount": 0,
+        "falsePositives": [],
+        "duplicateFindingCount": 0,
+        "duplicateFindings": [],
+        "ambiguousFindingCount": 0,
+        "ambiguousFindings": [],
+        "scopedFindingCount": 0,
+        "outOfScopeNavigationDiagnosticCount": 0,
+        "outOfScopeNavigationDiagnostics": [],
+        "findingsPerMinute": 0,
+        "allNavigationFindingsPerMinute": 0,
+        "trueSeededDefectsPerMinute": 0,
+        "actionsPerTrueDefect": null,
+        "runtimeMsPerTrueDefect": null
+      },
+      "restoration": {
+        "trial": "h1",
+        "variant": "restoration",
+        "termination": {
+          "reason": "max-duration",
+          "complete": false,
+          "restorationSubtype": "timeout",
+          "restorationRejectionReason": "duration-budget-exhausted",
+          "remainingFrontierEntries": 11,
+          "remainingCandidateActions": 66,
+          "detail": "Bounded-incomplete: 11 frontier entries remain after max-duration."
+        },
+        "metrics": {
+          "explorationWallRuntimeMs": 120013.87210000001,
+          "totalRunnerRuntimeMs": 120762.1419,
+          "actions": 680,
+          "explorationActions": 230,
+          "replayActions": 450,
+          "states": 51,
+          "appOwnedScreens": 9,
+          "maximumDepth": 7,
+          "completedBranches": 38,
+          "findings": 7,
+          "restorationCycles": 43,
+          "restorationAttempts": 334,
+          "restorationSuccesses": 230,
+          "restorationFailures": 104,
+          "resetCount": 104,
+          "resetTimeMs": 20702.9398,
+          "replayTimeMs": 70196.93210000005,
+          "systemSurfaceEscapes": 0
+        },
+        "truePositiveCount": 1,
+        "detectedDefectIds": [
+          "fixture-details-back-wrong-screen"
+        ],
+        "missedDefectIds": [
+          "fixture-caption-text-colour-remote-unreachable",
+          "fixture-carousel-right-jump",
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap"
+        ],
+        "recall": 0.2,
+        "falsePositiveCount": 6,
+        "uniqueFalsePositiveCount": 5,
+        "falsePositives": [
+          {
+            "issueId": "TVDOCTOR-NAV-7BAFC0CB6E29C84FB8ADDCE54879F51B",
+            "rule": "remote.back-behaviour",
+            "severity": "high",
+            "confidence": "deterministic",
+            "classification": "deterministic",
+            "targetStableId": "search-key-n",
+            "source": {
+              "kind": "action-pair",
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0025",
+              "element": {
+                "stableId": "search-key-n",
+                "role": "button",
+                "name": "N",
+                "bounds": {
+                  "x": 278.74847412109375,
+                  "y": 310.76171875,
+                  "width": 74.0186767578125,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0078",
+              "relatedActionAttemptId": "action-0071",
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "SELECT",
+                "BACK"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0001",
+              "focusStateId": "focus-0001",
+              "element": {
+                "stableId": "home-nav-home",
+                "role": "button",
+                "name": "⌂ Home",
+                "bounds": {
+                  "x": 16.9375,
+                  "y": 121.42430114746094,
+                  "width": 181.125,
+                  "height": 57.151397705078125
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-n",
+                "role": "button",
+                "name": "N",
+                "bounds": {
+                  "x": 278.74847412109375,
+                  "y": 289.76171875,
+                  "width": 74.0186767578125,
+                  "height": 69.5390625
+                }
+              },
+              "observedElement": {
+                "stableId": "home-nav-home",
+                "role": "button",
+                "name": "⌂ Home",
+                "bounds": {
+                  "x": 16.9375,
+                  "y": 121.42430114746094,
+                  "width": 181.125,
+                  "height": 57.151397705078125
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "BACK",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "deterministic",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-EC618644C8CE5448D6CC275EAE963114",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-o",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0029",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0218",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "SELECT",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0047",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-space",
+                "role": "button",
+                "name": "Space",
+                "bounds": {
+                  "x": 280,
+                  "y": 435.3125,
+                  "width": 154.234375,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-734E18D1BDFAC54D73533FB7EC276C81",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-delete",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0035",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0187",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "DOWN",
+                "RIGHT",
+                "UP"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0024",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-v",
+                "role": "button",
+                "name": "V",
+                "bounds": {
+                  "x": 445.421875,
+                  "y": 356.9375,
+                  "width": 71.53125,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 2
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "UP",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-59CFF7B4FC932B584B37AE0E3667FF44",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-o",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0024",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 310.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0128",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0035",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 389.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-space",
+                "role": "button",
+                "name": "Space",
+                "bounds": {
+                  "x": 280,
+                  "y": 390.3125,
+                  "width": 154.234375,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 389.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-FF6236262B2006D22892CAACFBD48516",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-v",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0036",
+              "element": {
+                "stableId": "search-key-v",
+                "role": "button",
+                "name": "V",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 355.76171875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0194",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "RIGHT",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0043",
+              "element": {
+                "stableId": "search-key-clear",
+                "role": "button",
+                "name": "Clear",
+                "bounds": {
+                  "x": 526.8887939453125,
+                  "y": 434.13671875,
+                  "width": 74.034912109375,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 445.421875,
+                  "y": 435.3125,
+                  "width": 71.53125,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-clear",
+                "role": "button",
+                "name": "Clear",
+                "bounds": {
+                  "x": 526.8887939453125,
+                  "y": 434.13671875,
+                  "width": 74.034912109375,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 2
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-7539A5F8F3E61C9C3787CE7EE61DC4C8",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "details-episodes",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0003",
+              "focusStateId": "focus-0010",
+              "element": {
+                "stableId": "details-episodes",
+                "role": "button",
+                "name": "01 Across the salt 48 min · The first trace appears at dusk. →",
+                "bounds": {
+                  "x": 92.0306396484375,
+                  "y": 516.9461059570312,
+                  "width": 612.719970703125,
+                  "height": 79.88909912109375
+                }
+              },
+              "actionAttemptId": "action-0097",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "RIGHT",
+                "SELECT",
+                "DOWN",
+                "UP"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0003",
+              "focusStateId": "focus-0009",
+              "element": {
+                "stableId": "details-play",
+                "role": "button",
+                "name": "▶ Play",
+                "bounds": {
+                  "x": 100.58894348144531,
+                  "y": 431.0260925292969,
+                  "width": 106.55648803710938,
+                  "height": 52.97906494140625
+                }
+              },
+              "expectedElement": {
+                "stableId": "details-watchlist",
+                "role": "button",
+                "name": "＋ My list",
+                "bounds": {
+                  "x": 329.296875,
+                  "y": 431.921875,
+                  "width": 120.9375,
+                  "height": 51.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "details-play",
+                "role": "button",
+                "name": "▶ Play",
+                "bounds": {
+                  "x": 100.58894348144531,
+                  "y": 431.0260925292969,
+                  "width": 106.55648803710938,
+                  "height": 52.97906494140625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "UP",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          }
+        ],
+        "duplicateFindingCount": 1,
+        "duplicateFindings": [
+          {
+            "key": "remote.unexpected-jump|search-key-o",
+            "duplicatesBeyondFirst": 1
+          }
+        ],
+        "ambiguousFindingCount": 0,
+        "ambiguousFindings": [],
+        "scopedFindingCount": 7,
+        "outOfScopeNavigationDiagnosticCount": 0,
+        "outOfScopeNavigationDiagnostics": [],
+        "findingsPerMinute": 3.499595443850361,
+        "allNavigationFindingsPerMinute": 3.499595443850361,
+        "trueSeededDefectsPerMinute": 0.49994220626433733,
+        "actionsPerTrueDefect": 680,
+        "runtimeMsPerTrueDefect": 120013.87210000001
+      },
+      "classifications": {
+        "both": [],
+        "restorationOnly": [
+          "fixture-details-back-wrong-screen"
+        ],
+        "baselineOnly": [],
+        "missedBoth": [
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap",
+          "fixture-carousel-right-jump",
+          "fixture-caption-text-colour-remote-unreachable"
+        ]
+      },
+      "depthRecall": {
+        "baseline": {
+          "medium": {
+            "known": 1,
+            "detected": 0,
+            "defectIds": [
+              "fixture-home-more-info-unreachable"
+            ],
+            "recall": 0
+          },
+          "deep": {
+            "known": 4,
+            "detected": 0,
+            "defectIds": [
+              "fixture-profile-focus-trap",
+              "fixture-carousel-right-jump",
+              "fixture-details-back-wrong-screen",
+              "fixture-caption-text-colour-remote-unreachable"
+            ],
+            "recall": 0
+          }
+        },
+        "restoration": {
+          "medium": {
+            "known": 1,
+            "detected": 0,
+            "defectIds": [
+              "fixture-home-more-info-unreachable"
+            ],
+            "recall": 0
+          },
+          "deep": {
+            "known": 4,
+            "detected": 1,
+            "defectIds": [
+              "fixture-profile-focus-trap",
+              "fixture-carousel-right-jump",
+              "fixture-details-back-wrong-screen",
+              "fixture-caption-text-colour-remote-unreachable"
+            ],
+            "recall": 0.25
+          }
+        }
+      },
+      "restorationOnlyAttribution": [
+        {
+          "defectId": "fixture-details-back-wrong-screen",
+          "association": {
+            "strength": "finding-action-immediately-preceded-by-treatment-restoration",
+            "sourceFocusStateId": "focus-0009",
+            "sourcePath": [
+              "RIGHT",
+              "SELECT"
+            ],
+            "findingActionAttemptId": "action-0030",
+            "findingAction": "BACK",
+            "restoration": {
+              "attemptNumber": 44,
+              "retryNumber": 3,
+              "restorationCycleNumber": 30,
+              "successfulRestorationsBeforeAttempt": 29,
+              "traversalDepth": 2,
+              "destinationStateId": "focus-0009",
+              "strategy": "root-replay",
+              "status": "success",
+              "elapsedMs": 606.5581000000002,
+              "actionHistory": [
+                "RIGHT",
+                "SELECT"
+              ],
+              "before": {
+                "capturedAt": "2026-09-19T16:32:10.755Z",
+                "stateFingerprint": "state-e0d736ef0f96d8bb-278",
+                "screenFingerprint": "screen-09caaa1a7d3eef8e-253",
+                "focusFingerprint": "focus-f506241ab2eac356-24",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "player-play-pause|button",
+                "focusedStableId": "player-play-pause",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|Playing The Ember Line",
+                  "||Player controls",
+                  "player-play-pause|button|Ⅱ Pause"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "player-captions",
+                  "player-forward",
+                  "player-play-pause",
+                  "player-rewind",
+                  "player-settings",
+                  "player-volume-boost"
+                ],
+                "visibleStructureFingerprint": "visible-94874145b671fbe1-307",
+                "actionableNodeFingerprint": "actionable-f3c819b604657f62-491",
+                "navigationStructureFingerprint": "navigation-4bb147bbb2ca8acf-501",
+                "visibleNodeCount": 11,
+                "actionableNodeCount": 5
+              },
+              "after": {
+                "capturedAt": "2026-09-19T16:32:11.363Z",
+                "stateFingerprint": "state-1f46c616d7caecf2-272",
+                "screenFingerprint": "screen-322e391d106930c1-252",
+                "focusFingerprint": "focus-618c761aad97c416-19",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "details-play|button",
+                "focusedStableId": "details-play",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|The Ember Line",
+                  "||",
+                  "details-play|button|▶ Play"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "details-episodes",
+                  "details-play",
+                  "details-title",
+                  "details-trailer",
+                  "details-watchlist"
+                ],
+                "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                "visibleNodeCount": 12,
+                "actionableNodeCount": 4
+              },
+              "expected": {
+                "capturedAt": "2026-09-19T16:32:07.859Z",
+                "stateFingerprint": "state-1f46c616d7caecf2-272",
+                "screenFingerprint": "screen-322e391d106930c1-252",
+                "focusFingerprint": "focus-618c761aad97c416-19",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "details-play|button",
+                "focusedStableId": "details-play",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|The Ember Line",
+                  "||",
+                  "details-play|button|▶ Play"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "details-episodes",
+                  "details-play",
+                  "details-title",
+                  "details-trailer",
+                  "details-watchlist"
+                ],
+                "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                "visibleNodeCount": 12,
+                "actionableNodeCount": 4
+              },
+              "history": [
+                {
+                  "capturedAt": "2026-09-19T16:32:10.755Z",
+                  "stateFingerprint": "state-e0d736ef0f96d8bb-278",
+                  "screenFingerprint": "screen-09caaa1a7d3eef8e-253",
+                  "focusFingerprint": "focus-f506241ab2eac356-24",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "player-play-pause|button",
+                  "focusedStableId": "player-play-pause",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "|main|Playing The Ember Line",
+                    "||Player controls",
+                    "player-play-pause|button|Ⅱ Pause"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "player-captions",
+                    "player-forward",
+                    "player-play-pause",
+                    "player-rewind",
+                    "player-settings",
+                    "player-volume-boost"
+                  ],
+                  "visibleStructureFingerprint": "visible-94874145b671fbe1-307",
+                  "actionableNodeFingerprint": "actionable-f3c819b604657f62-491",
+                  "navigationStructureFingerprint": "navigation-4bb147bbb2ca8acf-501",
+                  "visibleNodeCount": 11,
+                  "actionableNodeCount": 5
+                },
+                {
+                  "capturedAt": "2026-09-19T16:32:10.957Z",
+                  "stateFingerprint": "state-7560dac5044718a9-727",
+                  "screenFingerprint": "screen-6e70e7f0e7c15994-706",
+                  "focusFingerprint": "focus-6a9a1e1ad7c4c18e-20",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "home-nav-home|button",
+                  "focusedStableId": "home-nav-home",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "||",
+                    "|navigation|Primary",
+                    "home-nav-home|button|⌂ Home"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "continue-title",
+                    "footer-privacy",
+                    "fresh-card-1",
+                    "fresh-card-2",
+                    "fresh-card-3",
+                    "fresh-card-4",
+                    "fresh-title",
+                    "hero-more-info",
+                    "hero-preview-pointer",
+                    "hero-title",
+                    "hero-watch",
+                    "home-card-1",
+                    "home-card-2",
+                    "home-card-3",
+                    "home-card-4",
+                    "home-nav-home",
+                    "home-nav-library",
+                    "home-nav-search",
+                    "home-nav-settings"
+                  ],
+                  "visibleStructureFingerprint": "visible-eec9d7334f856ee7-946",
+                  "actionableNodeFingerprint": "actionable-21be44324df9378e-1208",
+                  "navigationStructureFingerprint": "navigation-e8ff43c0bbc8081c-1236",
+                  "visibleNodeCount": 32,
+                  "actionableNodeCount": 14
+                },
+                {
+                  "capturedAt": "2026-09-19T16:32:11.160Z",
+                  "stateFingerprint": "state-10c822e8350c5b6c-724",
+                  "screenFingerprint": "screen-6e70e7f0e7c15994-706",
+                  "focusFingerprint": "focus-4238435d0e664431-17",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "hero-watch|button",
+                  "focusedStableId": "hero-watch",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "||",
+                    "|main|Home",
+                    "||The Ember Line",
+                    "hero-watch|button|▶ Explore film"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "continue-title",
+                    "footer-privacy",
+                    "fresh-card-1",
+                    "fresh-card-2",
+                    "fresh-card-3",
+                    "fresh-card-4",
+                    "fresh-title",
+                    "hero-more-info",
+                    "hero-preview-pointer",
+                    "hero-title",
+                    "hero-watch",
+                    "home-card-1",
+                    "home-card-2",
+                    "home-card-3",
+                    "home-card-4",
+                    "home-nav-home",
+                    "home-nav-library",
+                    "home-nav-search",
+                    "home-nav-settings"
+                  ],
+                  "visibleStructureFingerprint": "visible-eec9d7334f856ee7-946",
+                  "actionableNodeFingerprint": "actionable-21be44324df9378e-1208",
+                  "navigationStructureFingerprint": "navigation-e8ff43c0bbc8081c-1236",
+                  "visibleNodeCount": 32,
+                  "actionableNodeCount": 14
+                },
+                {
+                  "capturedAt": "2026-09-19T16:32:11.363Z",
+                  "stateFingerprint": "state-1f46c616d7caecf2-272",
+                  "screenFingerprint": "screen-322e391d106930c1-252",
+                  "focusFingerprint": "focus-618c761aad97c416-19",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "details-play|button",
+                  "focusedStableId": "details-play",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "|main|The Ember Line",
+                    "||",
+                    "details-play|button|▶ Play"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "details-episodes",
+                    "details-play",
+                    "details-title",
+                    "details-trailer",
+                    "details-watchlist"
+                  ],
+                  "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                  "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                  "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                  "visibleNodeCount": 12,
+                  "actionableNodeCount": 4
+                }
+              ]
+            },
+            "causalClaim": true,
+            "caveat": null
+          }
+        }
+      ],
+      "efficiencyDelta": {
+        "additionalStates": 49,
+        "additionalScreens": 8,
+        "additionalActions": 678,
+        "additionalRuntimeMs": 119517.9796,
+        "usefulRestorationOnlyDefects": 1,
+        "usefulDefectsPerAdditionalScreen": 0.125
+      }
+    },
+    {
+      "id": "h2",
+      "order": "restoration-baseline",
+      "integrity": {
+        "valid": true,
+        "errors": [],
+        "warnings": [
+          "runtime/fixture source paths were dirty; hashes, status text, and Git HEAD are retained in each run"
+        ]
+      },
+      "baseline": {
+        "trial": "h2",
+        "variant": "baseline",
+        "termination": {
+          "reason": "restoration-unavailable",
+          "complete": false,
+          "detail": "The queued branch could not be restored from the current verified live state without a root relaunch.",
+          "restorationSubtype": "strategy-exhausted",
+          "restorationRejectionReason": "root-fallback-disabled"
+        },
+        "metrics": {
+          "explorationWallRuntimeMs": 502.17290000000014,
+          "totalRunnerRuntimeMs": 1220.8555,
+          "actions": 2,
+          "explorationActions": 2,
+          "replayActions": 0,
+          "states": 2,
+          "appOwnedScreens": 1,
+          "maximumDepth": 1,
+          "completedBranches": 0,
+          "findings": 0,
+          "restorationCycles": 4,
+          "restorationAttempts": 4,
+          "restorationSuccesses": 2,
+          "restorationFailures": 2,
+          "resetCount": 1,
+          "resetTimeMs": 210.50170000000003,
+          "replayTimeMs": 0,
+          "systemSurfaceEscapes": 0
+        },
+        "truePositiveCount": 0,
+        "detectedDefectIds": [],
+        "missedDefectIds": [
+          "fixture-caption-text-colour-remote-unreachable",
+          "fixture-carousel-right-jump",
+          "fixture-details-back-wrong-screen",
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap"
+        ],
+        "recall": 0,
+        "falsePositiveCount": 0,
+        "uniqueFalsePositiveCount": 0,
+        "falsePositives": [],
+        "duplicateFindingCount": 0,
+        "duplicateFindings": [],
+        "ambiguousFindingCount": 0,
+        "ambiguousFindings": [],
+        "scopedFindingCount": 0,
+        "outOfScopeNavigationDiagnosticCount": 0,
+        "outOfScopeNavigationDiagnostics": [],
+        "findingsPerMinute": 0,
+        "allNavigationFindingsPerMinute": 0,
+        "trueSeededDefectsPerMinute": 0,
+        "actionsPerTrueDefect": null,
+        "runtimeMsPerTrueDefect": null
+      },
+      "restoration": {
+        "trial": "h2",
+        "variant": "restoration",
+        "termination": {
+          "reason": "max-duration",
+          "complete": false,
+          "restorationSubtype": "timeout",
+          "restorationRejectionReason": "duration-budget-exhausted",
+          "remainingFrontierEntries": 10,
+          "remainingCandidateActions": 60,
+          "detail": "Bounded-incomplete: 10 frontier entries remain after max-duration."
+        },
+        "metrics": {
+          "explorationWallRuntimeMs": 120017.6675,
+          "totalRunnerRuntimeMs": 120808.875,
+          "actions": 673,
+          "explorationActions": 228,
+          "replayActions": 445,
+          "states": 50,
+          "appOwnedScreens": 9,
+          "maximumDepth": 6,
+          "completedBranches": 38,
+          "findings": 7,
+          "restorationCycles": 43,
+          "restorationAttempts": 331,
+          "restorationSuccesses": 228,
+          "restorationFailures": 103,
+          "resetCount": 103,
+          "resetTimeMs": 20819.936400000006,
+          "replayTimeMs": 69971.43500000007,
+          "systemSurfaceEscapes": 0
+        },
+        "truePositiveCount": 1,
+        "detectedDefectIds": [
+          "fixture-details-back-wrong-screen"
+        ],
+        "missedDefectIds": [
+          "fixture-caption-text-colour-remote-unreachable",
+          "fixture-carousel-right-jump",
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap"
+        ],
+        "recall": 0.2,
+        "falsePositiveCount": 6,
+        "uniqueFalsePositiveCount": 5,
+        "falsePositives": [
+          {
+            "issueId": "TVDOCTOR-NAV-7BAFC0CB6E29C84FB8ADDCE54879F51B",
+            "rule": "remote.back-behaviour",
+            "severity": "high",
+            "confidence": "deterministic",
+            "classification": "deterministic",
+            "targetStableId": "search-key-n",
+            "source": {
+              "kind": "action-pair",
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0025",
+              "element": {
+                "stableId": "search-key-n",
+                "role": "button",
+                "name": "N",
+                "bounds": {
+                  "x": 278.74847412109375,
+                  "y": 310.76171875,
+                  "width": 74.0186767578125,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0078",
+              "relatedActionAttemptId": "action-0071",
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "SELECT",
+                "BACK"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0001",
+              "focusStateId": "focus-0001",
+              "element": {
+                "stableId": "home-nav-home",
+                "role": "button",
+                "name": "⌂ Home",
+                "bounds": {
+                  "x": 16.9375,
+                  "y": 121.42430114746094,
+                  "width": 181.125,
+                  "height": 57.151397705078125
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-n",
+                "role": "button",
+                "name": "N",
+                "bounds": {
+                  "x": 278.74847412109375,
+                  "y": 289.76171875,
+                  "width": 74.0186767578125,
+                  "height": 69.5390625
+                }
+              },
+              "observedElement": {
+                "stableId": "home-nav-home",
+                "role": "button",
+                "name": "⌂ Home",
+                "bounds": {
+                  "x": 16.9375,
+                  "y": 121.42430114746094,
+                  "width": 181.125,
+                  "height": 57.151397705078125
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "BACK",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "deterministic",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-EC618644C8CE5448D6CC275EAE963114",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-o",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0029",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0218",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "SELECT",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0007",
+              "focusStateId": "focus-0047",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-space",
+                "role": "button",
+                "name": "Space",
+                "bounds": {
+                  "x": 280,
+                  "y": 435.3125,
+                  "width": 154.234375,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-734E18D1BDFAC54D73533FB7EC276C81",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-delete",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0035",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 434.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0187",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "DOWN",
+                "RIGHT",
+                "UP"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0024",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-v",
+                "role": "button",
+                "name": "V",
+                "bounds": {
+                  "x": 445.421875,
+                  "y": 356.9375,
+                  "width": 71.53125,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 355.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 2
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "UP",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-59CFF7B4FC932B584B37AE0E3667FF44",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-o",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0024",
+              "element": {
+                "stableId": "search-key-o",
+                "role": "button",
+                "name": "O",
+                "bounds": {
+                  "x": 361.4513244628906,
+                  "y": 310.76171875,
+                  "width": 74.03485107421875,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0128",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0035",
+              "element": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 389.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-space",
+                "role": "button",
+                "name": "Space",
+                "bounds": {
+                  "x": 280,
+                  "y": 390.3125,
+                  "width": 154.234375,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 389.13671875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-FF6236262B2006D22892CAACFBD48516",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "search-key-v",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0036",
+              "element": {
+                "stableId": "search-key-v",
+                "role": "button",
+                "name": "V",
+                "bounds": {
+                  "x": 444.1700744628906,
+                  "y": 355.76171875,
+                  "width": 74.03488159179688,
+                  "height": 69.5390625
+                }
+              },
+              "actionAttemptId": "action-0194",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "DOWN",
+                "SELECT",
+                "DOWN",
+                "RIGHT",
+                "RIGHT",
+                "DOWN"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0002",
+              "focusStateId": "focus-0043",
+              "element": {
+                "stableId": "search-key-clear",
+                "role": "button",
+                "name": "Clear",
+                "bounds": {
+                  "x": 526.8887939453125,
+                  "y": 434.13671875,
+                  "width": 74.034912109375,
+                  "height": 69.5390625
+                }
+              },
+              "expectedElement": {
+                "stableId": "search-key-delete",
+                "role": "button",
+                "name": "⌫",
+                "bounds": {
+                  "x": 445.421875,
+                  "y": 435.3125,
+                  "width": 71.53125,
+                  "height": 67.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "search-key-clear",
+                "role": "button",
+                "name": "Clear",
+                "bounds": {
+                  "x": 526.8887939453125,
+                  "y": 434.13671875,
+                  "width": 74.034912109375,
+                  "height": 69.5390625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "RIGHT",
+                  "repeat": 2
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          },
+          {
+            "issueId": "TVDOCTOR-NAV-7539A5F8F3E61C9C3787CE7EE61DC4C8",
+            "rule": "remote.unexpected-jump",
+            "severity": "medium",
+            "confidence": "heuristic",
+            "classification": "heuristic",
+            "targetStableId": "details-episodes",
+            "source": {
+              "kind": "action-attempt",
+              "screenStateId": "screen-0003",
+              "focusStateId": "focus-0010",
+              "element": {
+                "stableId": "details-episodes",
+                "role": "button",
+                "name": "01 Across the salt 48 min · The first trace appears at dusk. →",
+                "bounds": {
+                  "x": 92.0306396484375,
+                  "y": 516.9461059570312,
+                  "width": 612.719970703125,
+                  "height": 79.88909912109375
+                }
+              },
+              "actionAttemptId": "action-0097",
+              "relatedActionAttemptId": null,
+              "actionSequence": [
+                "RIGHT",
+                "SELECT",
+                "DOWN",
+                "UP"
+              ],
+              "locallyComplete": null
+            },
+            "target": {
+              "screenStateId": "screen-0003",
+              "focusStateId": "focus-0009",
+              "element": {
+                "stableId": "details-play",
+                "role": "button",
+                "name": "▶ Play",
+                "bounds": {
+                  "x": 100.58894348144531,
+                  "y": 431.0260925292969,
+                  "width": 106.55648803710938,
+                  "height": 52.97906494140625
+                }
+              },
+              "expectedElement": {
+                "stableId": "details-watchlist",
+                "role": "button",
+                "name": "＋ My list",
+                "bounds": {
+                  "x": 329.296875,
+                  "y": 431.921875,
+                  "width": 120.9375,
+                  "height": 51.1875
+                }
+              },
+              "observedElement": {
+                "stableId": "details-play",
+                "role": "button",
+                "name": "▶ Play",
+                "bounds": {
+                  "x": 100.58894348144531,
+                  "y": 431.0260925292969,
+                  "width": 106.55648803710938,
+                  "height": 52.97906494140625
+                }
+              }
+            },
+            "reproduction": {
+              "status": "available",
+              "resetStrategy": "reload",
+              "originalSequence": [
+                {
+                  "key": "RIGHT",
+                  "repeat": 1
+                },
+                {
+                  "key": "SELECT",
+                  "repeat": 1
+                },
+                {
+                  "key": "DOWN",
+                  "repeat": 1
+                },
+                {
+                  "key": "UP",
+                  "repeat": 1
+                }
+              ],
+              "minimizedSequence": null,
+              "confidence": "best-effort",
+              "artifact": null
+            }
+          }
+        ],
+        "duplicateFindingCount": 1,
+        "duplicateFindings": [
+          {
+            "key": "remote.unexpected-jump|search-key-o",
+            "duplicatesBeyondFirst": 1
+          }
+        ],
+        "ambiguousFindingCount": 0,
+        "ambiguousFindings": [],
+        "scopedFindingCount": 7,
+        "outOfScopeNavigationDiagnosticCount": 0,
+        "outOfScopeNavigationDiagnostics": [],
+        "findingsPerMinute": 3.499484773772995,
+        "allNavigationFindingsPerMinute": 3.499484773772995,
+        "trueSeededDefectsPerMinute": 0.49992639625328494,
+        "actionsPerTrueDefect": 673,
+        "runtimeMsPerTrueDefect": 120017.6675
+      },
+      "classifications": {
+        "both": [],
+        "restorationOnly": [
+          "fixture-details-back-wrong-screen"
+        ],
+        "baselineOnly": [],
+        "missedBoth": [
+          "fixture-home-more-info-unreachable",
+          "fixture-profile-focus-trap",
+          "fixture-carousel-right-jump",
+          "fixture-caption-text-colour-remote-unreachable"
+        ]
+      },
+      "depthRecall": {
+        "baseline": {
+          "medium": {
+            "known": 1,
+            "detected": 0,
+            "defectIds": [
+              "fixture-home-more-info-unreachable"
+            ],
+            "recall": 0
+          },
+          "deep": {
+            "known": 4,
+            "detected": 0,
+            "defectIds": [
+              "fixture-profile-focus-trap",
+              "fixture-carousel-right-jump",
+              "fixture-details-back-wrong-screen",
+              "fixture-caption-text-colour-remote-unreachable"
+            ],
+            "recall": 0
+          }
+        },
+        "restoration": {
+          "medium": {
+            "known": 1,
+            "detected": 0,
+            "defectIds": [
+              "fixture-home-more-info-unreachable"
+            ],
+            "recall": 0
+          },
+          "deep": {
+            "known": 4,
+            "detected": 1,
+            "defectIds": [
+              "fixture-profile-focus-trap",
+              "fixture-carousel-right-jump",
+              "fixture-details-back-wrong-screen",
+              "fixture-caption-text-colour-remote-unreachable"
+            ],
+            "recall": 0.25
+          }
+        }
+      },
+      "restorationOnlyAttribution": [
+        {
+          "defectId": "fixture-details-back-wrong-screen",
+          "association": {
+            "strength": "finding-action-immediately-preceded-by-treatment-restoration",
+            "sourceFocusStateId": "focus-0009",
+            "sourcePath": [
+              "RIGHT",
+              "SELECT"
+            ],
+            "findingActionAttemptId": "action-0030",
+            "findingAction": "BACK",
+            "restoration": {
+              "attemptNumber": 44,
+              "retryNumber": 3,
+              "restorationCycleNumber": 30,
+              "successfulRestorationsBeforeAttempt": 29,
+              "traversalDepth": 2,
+              "destinationStateId": "focus-0009",
+              "strategy": "root-replay",
+              "status": "success",
+              "elapsedMs": 586.7433999999994,
+              "actionHistory": [
+                "RIGHT",
+                "SELECT"
+              ],
+              "before": {
+                "capturedAt": "2026-09-19T16:34:26.793Z",
+                "stateFingerprint": "state-e0d736ef0f96d8bb-278",
+                "screenFingerprint": "screen-09caaa1a7d3eef8e-253",
+                "focusFingerprint": "focus-f506241ab2eac356-24",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "player-play-pause|button",
+                "focusedStableId": "player-play-pause",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|Playing The Ember Line",
+                  "||Player controls",
+                  "player-play-pause|button|Ⅱ Pause"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "player-captions",
+                  "player-forward",
+                  "player-play-pause",
+                  "player-rewind",
+                  "player-settings",
+                  "player-volume-boost"
+                ],
+                "visibleStructureFingerprint": "visible-94874145b671fbe1-307",
+                "actionableNodeFingerprint": "actionable-f3c819b604657f62-491",
+                "navigationStructureFingerprint": "navigation-4bb147bbb2ca8acf-501",
+                "visibleNodeCount": 11,
+                "actionableNodeCount": 5
+              },
+              "after": {
+                "capturedAt": "2026-09-19T16:34:27.381Z",
+                "stateFingerprint": "state-1f46c616d7caecf2-272",
+                "screenFingerprint": "screen-322e391d106930c1-252",
+                "focusFingerprint": "focus-618c761aad97c416-19",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "details-play|button",
+                "focusedStableId": "details-play",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|The Ember Line",
+                  "||",
+                  "details-play|button|▶ Play"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "details-episodes",
+                  "details-play",
+                  "details-title",
+                  "details-trailer",
+                  "details-watchlist"
+                ],
+                "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                "visibleNodeCount": 12,
+                "actionableNodeCount": 4
+              },
+              "expected": {
+                "capturedAt": "2026-09-19T16:34:23.857Z",
+                "stateFingerprint": "state-1f46c616d7caecf2-272",
+                "screenFingerprint": "screen-322e391d106930c1-252",
+                "focusFingerprint": "focus-618c761aad97c416-19",
+                "location": "http://127.0.0.1:4182/",
+                "focusIdentity": "details-play|button",
+                "focusedStableId": "details-play",
+                "focusedPath": [
+                  "||",
+                  "app||",
+                  "|main|The Ember Line",
+                  "||",
+                  "details-play|button|▶ Play"
+                ],
+                "stableIdentifiers": [
+                  "app",
+                  "details-episodes",
+                  "details-play",
+                  "details-title",
+                  "details-trailer",
+                  "details-watchlist"
+                ],
+                "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                "visibleNodeCount": 12,
+                "actionableNodeCount": 4
+              },
+              "history": [
+                {
+                  "capturedAt": "2026-09-19T16:34:26.793Z",
+                  "stateFingerprint": "state-e0d736ef0f96d8bb-278",
+                  "screenFingerprint": "screen-09caaa1a7d3eef8e-253",
+                  "focusFingerprint": "focus-f506241ab2eac356-24",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "player-play-pause|button",
+                  "focusedStableId": "player-play-pause",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "|main|Playing The Ember Line",
+                    "||Player controls",
+                    "player-play-pause|button|Ⅱ Pause"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "player-captions",
+                    "player-forward",
+                    "player-play-pause",
+                    "player-rewind",
+                    "player-settings",
+                    "player-volume-boost"
+                  ],
+                  "visibleStructureFingerprint": "visible-94874145b671fbe1-307",
+                  "actionableNodeFingerprint": "actionable-f3c819b604657f62-491",
+                  "navigationStructureFingerprint": "navigation-4bb147bbb2ca8acf-501",
+                  "visibleNodeCount": 11,
+                  "actionableNodeCount": 5
+                },
+                {
+                  "capturedAt": "2026-09-19T16:34:26.998Z",
+                  "stateFingerprint": "state-7560dac5044718a9-727",
+                  "screenFingerprint": "screen-6e70e7f0e7c15994-706",
+                  "focusFingerprint": "focus-6a9a1e1ad7c4c18e-20",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "home-nav-home|button",
+                  "focusedStableId": "home-nav-home",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "||",
+                    "|navigation|Primary",
+                    "home-nav-home|button|⌂ Home"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "continue-title",
+                    "footer-privacy",
+                    "fresh-card-1",
+                    "fresh-card-2",
+                    "fresh-card-3",
+                    "fresh-card-4",
+                    "fresh-title",
+                    "hero-more-info",
+                    "hero-preview-pointer",
+                    "hero-title",
+                    "hero-watch",
+                    "home-card-1",
+                    "home-card-2",
+                    "home-card-3",
+                    "home-card-4",
+                    "home-nav-home",
+                    "home-nav-library",
+                    "home-nav-search",
+                    "home-nav-settings"
+                  ],
+                  "visibleStructureFingerprint": "visible-eec9d7334f856ee7-946",
+                  "actionableNodeFingerprint": "actionable-21be44324df9378e-1208",
+                  "navigationStructureFingerprint": "navigation-e8ff43c0bbc8081c-1236",
+                  "visibleNodeCount": 32,
+                  "actionableNodeCount": 14
+                },
+                {
+                  "capturedAt": "2026-09-19T16:34:27.195Z",
+                  "stateFingerprint": "state-10c822e8350c5b6c-724",
+                  "screenFingerprint": "screen-6e70e7f0e7c15994-706",
+                  "focusFingerprint": "focus-4238435d0e664431-17",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "hero-watch|button",
+                  "focusedStableId": "hero-watch",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "||",
+                    "|main|Home",
+                    "||The Ember Line",
+                    "hero-watch|button|▶ Explore film"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "continue-title",
+                    "footer-privacy",
+                    "fresh-card-1",
+                    "fresh-card-2",
+                    "fresh-card-3",
+                    "fresh-card-4",
+                    "fresh-title",
+                    "hero-more-info",
+                    "hero-preview-pointer",
+                    "hero-title",
+                    "hero-watch",
+                    "home-card-1",
+                    "home-card-2",
+                    "home-card-3",
+                    "home-card-4",
+                    "home-nav-home",
+                    "home-nav-library",
+                    "home-nav-search",
+                    "home-nav-settings"
+                  ],
+                  "visibleStructureFingerprint": "visible-eec9d7334f856ee7-946",
+                  "actionableNodeFingerprint": "actionable-21be44324df9378e-1208",
+                  "navigationStructureFingerprint": "navigation-e8ff43c0bbc8081c-1236",
+                  "visibleNodeCount": 32,
+                  "actionableNodeCount": 14
+                },
+                {
+                  "capturedAt": "2026-09-19T16:34:27.381Z",
+                  "stateFingerprint": "state-1f46c616d7caecf2-272",
+                  "screenFingerprint": "screen-322e391d106930c1-252",
+                  "focusFingerprint": "focus-618c761aad97c416-19",
+                  "location": "http://127.0.0.1:4182/",
+                  "focusIdentity": "details-play|button",
+                  "focusedStableId": "details-play",
+                  "focusedPath": [
+                    "||",
+                    "app||",
+                    "|main|The Ember Line",
+                    "||",
+                    "details-play|button|▶ Play"
+                  ],
+                  "stableIdentifiers": [
+                    "app",
+                    "details-episodes",
+                    "details-play",
+                    "details-title",
+                    "details-trailer",
+                    "details-watchlist"
+                  ],
+                  "visibleStructureFingerprint": "visible-9aae086f80d2ed43-288",
+                  "actionableNodeFingerprint": "actionable-583c53bf3caf2173-343",
+                  "navigationStructureFingerprint": "navigation-3bf4bf67917eca7b-351",
+                  "visibleNodeCount": 12,
+                  "actionableNodeCount": 4
+                }
+              ]
+            },
+            "causalClaim": true,
+            "caveat": null
+          }
+        }
+      ],
+      "efficiencyDelta": {
+        "additionalStates": 48,
+        "additionalScreens": 8,
+        "additionalActions": 671,
+        "additionalRuntimeMs": 119515.49459999999,
+        "usefulRestorationOnlyDefects": 1,
+        "usefulDefectsPerAdditionalScreen": 0.125
+      }
+    }
+  ],
+  "aggregate": {
+    "baseline": {
+      "meanRecall": 0,
+      "meanTruePositives": 0,
+      "meanFalsePositives": 0,
+      "meanRuntimeMs": 499.03270000000003,
+      "meanActions": 2,
+      "meanStates": 2,
+      "meanScreens": 1,
+      "meanDepth": 1,
+      "meanCompletedBranches": 0,
+      "meanTrueSeededDefectsPerMinute": 0,
+      "meanActionsPerTrueDefect": null,
+      "meanRuntimeMsPerTrueDefect": null,
+      "meanRestorationCycles": 4,
+      "meanReplayActions": 0,
+      "meanReplayTimeMs": 0,
+      "meanResetTimeMs": 211.07919999999996
+    },
+    "restoration": {
+      "meanRecall": 0.2,
+      "meanTruePositives": 1,
+      "meanFalsePositives": 6,
+      "meanRuntimeMs": 120015.76980000001,
+      "meanActions": 676.5,
+      "meanStates": 50.5,
+      "meanScreens": 9,
+      "meanDepth": 6.5,
+      "meanCompletedBranches": 38,
+      "meanTrueSeededDefectsPerMinute": 0.4999343012588111,
+      "meanActionsPerTrueDefect": 676.5,
+      "meanRuntimeMsPerTrueDefect": 120015.76980000001,
+      "meanRestorationCycles": 43,
+      "meanReplayActions": 447.5,
+      "meanReplayTimeMs": 70084.18355000006,
+      "meanResetTimeMs": 20761.438100000003
+    },
+    "depthRecall": {
+      "baseline": {
+        "medium": {
+          "knownOpportunities": 2,
+          "detected": 0,
+          "recall": 0
+        },
+        "deep": {
+          "knownOpportunities": 8,
+          "detected": 0,
+          "recall": 0
+        }
+      },
+      "restoration": {
+        "medium": {
+          "knownOpportunities": 2,
+          "detected": 0,
+          "recall": 0
+        },
+        "deep": {
+          "knownOpportunities": 8,
+          "detected": 2,
+          "recall": 0.25
+        }
+      }
+    },
+    "defectClassifications": [
+      {
+        "defectId": "fixture-home-more-info-unreachable",
+        "category": "remote.reachability",
+        "minimumDepth": 2,
+        "depthBucket": "medium",
+        "perPair": [
+          "missed-both",
+          "missed-both"
+        ],
+        "classification": "missed-both"
+      },
+      {
+        "defectId": "fixture-profile-focus-trap",
+        "category": "remote.focus-trap",
+        "minimumDepth": 4,
+        "depthBucket": "deep",
+        "perPair": [
+          "missed-both",
+          "missed-both"
+        ],
+        "classification": "missed-both"
+      },
+      {
+        "defectId": "fixture-carousel-right-jump",
+        "category": "remote.unexpected-jump",
+        "minimumDepth": 5,
+        "depthBucket": "deep",
+        "perPair": [
+          "missed-both",
+          "missed-both"
+        ],
+        "classification": "missed-both"
+      },
+      {
+        "defectId": "fixture-details-back-wrong-screen",
+        "category": "remote.back-behaviour",
+        "minimumDepth": 3,
+        "depthBucket": "deep",
+        "perPair": [
+          "restoration-only",
+          "restoration-only"
+        ],
+        "classification": "restoration-only"
+      },
+      {
+        "defectId": "fixture-caption-text-colour-remote-unreachable",
+        "category": "remote.reachability",
+        "minimumDepth": 11,
+        "depthBucket": "deep",
+        "perPair": [
+          "missed-both",
+          "missed-both"
+        ],
+        "classification": "missed-both"
+      }
+    ],
+    "restorationOnlyConsistent": [
+      "fixture-details-back-wrong-screen"
+    ],
+    "missedBothConsistent": [
+      "fixture-home-more-info-unreachable",
+      "fixture-profile-focus-trap",
+      "fixture-carousel-right-jump",
+      "fixture-caption-text-colour-remote-unreachable"
+    ],
+    "inconclusiveDefects": []
+  }
+}
