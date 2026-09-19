@@ -269,6 +269,29 @@ describe("conservative Back semantics", () => {
       finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.backBehaviour
     ))).toBe(false);
   });
+
+  it("does not treat a dialog returning to its parent surface as unrelated Back navigation", () => {
+    const buttonBounds = { x: 20, y: 20, width: 100, height: 60 };
+    const dialogSnapshot = snapshot("app://tv/player", target("captions-off", buttonBounds), [
+      node("captions-dialog", "dialog", { x: 100, y: 80, width: 600, height: 500 }, {
+        modal: true,
+        name: "Captions",
+        children: [control("captions-off", buttonBounds, true)],
+      }),
+    ]);
+    const states: TestState[] = [
+      { id: "player", screenId: "screen-player", discoveredBy: [], snapshot: landmarkScreen("Player", "player-captions", "app://tv/player") },
+      { id: "captions", screenId: "screen-captions", discoveredBy: ["SELECT"], snapshot: dialogSnapshot },
+      { id: "settings", screenId: "screen-settings", discoveredBy: ["SELECT", "BACK"], snapshot: landmarkScreen("Settings", "settings-captions", "app://tv/player") },
+    ];
+    const result = makeResult(states, ["SELECT", "BACK"], [
+      { from: "player", to: "captions", key: "SELECT" },
+      { from: "captions", to: "settings", key: "BACK" },
+    ]);
+    expect(diagnoseNavigation(result).findings.some((finding) => (
+      finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.backBehaviour
+    ))).toBe(false);
+  });
 });
 
 describe("rectangle-aware directional geometry", () => {

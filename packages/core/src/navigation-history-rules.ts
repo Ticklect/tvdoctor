@@ -27,8 +27,9 @@ export function addBackBehaviourFindings(
   ));
   const focusById = new Map(result.graph.focus.states.map((state) => [state.id, state]));
   const screenById = new Map(result.graph.screens.states.map((state) => [state.id, state]));
+  const semanticScreen = (screenStateId: string) => semanticScreenIdentity(screenById.get(screenStateId));
   const semanticScreenKey = (screenStateId: string): string | null => {
-    const identity = semanticScreenIdentity(screenById.get(screenStateId));
+    const identity = semanticScreen(screenStateId);
     if (identity === null || (identity.location === null && identity.landmarks.length === 0)) return null;
     const landmarks = identity.landmarks
       .map((landmark) => landmark.join("\u0000"))
@@ -41,6 +42,10 @@ export function addBackBehaviourFindings(
     if (enteredState === undefined || !sameSequence(enteredState.discoveredBy, entry.actionSequence)) continue;
     const enteredScreenStateId = entry.toScreenStateId;
     if (enteredScreenStateId === null) continue;
+    const enteredScreenIdentity = semanticScreen(enteredScreenStateId);
+    if (enteredScreenIdentity?.landmarks.some(([role]) => (
+      role === "dialog" || role === "alertdialog"
+    )) === true) continue;
     const entryScreenKey = semanticScreenKey(entry.fromScreenStateId);
     const enteredScreenKey = semanticScreenKey(enteredScreenStateId);
     if (entryScreenKey === null || enteredScreenKey === null || entryScreenKey === enteredScreenKey) continue;
