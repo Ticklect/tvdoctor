@@ -18,11 +18,8 @@ import {
   OperationDeadlineExceeded,
   runWithOperationDeadline,
 } from "./operation-deadline.js";
-import {
-  createExplorerRestorer,
-  DurationBudgetExceeded,
-  incomplete,
-} from "./explorer-restoration.js";
+import { createExplorerRestorer, DurationBudgetExceeded, incomplete } from "./explorer-restoration.js";
+import { RestorationDiagnosticRecorder } from "./explorer-restoration-diagnostics.js";
 import {
   explorerId as id,
   repetitionGroupKey,
@@ -35,16 +32,14 @@ import {
 
 const COMPLETE_TERMINATION: ExplorationTermination = {
   reason: "queue-exhausted",
-  complete: true,
-};
+  complete: true };
 
 export async function explore(
   driver: TVDoctorDriver,
   options: ExplorerOptions = {},
 ): Promise<ExplorationResult> {
   const {
-    budgets, actionOrder, frontierStrategy, restorationMode,
-    allowRootRestorationFallback, refreshVisibleSelfLoops, repetitionCompression,
+    budgets, actionOrder, replayActions: rootReplayActions, frontierStrategy, restorationMode, allowRootRestorationFallback, refreshVisibleSelfLoops, repetitionCompression,
     settling,
     replaySettling,
     monotonicSource,
@@ -85,7 +80,7 @@ export async function explore(
   const focusStates: InternalFocusState[] = [];
   const screenTransitions: ScreenTransition[] = [];
   const focusTransitions: FocusTransition[] = [];
-  const attempts: ExplorationActionAttempt[] = [];
+  const attempts: ExplorationActionAttempt[] = [], restorationDiagnostics = new RestorationDiagnosticRecorder();
   const screenByIdentity = new Map<string, MutableScreenState>();
   const stateByIdentity = new Map<string, InternalFocusState>();
   const repetitionGroups = new Map<string, RepetitionGroup>();
@@ -166,6 +161,7 @@ export async function explore(
         verifiedStateReuses,
         verifiedPathRestorations,
         restorationFallbacks,
+        restorationAttempts: restorationDiagnostics.attempts, restorationSuccesses: restorationDiagnostics.successes, restorationFailures: restorationDiagnostics.failures,
         visitedStates: focusStates.length,
         screenStates: screenStates.length,
         focusStates: focusStates.length,
@@ -183,6 +179,7 @@ export async function explore(
         unsettledActions,
         timings: { ...phaseTimings },
       },
+      restorationDiagnostics: restorationDiagnostics.snapshot(),
     };
   };
   const publishProgress = (): void => {
@@ -227,7 +224,7 @@ export async function explore(
     ));
   const restoreInitialSnapshot = options.restoreInitialSnapshot;
   if (restoreInitialState === undefined && restoreInitialSnapshot === undefined) {
-    return finish(incomplete("restoration-unavailable"));
+    return finish(incomplete("restoration-unavailable", undefined, { subtype: "strategy-exhausted", rejectionReason: "no-restoration-strategy" }));
   }
 
   const restoreAndCapture = async (signal: AbortSignal): Promise<StateSnapshot> => {
@@ -372,12 +369,14 @@ export async function explore(
     onReplayDuration: (durationMs) => {
       phaseTimings.pathReplayMs += durationMs;
     },
+    onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
   });
   const localRestorer = createVerifiedLocalRestorer({
     enabled: restorationMode === "verified-local",
     allowRootRestorationFallback,
     refreshVisibleSelfLoops,
     actionOrder,
+    rootReplayActions: new Set(rootReplayActions),
     initialSnapshot,
     initialIdentity: initialFingerprint.stateIdentity,
     measuredDriver,
@@ -387,6 +386,7 @@ export async function explore(
     withinDurationBudget,
     signalAborted,
     fingerprintSnapshot,
+    stateByIdentity,
     monotonicNow,
     durationSince,
     onReplayAction: () => { physicalActions += 1; replayActions += 1; },
@@ -395,6 +395,7 @@ export async function explore(
     onStateReuse: () => { verifiedStateReuses += 1; },
     onPathRestoration: () => { verifiedPathRestorations += 1; },
     onFallback: () => { restorationFallbacks += 1; },
+    onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
   });
   const restore = localRestorer.restore;
   const takeFrontier = (): QueueEntry | undefined => measureSynchronous("graphBookkeepingMs", () => {

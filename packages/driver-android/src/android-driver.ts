@@ -297,6 +297,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
   #stateMessages = 0;
   #fullTreeMessages = 0;
   #canonicalPayloadBytes = 0;
+  #lastProcessId: number | null = null;
+  #processGeneration = 0;
+  #lastWindowIdentity: string | null = null;
+  #windowGeneration = 0;
 
   constructor(options: AndroidTvDriverOptions = {}) {
     this.#options = normaliseOptions(options);
@@ -702,8 +706,13 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const commandOptions = signal === undefined ? {} : { signal };
     const pidText = await this.#deviceText(["shell", "pidof", "-s", current.id], commandOptions).catch(() => "");
     const packageText = await this.#deviceText(["shell", "dumpsys", "package", current.id], commandOptions);
+    const pid = optionalInteger(cleanText(pidText));
+    if (pid !== null && pid !== this.#lastProcessId) {
+      this.#lastProcessId = pid;
+      this.#processGeneration += 1;
+    }
     this.#appMetadata = {
-      packageName: current.id, component: this.#component, pid: optionalInteger(cleanText(pidText)),
+      packageName: current.id, component: this.#component, pid,
       versionName: optionalText(/\bversionName=([^\s]+)/u.exec(packageText)?.[1]),
       versionCode: optionalInteger(/\bversionCode=(\d+)/u.exec(packageText)?.[1]),
     };
@@ -753,6 +762,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const location = state.packageName === null
       ? `android://unknown/window-${String(state.windowId ?? "unknown")}`
       : `android://${state.packageName}/${state.windowClassName ?? `window-${String(state.windowId ?? "unknown")}`}`;
+    const windowIdentity = `${state.packageName ?? "unknown"}\u001f${state.windowClassName ?? "unknown"}\u001f${String(state.windowId ?? "unknown")}`;
+    if (windowIdentity !== this.#lastWindowIdentity) {
+      this.#lastWindowIdentity = windowIdentity;
+      this.#windowGeneration += 1;
+    }
     return {
       capturedAt: new Date(state.timestampMs).toISOString(), location: availableObservation(location),
       focusedElement: availableObservation(!targetOwned || state.focused === null ? null : {
@@ -773,6 +787,23 @@ export class AndroidTvDriver implements TVDoctorDriver {
         maxDepth: state.maxDepth,
         truncated: state.nodeCount >= 4_096 || state.maxDepth >= 64,
       }),
+      restorationContext: {
+        platform: "android-tv",
+        applicationId: state.packageName,
+        processId: targetOwned ? this.#appMetadata?.pid ?? null : null,
+        processGeneration: targetOwned && this.#processGeneration > 0 ? this.#processGeneration : null,
+        processIdentitySource: "last-launch-or-reset-metadata",
+        activity: state.windowClassName,
+        activityGeneration: null,
+        activityGenerationObservable: false,
+        rootIdentity: state.windowId === null ? null : `window-${String(state.windowId)}`,
+        rootIdentitySource: "accessibility-window-id",
+        windowId: state.windowId,
+        windowGeneration: this.#windowGeneration,
+        observationSequence: state.sequence,
+        observerStructureFingerprint: state.structureFingerprint,
+        observerStateFingerprint: state.stateFingerprint,
+      },
     };
   }
 
@@ -869,7 +900,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
     }
   }
   async #waitForTargetState(packageName: string, forceFull: boolean, signal?: AbortSignal): Promise<AndroidStateSnapshot> {
-    const observer = await this.#requiredObserver(signal); const deadline = performance.now() + 8_000; let latestPackage: string | null = null;
+    const observer = await this.#requiredObserver(signal);
+    const deadline = performance.now() + this.#options.resetSettleTimeoutMs;
+    let latestPackage: string | null = null;
     while (performance.now() < deadline) {
       const response = await observer.request({ type: "current_state", forceFull }, {
         timeoutMs: this.#options.observerRequestTimeoutMs,

@@ -381,6 +381,45 @@ describe("M8 explorer hardening", () => {
     expect(observedActionCounts).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("recovers a delivered inconclusive action when stable snapshots subsequently converge", async () => {
+    const transient = carouselSnapshot(1, false, 4);
+    const stable = carouselSnapshot(2, false, 4);
+    const snapshots = [transient, stable, stable];
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input"]);
+      },
+      async press(key) {
+        return {
+          key,
+          outcome: "inconclusive",
+          message: "observer settle timeout",
+          timing: { inputSentAtMs: 1 },
+        };
+      },
+      async snapshot() {
+        return snapshots.shift() ?? stable;
+      },
+      async reset() {
+        return undefined;
+      },
+    };
+
+    const observation = await pressAndObserve(driver, "SELECT", {
+      strategy: "stable-snapshot",
+      maxSnapshots: 3,
+      requiredStableSnapshots: 2,
+      pollIntervalMs: 0,
+      wait: async () => undefined,
+    });
+
+    expect(observation.settled).toBe(true);
+    expect(observation.actionResult.outcome).toBe("applied");
+    expect(observation.actionResult.message).toContain("observer settle timeout");
+    expect(observation.snapshotsObserved).toBe(3);
+    expect(observation.snapshot).toBe(stable);
+  });
+
   it("keeps a configured repeated-group representative in the expanded graph", async () => {
     const result = await explore(new CarouselDriver(8), {
       profile: "quick",

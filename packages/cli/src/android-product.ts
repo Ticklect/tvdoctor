@@ -15,6 +15,7 @@ import {
   type ExplorationObservedActionContext,
   type ExplorationProgress,
   type ExplorationResult,
+  type RestorationStateDiagnostic,
 } from "@tvdoctor/core";
 import {
   AndroidTvDriver,
@@ -91,6 +92,17 @@ export const ANDROID_LAUNCH_SETTLING = {
 export const ANDROID_LAUNCH_WARMUP_MS = 8_000;
 const ANDROID_TRAVERSAL_STRATEGY = "adaptive" as const;
 const ANDROID_AUTOMATIC_ACTIONS = REMOTE_KEYS.filter((key) => key !== "TAB" && key !== "HOME");
+export const ANDROID_TRAVERSAL_RESTORATION = {
+  restorationMode: "verified-local",
+  allowRootRestorationFallback: true,
+  refreshVisibleSelfLoops: false,
+  replayActions: ["UP", "DOWN", "LEFT", "RIGHT", "SELECT"],
+  // Replay must use the same observable-stability proof as discovery. Some TV
+  // apps acknowledge SELECT before a delayed Activity/window transition begins;
+  // trusting only the driver's first settled snapshot can verify the checkpoint
+  // against the old Activity and falsely report replay divergence.
+  replaySettling: ANDROID_ACTION_SETTLING,
+} as const;
 
 function androidSnapshotBelongsToTarget(snapshot: AndroidStateSnapshot, packageName: string): boolean {
   return snapshot.location.status === "available"
@@ -114,6 +126,570 @@ export async function restoreAndroidTargetForFinalEvidence(
     throw new Error(`Android scan ended outside ${packageName}.`);
   }
   return snapshot;
+}
+
+export function createAndroidTraversalRootRestorer(
+  driver: Pick<AndroidTvDriver, "reset" | "snapshot">,
+  packageName: string,
+  preparedInitialSnapshot: AndroidStateSnapshot,
+): (options?: { readonly signal?: AbortSignal }) => Promise<AndroidStateSnapshot> {
+  let initialPreparedStateAvailable = true;
+  return async (options): Promise<AndroidStateSnapshot> => {
+    if (initialPreparedStateAvailable) {
+      initialPreparedStateAvailable = false;
+      return preparedInitialSnapshot;
+    }
+    await driver.reset("relaunch", options);
+    const snapshot = await driver.snapshot(options);
+    if (!androidSnapshotBelongsToTarget(snapshot, packageName)) {
+      throw new Error(`Android root restoration ended outside ${packageName}.`);
+    }
+    return snapshot;
+  };
+}
+
+interface AndroidLocationIdentity {
+  readonly packageName: string;
+  readonly activity: string;
+}
+
+function parseAndroidLocation(location: string | undefined): AndroidLocationIdentity | null {
+  if (location === undefined) return null;
+  const match = /^android:\/\/([^/]+)\/(.+)$/u.exec(location);
+  if (match === null) return null;
+  const packageName = match[1];
+  const activity = match[2];
+  if (packageName === undefined || activity === undefined) return null;
+  return { packageName, activity };
+}
+
+function restorationFailureClass(
+  diagnostic: NonNullable<ExplorationResult["restorationDiagnostics"]>[number],
+  currentPackage: string | null,
+  targetPackage: string,
+): string | null {
+  if (currentPackage !== null && currentPackage !== targetPackage) return "restoration-external-surface";
+  if (diagnostic.subtype === "state-not-found") return "restoration-state-not-found";
+  if (diagnostic.subtype === "timeout") return "restoration-timeout";
+  if (diagnostic.subtype === "navigation-diverged") return "restoration-navigation-diverged";
+  if (diagnostic.subtype === "strategy-exhausted") return "restoration-strategy-exhausted";
+  if (diagnostic.subtype === "interrupted") return "restoration-interrupted";
+  if (diagnostic.subtype === "operation-failed") return "restoration-operation-failed";
+  const rejectionReason = diagnostic.rejectionReason;
+  if (rejectionReason === undefined) return null;
+  if (rejectionReason.includes("not-found")) return "restoration-state-not-found";
+  if (rejectionReason.includes("unsettled") || rejectionReason.includes("duration-budget")) {
+    return "restoration-timeout";
+  }
+  if (rejectionReason.includes("diverged") || rejectionReason.includes("rejected")) {
+    return "restoration-navigation-diverged";
+  }
+  if (rejectionReason === "unsafe-root-replay"
+    || rejectionReason === "root-fallback-disabled"
+    || rejectionReason === "no-restoration-strategy") {
+    return "restoration-strategy-exhausted";
+  }
+  if (rejectionReason === "interrupted") return "restoration-interrupted";
+  return "restoration-operation-failed";
+}
+
+function restorationProcessRestarted(
+  diagnostic: NonNullable<ExplorationResult["restorationDiagnostics"]>[number],
+): boolean | null {
+  const cachedProcessIdentity = diagnostic.before?.processIdentitySource === "last-launch-or-reset-metadata"
+    || diagnostic.after?.processIdentitySource === "last-launch-or-reset-metadata";
+  const beforeGeneration = diagnostic.before?.processGeneration;
+  const afterGeneration = diagnostic.after?.processGeneration;
+  if (!cachedProcessIdentity
+    && beforeGeneration !== undefined && beforeGeneration !== null
+    && afterGeneration !== undefined && afterGeneration !== null) {
+    return beforeGeneration !== afterGeneration;
+  }
+  const beforePid = diagnostic.before?.processId;
+  const afterPid = diagnostic.after?.processId;
+  if (!cachedProcessIdentity
+    && beforePid !== undefined && beforePid !== null && afterPid !== undefined && afterPid !== null) {
+    return beforePid !== afterPid;
+  }
+  if (diagnostic.strategy !== "root-replay") return null;
+  if (diagnostic.rejectionReason === "unsafe-root-replay") return false;
+  if (diagnostic.status === "success") return true;
+  if (diagnostic.rejectionReason === "root-state-diverged"
+    || diagnostic.rejectionReason === "replay-action-error"
+    || diagnostic.rejectionReason === "replay-action-rejected"
+    || diagnostic.rejectionReason === "replay-checkpoint-diverged"
+    || diagnostic.rejectionReason === "destination-state-not-found"
+    || diagnostic.rejectionReason === "settling-exhausted"
+    || diagnostic.rejectionReason === "action-budget-exhausted") return true;
+  return null;
+}
+
+type RestorationStateEvidence = NonNullable<
+  NonNullable<ExplorationResult["restorationDiagnostics"]>[number]["expected"]
+>;
+
+const IDENTITY_DIMENSIONS = [
+  "location",
+  "stateFingerprint",
+  "screenFingerprint",
+  "focusFingerprint",
+  "focusIdentity",
+  "focusedStableId",
+] as const;
+
+const STRUCTURAL_DIAGNOSTIC_DIMENSIONS = [
+  "focusedPath",
+  "stableIdentifiers",
+  "visibleStructureFingerprint",
+  "actionableNodeFingerprint",
+  "navigationStructureFingerprint",
+  "visibleNodeCount",
+  "actionableNodeCount",
+  "observerStructureFingerprint",
+  "observerStateFingerprint",
+] as const;
+
+const LIFECYCLE_DIMENSIONS = [
+  "applicationId",
+  "processId",
+  "processGeneration",
+  "activity",
+  "activityGeneration",
+  "rootIdentity",
+  "windowId",
+  "windowGeneration",
+] as const;
+
+function differingDimensions(
+  expected: RestorationStateEvidence | undefined,
+  observed: RestorationStateEvidence | undefined,
+  dimensions: readonly (keyof RestorationStateEvidence)[],
+): readonly string[] {
+  if (expected === undefined || observed === undefined) return [];
+  return dimensions.filter((dimension) => {
+    const left = expected[dimension];
+    const right = observed[dimension];
+    if (left === undefined && right === undefined) return false;
+    return JSON.stringify(left) !== JSON.stringify(right);
+  });
+}
+
+function restorationTaxonomyCategory(
+  diagnostic: NonNullable<ExplorationResult["restorationDiagnostics"]>[number],
+  currentPackage: string | null,
+  targetPackage: string,
+): string | null {
+  if (diagnostic.status !== "failed") return null;
+  if (currentPackage !== null && currentPackage !== targetPackage) return "application-or-system-surface";
+  if (diagnostic.subtype === "state-not-found") return "state-not-found";
+  if (diagnostic.subtype === "timeout") return "asynchronous-ui-timing-or-timeout";
+  if (diagnostic.subtype === "interrupted") return "interrupted";
+  if (diagnostic.subtype === "strategy-exhausted") return "strategy-exhausted";
+  if (diagnostic.subtype === "operation-failed") return "restoration-operation-error";
+
+  const expected = diagnostic.expected;
+  const observed = diagnostic.after;
+  if (expected === undefined || observed === undefined) return "unknown";
+  const identityDiff = differingDimensions(expected, observed, IDENTITY_DIMENSIONS);
+  const structuralDiff = differingDimensions(expected, observed, STRUCTURAL_DIAGNOSTIC_DIMENSIONS);
+  const lifecycleDiff = differingDimensions(expected, observed, LIFECYCLE_DIMENSIONS);
+  const navigationChanged = structuralDiff.includes("actionableNodeFingerprint")
+    || structuralDiff.includes("navigationStructureFingerprint");
+  const locationChanged = identityDiff.includes("location") || lifecycleDiff.includes("activity");
+  const focusChanged = identityDiff.includes("focusFingerprint")
+    || identityDiff.includes("focusIdentity")
+    || identityDiff.includes("focusedStableId");
+  const visibleOnly = identityDiff.length > 0 && identityDiff.every((dimension) => (
+    dimension === "stateFingerprint"
+    || dimension === "screenFingerprint"
+  )) && structuralDiff.every((dimension) => (
+    dimension === "visibleStructureFingerprint"
+    || dimension === "visibleNodeCount"
+    || dimension === "observerStructureFingerprint"
+    || dimension === "observerStateFingerprint"
+  ));
+
+  if (locationChanged) return "genuine-navigation-state-change";
+  if (navigationChanged) return "structurally-meaningful-divergence";
+  if (focusChanged && identityDiff.every((dimension) => (
+    dimension === "stateFingerprint"
+    || dimension === "focusFingerprint"
+    || dimension === "focusIdentity"
+    || dimension === "focusedStableId"
+  ))) return "focus-only-divergence";
+  if (visibleOnly) return "presentation-structure-divergence-with-equivalent-observed-navigation-surface";
+  if (lifecycleDiff.includes("processGeneration") || lifecycleDiff.includes("processId")) {
+    return "process-replacement-with-state-divergence";
+  }
+  if (lifecycleDiff.includes("rootIdentity") || lifecycleDiff.includes("windowId")
+    || lifecycleDiff.includes("windowGeneration")) return "root-or-window-replacement-with-state-divergence";
+  if (diagnostic.subtype === "navigation-diverged") return "replay-navigation-divergence";
+  return "unknown";
+}
+
+function observedTraversalImpact(
+  expected: RestorationStateEvidence | undefined,
+  observed: RestorationStateEvidence | undefined,
+): {
+  readonly observedNavigationSurfaceEquivalent: boolean | null;
+  readonly behaviorallyEquivalent: boolean | null;
+  readonly traversalWouldMateriallyDiffer: boolean | null;
+} {
+  if (expected === undefined || observed === undefined) {
+    return {
+      observedNavigationSurfaceEquivalent: null,
+      behaviorallyEquivalent: null,
+      traversalWouldMateriallyDiffer: null,
+    };
+  }
+  const required = [
+    expected.location,
+    observed.location,
+    expected.focusFingerprint,
+    observed.focusFingerprint,
+    expected.actionableNodeFingerprint,
+    observed.actionableNodeFingerprint,
+    expected.navigationStructureFingerprint,
+    observed.navigationStructureFingerprint,
+  ];
+  if (required.some((value) => value === undefined)) {
+    return {
+      observedNavigationSurfaceEquivalent: null,
+      behaviorallyEquivalent: null,
+      traversalWouldMateriallyDiffer: null,
+    };
+  }
+  const equivalent = expected.location === observed.location
+    && expected.focusFingerprint === observed.focusFingerprint
+    && expected.actionableNodeFingerprint === observed.actionableNodeFingerprint
+    && expected.navigationStructureFingerprint === observed.navigationStructureFingerprint;
+  return {
+    observedNavigationSurfaceEquivalent: equivalent,
+    behaviorallyEquivalent: equivalent ? null : false,
+    traversalWouldMateriallyDiffer: equivalent ? null : true,
+  };
+}
+
+function restorationResilienceMetrics(
+  result: ExplorationResult,
+  targetPackage: string,
+  diagnostics: readonly NonNullable<ExplorationResult["restorationDiagnostics"]>[number][],
+): JsonValue {
+  const cycles = new Map<number, { depth: number; success: boolean; failures: number }>();
+  const failureCounts = new Map<string, number>();
+  for (const diagnostic of diagnostics) {
+    const cycle = cycles.get(diagnostic.restorationCycleNumber) ?? {
+      depth: diagnostic.traversalDepth,
+      success: false,
+      failures: 0,
+    };
+    cycle.success ||= diagnostic.status === "success";
+    if (diagnostic.status === "failed") cycle.failures += 1;
+    cycles.set(diagnostic.restorationCycleNumber, cycle);
+    if (diagnostic.status === "failed") {
+      const current = parseAndroidLocation((diagnostic.after ?? diagnostic.before)?.location);
+      const category = restorationTaxonomyCategory(diagnostic, current?.packageName ?? null, targetPackage);
+      const key = category ?? "unknown";
+      failureCounts.set(key, (failureCounts.get(key) ?? 0) + 1);
+    }
+  }
+  const cycleValues = [...cycles.entries()].sort(([left], [right]) => left - right);
+  const summarise = (values: readonly { success: boolean }[]) => ({
+    attempts: values.length,
+    successes: values.filter((value) => value.success).length,
+    failures: values.filter((value) => !value.success).length,
+    successRate: values.length === 0 ? null : values.filter((value) => value.success).length / values.length,
+  });
+  const depths = new Map<number, { success: boolean }[]>();
+  for (const [, cycle] of cycleValues) {
+    const values = depths.get(cycle.depth) ?? [];
+    values.push({ success: cycle.success });
+    depths.set(cycle.depth, values);
+  }
+  const successfulCycles = cycleValues.filter(([, cycle]) => cycle.success);
+  const retryAttemptValues = {
+    first: diagnostics.filter((diagnostic) => diagnostic.retryNumber === 0)
+      .map((diagnostic) => ({ success: diagnostic.status === "success" })),
+    second: diagnostics.filter((diagnostic) => diagnostic.retryNumber === 1)
+      .map((diagnostic) => ({ success: diagnostic.status === "success" })),
+    thirdAndLater: diagnostics.filter((diagnostic) => diagnostic.retryNumber >= 2)
+      .map((diagnostic) => ({ success: diagnostic.status === "success" })),
+  };
+  const strategies = new Map<string, { success: boolean }[]>();
+  for (const diagnostic of diagnostics) {
+    const values = strategies.get(diagnostic.strategy) ?? [];
+    values.push({ success: diagnostic.status === "success" });
+    strategies.set(diagnostic.strategy, values);
+  }
+  const totalAttempts = result.statistics.restorationAttempts ?? diagnostics.length;
+  const totalSuccesses = result.statistics.restorationSuccesses
+    ?? diagnostics.filter((diagnostic) => diagnostic.status === "success").length;
+  const totalFailures = result.statistics.restorationFailures
+    ?? diagnostics.filter((diagnostic) => diagnostic.status === "failed").length;
+  const diagnosticsComplete = diagnostics.length >= totalAttempts;
+  const successfulWindowReplacements = diagnostics.filter((diagnostic) => (
+    diagnostic.status === "success"
+    && differingDimensions(diagnostic.expected, diagnostic.after, ["rootIdentity", "windowId", "windowGeneration"]).length > 0
+  )).length;
+  const successfulProcessReplacements = diagnostics.filter((diagnostic) => (
+    diagnostic.status === "success" && restorationProcessRestarted(diagnostic) === true
+  )).length;
+  const processReplacementEvidenceComplete = diagnosticsComplete && diagnostics.every((diagnostic) => (
+    diagnostic.strategy === "root-replay"
+    || (diagnostic.before?.processIdentitySource !== "last-launch-or-reset-metadata"
+      && diagnostic.after?.processIdentitySource !== "last-launch-or-reset-metadata")
+  ));
+  return JSON.parse(JSON.stringify({
+    strategyAttempts: {
+      attempts: totalAttempts,
+      successes: totalSuccesses,
+      failures: totalFailures,
+      successRate: totalAttempts === 0 ? null : totalSuccesses / totalAttempts,
+    },
+    retainedDiagnosticAttempts: diagnostics.length,
+    diagnosticsComplete,
+    metricsDerivedFromRetainedDiagnosticsAreComplete: diagnosticsComplete,
+    restorationCycles: summarise(cycleValues.map(([, cycle]) => cycle)),
+    byTraversalDepth: Object.fromEntries([...depths.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([depth, values]) => [String(depth), summarise(values)])),
+    byRestorationOrdinal: {
+      first: summarise(cycleValues.slice(0, 1).map(([, cycle]) => cycle)),
+      second: summarise(cycleValues.slice(1, 2).map(([, cycle]) => cycle)),
+      thirdAndLater: summarise(cycleValues.slice(2).map(([, cycle]) => cycle)),
+    },
+    byRestorationCycleOrdinal: {
+      first: summarise(cycleValues.slice(0, 1).map(([, cycle]) => cycle)),
+      second: summarise(cycleValues.slice(1, 2).map(([, cycle]) => cycle)),
+      thirdAndLater: summarise(cycleValues.slice(2).map(([, cycle]) => cycle)),
+    },
+    byStrategyAttemptOrdinal: {
+      first: summarise(retryAttemptValues.first),
+      second: summarise(retryAttemptValues.second),
+      thirdAndLater: summarise(retryAttemptValues.thirdAndLater),
+    },
+    byRetryOrdinal: {
+      first: summarise(retryAttemptValues.first),
+      second: summarise(retryAttemptValues.second),
+      thirdAndLater: summarise(retryAttemptValues.thirdAndLater),
+    },
+    byStrategy: Object.fromEntries([...strategies.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([strategy, values]) => [strategy, summarise(values)])),
+    deepestSuccessfullyRestoredCheckpoint: successfulCycles.length === 0
+      ? null
+      : Math.max(...successfulCycles.map(([, cycle]) => cycle.depth)),
+    successfulRestorationCyclesInTraversal: successfulCycles.length,
+    multipleSuccessfulRestorations: successfulCycles.length > 1,
+    scansWithMultipleSuccessfulRestorations: successfulCycles.length > 1 ? 1 : 0,
+    recoveryAfterProcessReplacement: {
+      successes: successfulProcessReplacements,
+      status: !diagnosticsComplete
+        ? "partial-retained-diagnostics"
+        : processReplacementEvidenceComplete
+          ? "observed-or-operation-inferred"
+          : "partial-cached-process-identity",
+    },
+    recoveryAfterRootOrWindowReplacement: {
+      successes: successfulWindowReplacements,
+      status: diagnosticsComplete ? "observed" : "partial-retained-diagnostics",
+    },
+    recoveryAfterActivityRecreation: {
+      successes: null,
+      status: "activity-instance-generation-not-observable-in-generic-accessibility-snapshots",
+    },
+    failureCountByTaxonomy: Object.fromEntries([...failureCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
+  })) as JsonValue;
+}
+
+function compactRestorationStateEvidence(
+  state: RestorationStateDiagnostic | undefined,
+): JsonValue | null {
+  if (state === undefined) return null;
+  return JSON.parse(JSON.stringify({
+    capturedAt: state.capturedAt,
+    stateFingerprint: state.stateFingerprint,
+    screenFingerprint: state.screenFingerprint,
+    focusFingerprint: state.focusFingerprint,
+    focusIdentity: state.focusIdentity ?? null,
+    location: state.location ?? null,
+    focusedStableId: state.focusedStableId ?? null,
+    focusedPath: state.focusedPath?.slice(-8) ?? [],
+    stableIdentifiers: state.stableIdentifiers?.slice(0, 8) ?? [],
+    visibleStructureFingerprint: state.visibleStructureFingerprint ?? null,
+    actionableNodeFingerprint: state.actionableNodeFingerprint ?? null,
+    navigationStructureFingerprint: state.navigationStructureFingerprint ?? null,
+    visibleNodeCount: state.visibleNodeCount ?? null,
+    actionableNodeCount: state.actionableNodeCount ?? null,
+    platform: state.platform ?? null,
+    applicationId: state.applicationId ?? null,
+    processId: state.processId ?? null,
+    processGeneration: state.processGeneration ?? null,
+    processIdentitySource: state.processIdentitySource ?? null,
+    activity: state.activity ?? null,
+    activityGeneration: state.activityGeneration ?? null,
+    activityGenerationObservable: state.activityGenerationObservable ?? null,
+    rootIdentity: state.rootIdentity ?? null,
+    rootIdentitySource: state.rootIdentitySource ?? null,
+    windowId: state.windowId ?? null,
+    windowGeneration: state.windowGeneration ?? null,
+    observationSequence: state.observationSequence ?? null,
+    observerStructureFingerprint: state.observerStructureFingerprint ?? null,
+    observerStateFingerprint: state.observerStateFingerprint ?? null,
+  })) as JsonValue;
+}
+
+export function buildAndroidExplorationEvidence(
+  result: ExplorationResult,
+  targetPackage: string,
+  coverageLedger: AndroidCoverageLedger | null,
+  finalTargetValidationError: string | null,
+  scanId = "android-scan",
+): JsonValue {
+  const focusStatesById = new Map(result.graph.focus.states.map((state) => [state.id, state]));
+  const focusStateIdsByFingerprint = new Map(
+    result.graph.focus.states.map((state) => [state.stateFingerprint, state.id]),
+  );
+  const restorationDiagnostics = (result.restorationDiagnostics ?? []).map((diagnostic) => {
+    const expectedState = focusStatesById.get(diagnostic.destinationStateId);
+    const expectedLocation = expectedState?.representativeSnapshot.location.status === "available"
+      ? expectedState.representativeSnapshot.location.value
+      : undefined;
+    const expected = parseAndroidLocation(expectedLocation);
+    const currentEvidence = diagnostic.after ?? diagnostic.before;
+    const current = parseAndroidLocation(currentEvidence?.location);
+    const before = parseAndroidLocation(diagnostic.before?.location);
+    const after = parseAndroidLocation(diagnostic.after?.location);
+    const identityDifferences = differingDimensions(diagnostic.expected, currentEvidence, IDENTITY_DIMENSIONS);
+    const lifecycleDifferences = differingDimensions(diagnostic.expected, currentEvidence, LIFECYCLE_DIMENSIONS);
+    const traversalImpact = observedTraversalImpact(diagnostic.expected, currentEvidence);
+    const detailedFailure = diagnostic.status === "failed";
+    if (!detailedFailure) {
+      return {
+        applicationPackage: targetPackage,
+        scanId,
+        attemptNumber: diagnostic.attemptNumber,
+        retryNumber: diagnostic.retryNumber,
+        restorationCycleNumber: diagnostic.restorationCycleNumber,
+        successfulRestorationsBeforeAttempt: diagnostic.successfulRestorationsBeforeAttempt,
+        traversalDepth: diagnostic.traversalDepth,
+        intendedDestinationStateId: diagnostic.destinationStateId,
+        strategy: diagnostic.strategy,
+        status: diagnostic.status,
+        elapsedMs: diagnostic.elapsedMs,
+        actionHistory: diagnostic.actionHistory,
+        processRestarted: restorationProcessRestarted(diagnostic),
+        lifecycleDifferences,
+        currentPackage: current?.packageName ?? null,
+        currentActivity: current?.activity ?? null,
+        stateAfter: compactRestorationStateEvidence(diagnostic.after),
+        behaviorallyEquivalent: true,
+        traversalWouldMateriallyDiffer: null,
+      };
+    }
+    return {
+      applicationPackage: targetPackage,
+      scanId,
+      attemptNumber: diagnostic.attemptNumber,
+      retryNumber: diagnostic.retryNumber,
+      restorationCycleNumber: diagnostic.restorationCycleNumber,
+      successfulRestorationsBeforeAttempt: diagnostic.successfulRestorationsBeforeAttempt,
+      traversalDepth: diagnostic.traversalDepth,
+      sourceStateId: diagnostic.before === undefined
+        ? null
+        : focusStateIdsByFingerprint.get(diagnostic.before.stateFingerprint) ?? null,
+      intendedDestinationStateId: diagnostic.destinationStateId,
+      strategy: diagnostic.strategy,
+      status: diagnostic.status,
+      elapsedMs: diagnostic.elapsedMs,
+      actionHistory: diagnostic.actionHistory,
+      processRestarted: restorationProcessRestarted(diagnostic),
+      foregroundPackageChanged: before !== null && after !== null
+        ? before.packageName !== after.packageName
+        : null,
+      currentPackage: current?.packageName ?? null,
+      currentActivity: current?.activity ?? null,
+      expectedPackage: expected?.packageName ?? null,
+      expectedActivity: expected?.activity ?? null,
+      currentFocus: currentEvidence === undefined ? null : {
+        focusFingerprint: currentEvidence.focusFingerprint,
+        focusIdentity: currentEvidence.focusIdentity ?? null,
+        stateFingerprint: currentEvidence.stateFingerprint,
+      },
+      expectedState: expectedState === undefined ? null : {
+        stateFingerprint: expectedState.stateFingerprint,
+        focusFingerprint: expectedState.fingerprint.value,
+        focusConfidence: expectedState.confidence,
+      },
+      expectedCheckpoint: compactRestorationStateEvidence(diagnostic.expected),
+      stateBefore: compactRestorationStateEvidence(diagnostic.before),
+      stateAfter: compactRestorationStateEvidence(diagnostic.after),
+      observedHistory: diagnostic.history.slice(-4).map((state) => compactRestorationStateEvidence(state)),
+      identityDifferences,
+      structuralDiagnosticDifferences: differingDimensions(
+        diagnostic.expected,
+        currentEvidence,
+        STRUCTURAL_DIAGNOSTIC_DIMENSIONS,
+      ),
+      lifecycleDifferences,
+      observedNavigationSurfaceEquivalent: traversalImpact.observedNavigationSurfaceEquivalent,
+      behaviorallyEquivalent: traversalImpact.behaviorallyEquivalent,
+      behavioralEquivalenceScope: traversalImpact.behaviorallyEquivalent === false
+        ? "observed navigation surface differs"
+        : "unknown; subsequent behavior was not executed after a failed checkpoint",
+      traversalWouldMateriallyDiffer: traversalImpact.traversalWouldMateriallyDiffer,
+      reachabilityFingerprint: null,
+      reachabilityEvidenceStatus: "not-observable-from-a-single-restored-snapshot",
+      navigationReachabilityEvidence: "actionable ancestry fingerprint is retained separately; full future reachability is not inferred",
+      failureSubtype: diagnostic.subtype ?? null,
+      rejectionReason: diagnostic.rejectionReason ?? null,
+      failureClass: restorationFailureClass(diagnostic, current?.packageName ?? null, targetPackage),
+      taxonomyCategory: restorationTaxonomyCategory(
+        diagnostic,
+        current?.packageName ?? null,
+        targetPackage,
+      ),
+    };
+  });
+  const successfulActions = result.graph.actions.filter((attempt) => (
+    attempt.actionResult.outcome === "applied"
+  )).length;
+  return JSON.parse(JSON.stringify({
+    scanId,
+    applicationPackage: targetPackage,
+    termination: result.termination,
+    finalTargetValidation: finalTargetValidationError === null
+      ? { status: "verified" }
+      : { status: "failed", detail: finalTargetValidationError },
+    budgets: result.budgets,
+    actionOrder: result.actionOrder,
+    statistics: result.statistics,
+    completionEvidence: {
+      uniqueDiscoveredStates: result.statistics.focusStates,
+      uniqueDiscoveredScreens: result.statistics.screenStates,
+      physicalActionsAttempted: result.statistics.physicalActions,
+      successfulActions,
+      uniqueTransitions: result.graph.focus.transitions.length + result.graph.screens.transitions.length,
+      restorationAttempts: result.statistics.restorationAttempts ?? 0,
+      restorationSuccesses: result.statistics.restorationSuccesses ?? 0,
+      restorationFailures: result.statistics.restorationFailures ?? 0,
+      repeatedStateObservations: result.statistics.repeatedStates ?? 0,
+      duplicateStatesCollapsed: result.statistics.compressedStates ?? 0,
+      deferredStates: result.statistics.deferredStates ?? 0,
+      skippedOrUnavailableActions: coverageLedger === null ? null : {
+        operatorGated: coverageLedger.counts["operator-gated"],
+        inaccessible: coverageLedger.counts.inaccessible,
+        failed: coverageLedger.counts.failed,
+        remainingSafeFrontier: coverageLedger.remainingSafeFrontier,
+      },
+      totalScanDurationMs: result.statistics.elapsedMs,
+      driverErrorTermination: result.termination.reason === "driver-error",
+      appCrashCount: null,
+      appCrashCountStatus: "not-collected",
+    },
+    restorationResilience: restorationResilienceMetrics(result, targetPackage, result.restorationDiagnostics ?? []),
+    restorationDiagnostics,
+  })) as JsonValue;
 }
 
 async function fileArtifact(
@@ -870,6 +1446,7 @@ export function classifyAndroidStartup(
 export async function scanAndroidApk(options: AndroidScanOptions): Promise<AndroidScanResult> {
   const startedAtMs = performance.now();
   const startedAt = new Date();
+  const runId = `android-${startedAt.getTime().toString(36)}`;
   let latestFindings = 0;
   let latestProgress: ExplorationProgress | null = null;
   let latestActivityLabel: string | null = null;
@@ -895,6 +1472,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
     });
     await new Promise<void>((resolveWarmup) => setTimeout(resolveWarmup, ANDROID_LAUNCH_WARMUP_MS));
     const initial = await driver.snapshot();
+    let preparedSnapshot = initial;
     latestActivityLabel = initial.location.status === "available" ? initial.location.value : null;
     if (initial.uiTree.status !== "available") throw new Error("Android observer UI state was unavailable after launch.");
     let setup = classifyAndroidStartup(initial);
@@ -922,6 +1500,7 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
         throw new Error(`TVDoctor could not safely operate the ${setup.kind} screen: ${setupAction.message ?? setupAction.outcome}.`);
       }
       const observed = await driver.snapshot();
+      preparedSnapshot = observed;
       setup = classifyAndroidStartup(observed);
       if (setup !== null) throw new Error(`TVDoctor could not safely clear the ${setup.kind} screen.`);
     } else if (setup !== null) {
@@ -958,18 +1537,16 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       driver,
       targetPackage: packageName,
     });
+    const restoreInitialSnapshot = createAndroidTraversalRootRestorer(driver, packageName, preparedSnapshot);
     const explorationPromise = explore(driver, {
       profile: options.mode,
       budgets: ANDROID_EXPLORATION_BUDGETS[options.mode],
       actions: ANDROID_AUTOMATIC_ACTIONS,
       settling: ANDROID_ACTION_SETTLING,
-      restorationMode: "verified-local",
-      allowRootRestorationFallback: false,
-      refreshVisibleSelfLoops: false,
-      replaySettling: { strategy: "driver" },
+      ...ANDROID_TRAVERSAL_RESTORATION,
       actionsForState: policyRecorder.actionsForState,
       onActionObserved: policyRecorder.onActionObserved,
-      restoreInitialSnapshot: async () => await driver.snapshot(),
+      restoreInitialSnapshot,
       shouldExpand: (snapshot) => {
         latestActivityLabel = snapshot.location.status === "available" ? snapshot.location.value : null;
         return snapshot.location.status === "available"
@@ -1083,15 +1660,13 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
       if (result.termination.reason === "max-duration") exhausted.push("duration");
     }
     try {
-      const explorationEvidence = sanitiseEvidenceJson(JSON.parse(JSON.stringify({
-        termination: result.termination,
-        finalTargetValidation: finalTargetValidationError === null
-          ? { status: "verified" }
-          : { status: "failed", detail: finalTargetValidationError },
-        budgets: result.budgets,
-        actionOrder: result.actionOrder,
-        statistics: result.statistics,
-      })) as JsonValue);
+      const explorationEvidence = sanitiseEvidenceJson(buildAndroidExplorationEvidence(
+        result,
+        packageName,
+        coverageLedger,
+        finalTargetValidationError,
+        runId,
+      ));
       const explorationPath = join(outputRoot, "android-exploration.json");
       await writeFile(explorationPath, `${stableJson(explorationEvidence)}\n`);
       runArtifacts.push(await fileArtifact(
@@ -1101,8 +1676,17 @@ export async function scanAndroidApk(options: AndroidScanOptions): Promise<Andro
         "report",
         "application/json",
       ));
-    } catch {
-      // The canonical report verdict remains authoritative if supplementary diagnostics fail.
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error))
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 500) || "Android exploration diagnostics persistence failed.";
+      runArtifacts.push({
+        id: "run:android-exploration",
+        kind: "report",
+        status: "failed",
+        reason,
+      });
     }
     try {
       const actionProfiles = result.graph.actions.map((action) => ({

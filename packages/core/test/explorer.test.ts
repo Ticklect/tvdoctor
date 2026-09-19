@@ -668,8 +668,18 @@ describe("bounded deterministic explorer", () => {
 
     expect(unsupported.termination.reason).toBe("remote-input-unavailable");
     expect(unrestorable.termination.reason).toBe("restoration-unavailable");
+    expect(unrestorable.termination).toMatchObject({
+      restorationSubtype: "strategy-exhausted",
+      restorationRejectionReason: "no-restoration-strategy",
+    });
     expect(unsupported.graph.focus.states).toHaveLength(0);
     expect(unrestorable.statistics.physicalActions).toBe(0);
+    expect(unrestorable.statistics).toMatchObject({
+      restorationAttempts: 0,
+      restorationSuccesses: 0,
+      restorationFailures: 0,
+    });
+    expect(unrestorable.restorationDiagnostics).toEqual([]);
   });
 
   it("restores after exact visible self-loops before exploring sibling actions", async () => {
@@ -740,9 +750,70 @@ describe("bounded deterministic explorer", () => {
     expect(result.termination).toMatchObject({
       complete: false,
       reason: "restoration-unavailable",
+      restorationSubtype: "strategy-exhausted",
+      restorationRejectionReason: "root-fallback-disabled",
     });
     expect(result.statistics.resetCount).toBe(1);
     expect(result.statistics.replayRestorations).toBe(0);
+    expect(result.statistics).toMatchObject({
+      restorationAttempts: 4,
+      restorationSuccesses: 1,
+      restorationFailures: 3,
+    });
+    expect(result.restorationDiagnostics).toEqual([
+      expect.objectContaining({
+        attemptNumber: 1,
+        retryNumber: 0,
+        destinationStateId: "focus-0001",
+        strategy: "verified-live-state",
+        status: "success",
+        actionHistory: [],
+      }),
+      expect.objectContaining({
+        attemptNumber: 2,
+        retryNumber: 0,
+        destinationStateId: "focus-0001",
+        strategy: "verified-local-path",
+        status: "failed",
+        actionHistory: [],
+        subtype: "state-not-found",
+        rejectionReason: "local-path-not-found",
+      }),
+      expect.objectContaining({
+        attemptNumber: 3,
+        retryNumber: 0,
+        destinationStateId: "focus-0001",
+        strategy: "root-replay",
+        status: "failed",
+        actionHistory: [],
+        subtype: "strategy-exhausted",
+        rejectionReason: "root-fallback-disabled",
+      }),
+      expect.objectContaining({
+        attemptNumber: 4,
+        retryNumber: 0,
+        destinationStateId: "focus-0002",
+        strategy: "root-replay",
+        status: "failed",
+        actionHistory: ["RIGHT"],
+        subtype: "strategy-exhausted",
+        rejectionReason: "root-fallback-disabled",
+      }),
+    ]);
+    expect(result.restorationDiagnostics?.[1]).toMatchObject({
+      before: {
+        stateFingerprint: expect.stringMatching(/^state-/u),
+        screenFingerprint: expect.stringMatching(/^screen-/u),
+        focusFingerprint: expect.stringMatching(/^focus-/u),
+        location: expect.any(String),
+        focusIdentity: "b|button",
+      },
+      after: {
+        stateFingerprint: expect.stringMatching(/^state-/u),
+      },
+      history: [expect.objectContaining({ stateFingerprint: expect.stringMatching(/^state-/u) })],
+      elapsedMs: 0,
+    });
     expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(1);
   });
 
@@ -820,6 +891,53 @@ describe("bounded deterministic explorer", () => {
     expect(result.statistics.restorationFallbacks).toBe(0);
     expect(result.statistics.resetCount).toBe(4);
     expect(result.statistics.physicalActions).toBe(6);
+  });
+
+  it("explores a branching restoration tree without corrupting queued branches", async () => {
+    const states = Object.fromEntries(
+      ["A", "B", "C", "D", "E", "F", "G"].map((name) => [
+        name,
+        { screen: `screen-${name}`, focus: `focus-${name}` },
+      ]),
+    ) as Readonly<Record<string, MachineState>>;
+    const transitions = {
+      A: { RIGHT: "B", DOWN: "C" },
+      B: { RIGHT: "D", DOWN: "E" },
+      C: { RIGHT: "F", DOWN: "G" },
+      D: { RIGHT: "D", DOWN: "D" },
+      E: { RIGHT: "E", DOWN: "E" },
+      F: { RIGHT: "F", DOWN: "F" },
+      G: { RIGHT: "G", DOWN: "G" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("A", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["RIGHT", "DOWN"],
+      replayActions: ["RIGHT", "DOWN"],
+      restorationMode: "verified-local",
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 80, maxStates: 20, maxDepth: 3, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination).toEqual({ reason: "queue-exhausted", complete: true });
+    expect(result.graph.focus.states).toHaveLength(7);
+    expect(new Set(result.graph.focus.states.map((state) => state.representativeSnapshot.location.status === "available"
+      ? state.representativeSnapshot.location.value
+      : "unavailable"))).toEqual(new Set([
+      "app://screen-A", "app://screen-B", "app://screen-C", "app://screen-D",
+      "app://screen-E", "app://screen-F", "app://screen-G",
+    ]));
+    expect(result.statistics.restorationAttempts).toBeGreaterThan(7);
+    expect(result.statistics.restorationSuccesses).toBeGreaterThan(0);
+    expect(result.statistics.restorationFailures).toBeGreaterThan(0);
+    expect(result.restorationDiagnostics?.some((diagnostic) => (
+      diagnostic.strategy === "root-replay" && diagnostic.status === "success"
+    ))).toBe(true);
+    expect(result.graph.focus.transitions.every((transition) => (
+      result.graph.focus.states.some((state) => state.id === transition.fromFocusStateId)
+      && result.graph.focus.states.some((state) => state.id === transition.toFocusStateId)
+    ))).toBe(true);
   });
 
   it("falls back once to root replay when a verified local path no longer matches", async () => {
@@ -915,6 +1033,41 @@ describe("bounded deterministic explorer", () => {
     expect(presses.some((entry) => entry === "B:RIGHT")).toBe(true);
   });
 
+  it("reconstructs a queued activation state when SELECT is explicitly replayable", async () => {
+    const states = {
+      A: { screen: "home", focus: "A" },
+      B: { screen: "home", focus: "B" },
+      C: { screen: "details", focus: "details-play" },
+    } as const;
+    const transitions = {
+      A: { SELECT: "C", RIGHT: "B" },
+      B: { SELECT: "B", RIGHT: "B" },
+      C: { SELECT: "C", RIGHT: "C" },
+    } satisfies Readonly<Record<string, Partial<Record<RemoteKey, string>>>>;
+    const driver = new MachineDriver("A", states, transitions);
+
+    const result = await explore(driver, {
+      actions: ["SELECT", "RIGHT"],
+      replayActions: ["SELECT", "RIGHT"],
+      restorationMode: "verified-local",
+      frontierStrategy: "priority",
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 40, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+
+    expect(result.termination.complete).toBe(true);
+    expect(result.graph.focus.states.some((state) => (
+      state.representativeSnapshot.location.status === "available"
+      && state.representativeSnapshot.location.value === "app://details"
+    ))).toBe(true);
+    expect(driver.eventLog.filter((entry) => entry === "press:SELECT:start").length).toBeGreaterThan(1);
+    expect(result.statistics.replayRestorations).toBeGreaterThan(0);
+    expect(result.restorationDiagnostics?.some((diagnostic) => (
+      diagnostic.strategy === "root-replay" && diagnostic.status === "success"
+    ))).toBe(true);
+  });
+
   it("terminates when root restoration no longer reproduces the initial state", async () => {
     let resetCount = 0;
     const driver: TVDoctorDriver = {
@@ -942,7 +1095,30 @@ describe("bounded deterministic explorer", () => {
 
     expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
     expect(result.termination.detail).toMatch(/^Root restoration produced state-/u);
-    expect(result.statistics).toMatchObject({ physicalActions: 0, visitedStates: 1 });
+    expect(result.statistics).toMatchObject({
+      physicalActions: 0,
+      visitedStates: 1,
+      restorationAttempts: 1,
+      restorationSuccesses: 0,
+      restorationFailures: 1,
+    });
+    expect(result.restorationDiagnostics).toEqual([
+      expect.objectContaining({
+        attemptNumber: 1,
+        retryNumber: 0,
+        destinationStateId: "focus-0001",
+        strategy: "root-replay",
+        status: "failed",
+        actionHistory: [],
+        subtype: "navigation-diverged",
+        rejectionReason: "root-state-diverged",
+        before: expect.objectContaining({ stateFingerprint: expect.stringMatching(/^state-/u) }),
+        after: expect.objectContaining({ stateFingerprint: expect.stringMatching(/^state-/u) }),
+        history: expect.arrayContaining([
+          expect.objectContaining({ stateFingerprint: expect.stringMatching(/^state-/u) }),
+        ]),
+      }),
+    ]);
     expect(result.graph.actions).toHaveLength(0);
   });
 
@@ -1002,6 +1178,11 @@ describe("bounded deterministic explorer", () => {
 
     expect(result.termination).toMatchObject({ reason: "replay-diverged", complete: false });
     expect(result.termination.detail).toContain("Replay checkpoint 1/2 after RIGHT produced state-");
+    const midState = result.graph.focus.states.find((candidate) => candidate.discoveredBy.join(",") === "RIGHT");
+    const checkpointFailure = result.restorationDiagnostics?.find((diagnostic) => (
+      diagnostic.rejectionReason === "replay-checkpoint-diverged"
+    ));
+    expect(checkpointFailure?.expected?.stateFingerprint).toBe(midState?.stateFingerprint);
     expect(pressed).toContain("6:root:RIGHT");
     expect(pressed).not.toContain("6:wrong:SELECT");
     expect(result.statistics.pendingStates).toBeGreaterThanOrEqual(0);
@@ -1213,6 +1394,9 @@ describe("bounded deterministic explorer", () => {
   it.each([
     ["unknown action", { actions: ["POWER"] as unknown as readonly RemoteKey[] }, "Explorer actions must contain only known remote keys."],
     ["duplicate actions", { actions: ["RIGHT", "RIGHT"] }, "Explorer actions must not contain duplicates."],
+    ["unknown replay action", { actions: ["RIGHT"], replayActions: ["POWER"] as unknown as readonly RemoteKey[] }, "Explorer replayActions must contain only known remote keys."],
+    ["duplicate replay actions", { actions: ["RIGHT"], replayActions: ["RIGHT", "RIGHT"] }, "Explorer replayActions must not contain duplicates."],
+    ["unconfigured replay action", { actions: ["RIGHT"], replayActions: ["SELECT"] }, "Explorer replayActions must be a subset of configured actions."],
     ["unknown profile", { profile: "turbo" as never }, "profile must be quick, standard, or deep."],
     ["unknown frontier strategy", { frontierStrategy: "random" as never }, "frontierStrategy must be breadth-first or priority."],
     ["unknown restoration mode", { restorationMode: "unsafe-local" as never }, "restorationMode must be root-only or verified-local."],

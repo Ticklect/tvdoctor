@@ -183,6 +183,17 @@ class FakeObserver implements AndroidObserverConnection {
   close(): void { this.closed = true; }
 }
 
+class MutableWindowObserver extends FakeObserver {
+  windowId = 1;
+
+  override async request(request: ObserverRequestPayload): Promise<ObserverResponse> {
+    const response = await super.request(request);
+    return response.state === undefined
+      ? response
+      : { ...response, state: { ...response.state, windowId: this.windowId } };
+  }
+}
+
 class ChangingLaunchObserver extends FakeObserver {
   resyncCalls = 0;
 
@@ -405,7 +416,7 @@ function createDriver(
     quietWindowMs: 5,
     noResponseGraceMs: 10,
     resetStableWindowMs: 10,
-    resetSettleTimeoutMs: 50,
+    resetSettleTimeoutMs: 250,
   });
 }
 
@@ -916,6 +927,47 @@ describe("Android V2 observer-backed driver", () => {
     observer.releaseGate?.();
     await expect(snapshot).resolves.toMatchObject({ location: { status: "available" } });
     await expect(screenshot).rejects.toThrow(/valid PNG/u);
+    await driver.close();
+  });
+
+  it("carries process, window, observer sequence, and structure generations for restoration diagnostics", async () => {
+    const executor = new FakeExecutor();
+    const observer = new MutableWindowObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const initial = await driver.snapshot();
+    expect(initial.restorationContext).toMatchObject({
+      platform: "android-tv",
+      applicationId: "org.example.tv",
+      processId: 321,
+      processGeneration: 1,
+      processIdentitySource: "last-launch-or-reset-metadata",
+      activity: "org.example.tv.MainActivity",
+      activityGeneration: null,
+      activityGenerationObservable: false,
+      rootIdentity: "window-1",
+      rootIdentitySource: "accessibility-window-id",
+      windowId: 1,
+      observationSequence: 1,
+      observerStructureFingerprint: "a".repeat(64),
+      observerStateFingerprint: "b".repeat(64),
+    });
+    expect(initial.restorationContext.windowGeneration).toBeGreaterThanOrEqual(1);
+
+    const initialWindowGeneration = initial.restorationContext.windowGeneration;
+    executor.appPid = "654";
+    observer.windowId = 8;
+    await driver.reset("relaunch");
+    const relaunched = await driver.snapshot();
+    expect(relaunched.restorationContext).toMatchObject({
+      applicationId: "org.example.tv",
+      processId: 654,
+      processGeneration: 2,
+      rootIdentity: "window-8",
+      windowId: 8,
+    });
+    expect(relaunched.restorationContext.windowGeneration).toBeGreaterThan(initialWindowGeneration);
     await driver.close();
   });
 

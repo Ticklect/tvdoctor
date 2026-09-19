@@ -24,6 +24,7 @@ import {
 export interface NormalisedExplorerOptions {
   readonly budgets: ExplorationBudgets;
   readonly actionOrder: readonly RemoteKey[];
+  readonly replayActions: readonly RemoteKey[];
   readonly frontierStrategy: ExplorationFrontierStrategy;
   readonly restorationMode: ExplorationRestorationMode;
   readonly allowRootRestorationFallback: boolean;
@@ -161,6 +162,29 @@ function normaliseActions(actions: readonly RemoteKey[] | undefined): readonly R
   return result;
 }
 
+function normaliseReplayActions(
+  replayActions: readonly RemoteKey[] | undefined,
+  actionOrder: readonly RemoteKey[],
+): readonly RemoteKey[] {
+  if (replayActions !== undefined && !Array.isArray(replayActions)) {
+    throw new TypeError("Explorer replayActions must be an array.");
+  }
+  const configured = new Set(actionOrder);
+  const defaults = NAVIGATION_KEYS.filter((key) => configured.has(key));
+  const result = [...(replayActions ?? defaults)];
+  const known = new Set<string>(REMOTE_KEYS);
+  if (result.some((key) => typeof key !== "string" || !known.has(key))) {
+    throw new TypeError("Explorer replayActions must contain only known remote keys.");
+  }
+  if (new Set(result).size !== result.length) {
+    throw new TypeError("Explorer replayActions must not contain duplicates.");
+  }
+  if (result.some((key) => !configured.has(key))) {
+    throw new TypeError("Explorer replayActions must be a subset of configured actions.");
+  }
+  return result;
+}
+
 export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedExplorerOptions {
   if (typeof options !== "object" || options === null || Array.isArray(options)) {
     throw new TypeError("Explorer options must be an object.");
@@ -173,6 +197,7 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
   }
   const budgets = normaliseBudgets(options.profile, options.budgets);
   const actionOrder = normaliseActions(options.actions);
+  const replayActions = normaliseReplayActions(options.replayActions, actionOrder);
   const frontierStrategy = normaliseFrontierStrategy(
     options.frontierStrategy,
     options.profile,
@@ -220,6 +245,7 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
   return {
     budgets,
     actionOrder,
+    replayActions,
     frontierStrategy,
     restorationMode,
     allowRootRestorationFallback: options.allowRootRestorationFallback ?? true,

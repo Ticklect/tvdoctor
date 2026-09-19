@@ -4,10 +4,15 @@ A small original native Android TV application used only for TVDoctor's
 Milestone 9 emulator gate. It has no network permission, remote assets,
 accounts, media, or destructive actions.
 
-The launcher surface contains two real Android `Button` controls:
+The launcher surface contains three real Android `Button` controls:
 
 - **Focus Probe** has initial focus and moves Right to Safe Control.
-- **Safe Control** moves Left back to Focus Probe and retains focus on Select.
+- **Safe Control** moves Left back to Focus Probe, Right to Recreate Activity,
+  and retains focus on Select.
+- **Recreate Activity** calls Android's `Activity.recreate()` on the current
+  `MainActivity`. The recreated instance exposes a status marker and returns
+  initial focus to Focus Probe, providing a deterministic same-package lifecycle
+  transition without changing the manifest's `configChanges` behavior.
 
 Exactly one defect is seeded. Selecting Focus Probe moves input focus to a
 transparent non-accessibility sink while Safe Control remains visible, enabled,
@@ -53,7 +58,14 @@ platform-specific file hash.
 ```sh
 npm test --workspace @tvdoctor/broken-android-tv
 npm run verify:apk --workspace @tvdoctor/broken-android-tv
+npm run verify:recreation --workspace @tvdoctor/broken-android-tv -- --device emulator-5554
 ```
+
+`verify:recreation` installs the built fixture on the selected emulator, launches
+`MainActivity`, navigates to **Recreate Activity**, activates it, and requires
+lifecycle evidence for instance 1 destruction followed by instance 2 creation
+inside the same `org.tvdoctor.fixture` process. It also verifies the recreated
+UI reports completion and restores focus to Focus Probe.
 
 The real acceptance gate must use a disposable Android TV emulator, install the
 APK through `@tvdoctor/driver-android`, prove initial and directional focus,

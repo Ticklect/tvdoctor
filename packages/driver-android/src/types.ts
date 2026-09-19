@@ -120,11 +120,32 @@ export interface AndroidHierarchyMetadata {
   readonly truncated: boolean;
 }
 
+/** Compact lifecycle/observer evidence carried for restoration diagnostics. */
+export interface AndroidRestorationContext {
+  readonly platform: "android-tv";
+  readonly applicationId: string | null;
+  readonly processId: number | null;
+  readonly processGeneration: number | null;
+  readonly processIdentitySource: "last-launch-or-reset-metadata";
+  readonly activity: string | null;
+  /** Accessibility cannot identify same-class Activity instances directly. */
+  readonly activityGeneration: null;
+  readonly activityGenerationObservable: false;
+  readonly rootIdentity: string | null;
+  readonly rootIdentitySource: "accessibility-window-id";
+  readonly windowId: number | null;
+  readonly windowGeneration: number;
+  readonly observationSequence: number;
+  readonly observerStructureFingerprint: string;
+  readonly observerStateFingerprint: string;
+}
+
 export interface AndroidStateSnapshot extends StateSnapshot {
   readonly uiTree: Observation<readonly AndroidUiNodeSnapshot[]>;
   readonly device: Observation<AndroidDeviceMetadata>;
   readonly app: Observation<AndroidAppMetadata>;
   readonly hierarchyMetadata: Observation<AndroidHierarchyMetadata>;
+  readonly restorationContext: AndroidRestorationContext;
 }
 
 export interface AndroidLogEntry extends LogEntry {

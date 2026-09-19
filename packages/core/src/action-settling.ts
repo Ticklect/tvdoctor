@@ -214,25 +214,14 @@ export async function pressAndObserve(
   options.signal?.throwIfAborted();
   const actionResult = await driver.press(key, operationOptions);
 
-  if (actionResult.outcome === "failed" || actionResult.outcome === "inconclusive") {
-    if (actionResult.outcome !== "inconclusive" || options.allowUnsettledActions !== true) {
-      throw new Error(
-        `Driver could not settle ${key} input: ${actionResult.message ?? actionResult.outcome}`,
-        { cause: actionResult },
-      );
-    }
-  }
-
-  if (actionResult.outcome === "inconclusive") {
-    const snapshot = actionResult.postActionSnapshot ?? await driver.snapshot(operationOptions);
-    return {
-      actionResult,
-      snapshot,
-      snapshotsCaptured: actionResult.postActionSnapshot === undefined ? 1 : 0,
-      snapshotsObserved: 1,
-      reusedDriverObservation: actionResult.postActionSnapshot !== undefined,
-      settled: false,
-    };
+  if (actionResult.outcome === "failed"
+    || actionResult.outcome === "inconclusive"
+      && settling.strategy !== "stable-snapshot"
+      && options.allowUnsettledActions !== true) {
+    throw new Error(
+      `Driver could not settle ${key} input: ${actionResult.message ?? actionResult.outcome}`,
+      { cause: actionResult },
+    );
   }
 
   let snapshot: StateSnapshot;
@@ -252,7 +241,7 @@ export async function pressAndObserve(
       snapshotsCaptured,
       snapshotsObserved: 1,
       reusedDriverObservation,
-      settled: true,
+      settled: actionResult.outcome !== "inconclusive",
     };
   }
 
@@ -280,12 +269,22 @@ export async function pressAndObserve(
       : 1;
     snapshot = nextSnapshot;
   }
+  const settled = stableSnapshots >= keyLimits.requiredStableSnapshots;
+  const observedActionResult = actionResult.outcome === "inconclusive" && settled
+    ? {
+        ...actionResult,
+        outcome: "applied" as const,
+        message: actionResult.message === undefined
+          ? "Stable post-action observation recovered after transient driver observation loss."
+          : `Stable post-action observation recovered after transient driver observation loss: ${actionResult.message}`,
+      }
+    : actionResult;
   return {
-    actionResult,
+    actionResult: observedActionResult,
     snapshot,
     snapshotsCaptured,
     snapshotsObserved,
     reusedDriverObservation,
-    settled: stableSnapshots >= keyLimits.requiredStableSnapshots,
+    settled,
   };
 }

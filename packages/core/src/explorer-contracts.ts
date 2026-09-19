@@ -59,6 +59,102 @@ export const EXPLORATION_BUDGET_PROFILES: Readonly<Record<
 export type ExplorationFrontierStrategy = "breadth-first" | "priority";
 export type ExplorationRestorationMode = "root-only" | "verified-local";
 
+/** Deterministic restoration strategy attempted for a queued exploration branch. */
+export type RestorationStrategy =
+  | "verified-live-state"
+  | "verified-local-path"
+  | "root-replay";
+
+/** Coarse failure class derived only from engine-observable restoration evidence. */
+export type RestorationFailureSubtype =
+  | "strategy-exhausted"
+  | "navigation-diverged"
+  | "timeout"
+  | "state-not-found"
+  | "operation-failed"
+  | "interrupted";
+
+/** Exact engine rejection code; never populated from arbitrary driver/app text. */
+export type RestorationRejectionReason =
+  | "no-restoration-strategy"
+  | "unsafe-root-replay"
+  | "root-fallback-disabled"
+  | "local-path-not-found"
+  | "local-path-action-error"
+  | "local-path-unsettled"
+  | "local-path-action-rejected"
+  | "local-path-edge-diverged"
+  | "root-restoration-error"
+  | "prepared-state-diverged"
+  | "root-state-diverged"
+  | "replay-action-error"
+  | "replay-action-rejected"
+  | "replay-checkpoint-diverged"
+  | "destination-state-not-found"
+  | "settling-exhausted"
+  | "duration-budget-exhausted"
+  | "action-budget-exhausted"
+  | "interrupted";
+
+/** Compact state evidence retained around a restoration attempt. */
+export interface RestorationStateDiagnostic {
+  readonly capturedAt: string;
+  readonly stateFingerprint: string;
+  readonly screenFingerprint: string;
+  readonly focusFingerprint: string;
+  readonly location?: string;
+  readonly focusIdentity?: string;
+  readonly focusedStableId?: string;
+  readonly focusedPath?: readonly string[];
+  readonly stableIdentifiers?: readonly string[];
+  readonly visibleStructureFingerprint?: string;
+  readonly actionableNodeFingerprint?: string;
+  readonly navigationStructureFingerprint?: string;
+  readonly visibleNodeCount?: number;
+  readonly actionableNodeCount?: number;
+  readonly platform?: string;
+  readonly applicationId?: string | null;
+  readonly processId?: number | null;
+  readonly processGeneration?: number | null;
+  readonly processIdentitySource?: string;
+  readonly activity?: string | null;
+  readonly activityGeneration?: number | null;
+  readonly activityGenerationObservable?: boolean;
+  readonly rootIdentity?: string | null;
+  readonly rootIdentitySource?: string;
+  readonly windowId?: number | null;
+  readonly windowGeneration?: number | null;
+  readonly observationSequence?: number | null;
+  readonly observerStructureFingerprint?: string | null;
+  readonly observerStateFingerprint?: string | null;
+}
+
+/** Bounded, structured evidence for one restoration strategy attempt. */
+export interface RestorationDiagnostic {
+  /** Global one-based strategy-attempt number for this exploration result. */
+  readonly attemptNumber: number;
+  /** Zero-based retry number for this destination/strategy pair. */
+  readonly retryNumber: number;
+  /** One-based queued-state restoration cycle; retries may share a cycle. */
+  readonly restorationCycleNumber: number;
+  /** Number of successful restoration cycles completed earlier in this scan. */
+  readonly successfulRestorationsBeforeAttempt: number;
+  readonly traversalDepth: number;
+  readonly destinationStateId: string;
+  readonly strategy: RestorationStrategy;
+  readonly status: "success" | "failed";
+  readonly elapsedMs: number;
+  /** Bounded remote-key history selected/attempted by this restoration strategy. */
+  readonly actionHistory: readonly RemoteKey[];
+  readonly before?: RestorationStateDiagnostic;
+  readonly after?: RestorationStateDiagnostic;
+  readonly expected?: RestorationStateDiagnostic;
+  /** Bounded observed-state history for this strategy attempt. */
+  readonly history: readonly RestorationStateDiagnostic[];
+  readonly subtype?: RestorationFailureSubtype;
+  readonly rejectionReason?: RestorationRejectionReason;
+}
+
 export interface ExplorationActionContext {
   readonly screenStateId: string;
   readonly focusStateId: string;
@@ -98,6 +194,13 @@ export interface ExplorerOptions {
   readonly budgets?: Partial<ExplorationBudgets>;
   /** Deterministic action priority. Defaults to the bounded navigation-key set. */
   readonly actions?: readonly RemoteKey[];
+  /**
+   * Actions that may be replayed from a verified root restoration when rebuilding
+   * a queued state. Defaults to directional navigation only. Hosts may widen this
+   * set when their state-aware action policy has already proven an activation safe
+   * to repeat. Values must be a duplicate-free subset of `actions`.
+   */
+  readonly replayActions?: readonly RemoteKey[];
   /**
    * Optional state-aware action filter. Returned keys must be a duplicate-free
    * subset of `actions`. The hook may collect bounded platform evidence before
@@ -198,6 +301,10 @@ export interface ExplorationTermination {
   readonly remainingCandidateActions?: number;
   /** User-facing engine classification; canonical reason remains authoritative. */
   readonly detail?: string;
+  /** Structured restoration class when restoration itself caused termination. */
+  readonly restorationSubtype?: RestorationFailureSubtype;
+  /** Exact engine rejection code, independent of arbitrary driver/app messages. */
+  readonly restorationRejectionReason?: RestorationRejectionReason;
 }
 
 export interface ExplorationStatistics {
@@ -214,6 +321,10 @@ export interface ExplorationStatistics {
   readonly verifiedPathRestorations?: number;
   /** Local restoration attempts that failed closed and used root replay. */
   readonly restorationFallbacks?: number;
+  /** Queued-branch restoration strategy attempts, including verified live reuse. */
+  readonly restorationAttempts?: number;
+  readonly restorationSuccesses?: number;
+  readonly restorationFailures?: number;
   readonly visitedStates: number;
   readonly screenStates: number;
   readonly focusStates: number;
@@ -266,4 +377,6 @@ export interface ExplorationResult {
   readonly budgets: ExplorationBudgets;
   readonly actionOrder: readonly RemoteKey[];
   readonly statistics: ExplorationStatistics;
+  /** Bounded structured restoration history for queued exploration branches. */
+  readonly restorationDiagnostics?: readonly RestorationDiagnostic[];
 }

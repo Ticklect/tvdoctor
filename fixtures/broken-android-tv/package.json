@@ -8,6 +8,7 @@
   "scripts": {
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1",
     "test": "node --test tests/*.test.mjs",
-    "verify:apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-apk.ps1"
+    "verify:apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-apk.ps1",
+    "verify:recreation": "node scripts/verify-recreation.mjs"
   }
 }

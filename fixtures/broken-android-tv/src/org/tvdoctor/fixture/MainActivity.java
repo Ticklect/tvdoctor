@@ -2,6 +2,7 @@ package org.tvdoctor.fixture;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Process;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -16,6 +17,11 @@ import android.widget.TextView;
  */
 public final class MainActivity extends Activity {
     private static final String LOG_TAG = "TVDoctorFixture";
+    private static final String STATE_RECREATION_REQUESTED = "fixture_recreation_requested";
+    private static int nextInstanceSequence = 0;
+
+    private final int instanceSequence = ++nextInstanceSequence;
+    private boolean recreationRequested = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -63,21 +69,50 @@ public final class MainActivity extends Activity {
             R.string.safe_control,
             R.string.safe_control_description
         );
+        Button recreateActivity = button(
+            R.id.recreate_activity,
+            R.string.recreate_activity,
+            R.string.recreate_activity_description
+        );
         focusProbe.setNextFocusRightId(R.id.safe_control);
         safeControl.setNextFocusLeftId(R.id.focus_probe);
+        safeControl.setNextFocusRightId(R.id.recreate_activity);
+        recreateActivity.setNextFocusLeftId(R.id.safe_control);
         focusProbe.setNextFocusLeftId(R.id.focus_probe);
         focusProbe.setNextFocusUpId(R.id.focus_probe);
         focusProbe.setNextFocusDownId(R.id.focus_probe);
-        safeControl.setNextFocusRightId(R.id.safe_control);
         safeControl.setNextFocusUpId(R.id.safe_control);
         safeControl.setNextFocusDownId(R.id.safe_control);
+        recreateActivity.setNextFocusRightId(R.id.recreate_activity);
+        recreateActivity.setNextFocusUpId(R.id.recreate_activity);
+        recreateActivity.setNextFocusDownId(R.id.recreate_activity);
 
-        controls.addView(focusProbe, new LinearLayout.LayoutParams(dp(360), dp(116)));
-        LinearLayout.LayoutParams safeLayout = new LinearLayout.LayoutParams(dp(360), dp(116));
-        safeLayout.leftMargin = dp(34);
+        controls.addView(focusProbe, new LinearLayout.LayoutParams(dp(220), dp(116)));
+        LinearLayout.LayoutParams safeLayout = new LinearLayout.LayoutParams(dp(220), dp(116));
+        safeLayout.leftMargin = dp(20);
         controls.addView(safeControl, safeLayout);
+        LinearLayout.LayoutParams recreateLayout = new LinearLayout.LayoutParams(dp(220), dp(116));
+        recreateLayout.leftMargin = dp(20);
+        controls.addView(recreateActivity, recreateLayout);
 
-        TextView status = text(R.id.fixture_status, R.string.status_ready, 21, R.color.fixture_accent);
+        boolean recreated = savedInstanceState != null
+            && savedInstanceState.getBoolean(STATE_RECREATION_REQUESTED, false);
+        Log.i(
+            LOG_TAG,
+            "Activity instance created; sequence=" + instanceSequence
+                + "; pid=" + Process.myPid()
+                + "; package=" + getPackageName()
+                + "; restored=" + recreated
+        );
+        TextView status = text(
+            R.id.fixture_status,
+            recreated ? R.string.status_recreated : R.string.status_ready,
+            21,
+            R.color.fixture_accent
+        );
+        if (recreated) {
+            Log.i(LOG_TAG, "Activity recreation completed; restored marker=true");
+        }
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout.LayoutParams statusLayout = matchWrap();
         statusLayout.topMargin = dp(40);
@@ -103,12 +138,35 @@ public final class MainActivity extends Activity {
             status.setText(R.string.status_safe);
             Log.i(LOG_TAG, "Safe control selected with focus retained");
         });
+        recreateActivity.setOnClickListener((view) -> {
+            status.setText(R.string.status_recreating);
+            recreationRequested = true;
+            Log.i(LOG_TAG, "Recreate Activity selected; recreating current fixture activity");
+            recreate();
+        });
 
         setContentView(root);
         focusProbe.post(() -> {
             boolean focused = focusProbe.requestFocus();
             Log.i(LOG_TAG, "Fixture launched; initial focus=" + focused);
         });
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean(STATE_RECREATION_REQUESTED, recreationRequested);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onDestroy() {
+        Log.i(
+            LOG_TAG,
+            "Activity instance destroyed; sequence=" + instanceSequence
+                + "; pid=" + Process.myPid()
+                + "; package=" + getPackageName()
+        );
+        super.onDestroy();
     }
 
     private Button button(int id, int label, int description) {

@@ -2,12 +2,16 @@
 <resources>
     <string name="app_name">TVDoctor Android Fixture</string>
     <string name="heading">Remote focus laboratory</string>
-    <string name="instructions">Use DPAD Left and Right. Select Focus Probe to trigger the one seeded defect.</string>
+    <string name="instructions">Use DPAD Left and Right. Select Focus Probe to trigger the one seeded defect, or Recreate Activity to exercise same-package Activity recreation.</string>
     <string name="focus_probe">Focus Probe</string>
     <string name="focus_probe_description">Focus Probe. Selecting this control deliberately loses focus.</string>
     <string name="safe_control">Safe Control</string>
     <string name="safe_control_description">Safe Control. Selecting this control keeps focus.</string>
+    <string name="recreate_activity">Recreate Activity</string>
+    <string name="recreate_activity_description">Recreate Activity. Selecting this control recreates this Activity in the same application package.</string>
     <string name="status_ready">Ready. Focus Probe has initial focus.</string>
     <string name="status_lost">Seeded defect triggered: no remote control has focus.</string>
     <string name="status_safe">Safe Control selected. Focus remains available.</string>
+    <string name="status_recreating">Recreating the current Activity.</string>
+    <string name="status_recreated">Activity recreation completed. Focus Probe has initial focus.</string>
 </resources>

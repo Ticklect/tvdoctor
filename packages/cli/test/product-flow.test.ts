@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normaliseActionSettlingOptions } from "@tvdoctor/core";
+import { sanitiseEvidenceJson } from "@tvdoctor/reporters";
 
 import {
   EXIT_CODES,
@@ -14,11 +15,14 @@ import {
   ANDROID_ACTION_SETTLING,
   ANDROID_LAUNCH_SETTLING,
   ANDROID_LAUNCH_WARMUP_MS,
+  ANDROID_TRAVERSAL_RESTORATION,
   ANDROID_EXPLORATION_BUDGETS,
   androidPreflight,
+  buildAndroidExplorationEvidence,
   buildAndroidTraversalLedger,
   checkApkCompatibility,
   classifyAndroidStartup,
+  createAndroidTraversalRootRestorer,
   createAndroidTraversalPolicyRecorder,
   inspectApk,
   restoreAndroidTargetForFinalEvidence,
@@ -125,6 +129,13 @@ describe("guided product output", () => {
       resetSettleTimeoutMs: 20_000,
     });
     expect(ANDROID_LAUNCH_WARMUP_MS).toBe(8_000);
+    expect(ANDROID_TRAVERSAL_RESTORATION).toEqual({
+      restorationMode: "verified-local",
+      allowRootRestorationFallback: true,
+      refreshVisibleSelfLoops: false,
+      replayActions: ["UP", "DOWN", "LEFT", "RIGHT", "SELECT"],
+      replaySettling: ANDROID_ACTION_SETTLING,
+    });
   });
 
   it("keeps polling when the canonical Android tree changes under the same activity and focus", () => {
@@ -609,6 +620,488 @@ describe("Android final target validation", () => {
     )).rejects.toThrow(/ended outside org\.example\.tv/u);
   });
 });
+
+describe("Android traversal root restoration", () => {
+  const snapshotAt = (location: string) => ({
+    location: { status: "available", value: location },
+  }) as never;
+
+  it("uses the prepared state once, then relaunches before reconstructing queued branches", async () => {
+    const prepared = snapshotAt("android://org.example.tv/org.example.tv.MainActivity");
+    const relaunched = snapshotAt("android://org.example.tv/org.example.tv.MainActivity");
+    let resetCalls = 0;
+    let snapshotCalls = 0;
+    const driver = {
+      reset: async (strategy: string) => {
+        expect(strategy).toBe("relaunch");
+        resetCalls += 1;
+      },
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return relaunched;
+      },
+    };
+    const restore = createAndroidTraversalRootRestorer(driver as never, "org.example.tv", prepared);
+
+    await expect(restore()).resolves.toBe(prepared);
+    await expect(restore()).resolves.toBe(relaunched);
+    expect(resetCalls).toBe(1);
+    expect(snapshotCalls).toBe(1);
+  });
+
+  it("fails closed when relaunch cannot prove target ownership", async () => {
+    const prepared = snapshotAt("android://org.example.tv/org.example.tv.MainActivity");
+    const external = snapshotAt("android://com.android.tv.settings/com.android.settings.Settings");
+    const driver = {
+      reset: async () => undefined,
+      snapshot: async () => external,
+    };
+    const restore = createAndroidTraversalRootRestorer(driver as never, "org.example.tv", prepared);
+
+    await expect(restore()).resolves.toBe(prepared);
+    await expect(restore()).rejects.toThrow(/root restoration ended outside org\.example\.tv/u);
+  });
+
+  it("uses the post-setup prepared snapshot as the initial exploration root", async () => {
+    const prepared = snapshotAt("android://org.example.tv/org.example.tv.MainActivity");
+    const staleSetup = snapshotAt("android://com.android.permissioncontroller/GrantPermissionsActivity");
+    const driver = {
+      reset: async () => undefined,
+      snapshot: async () => staleSetup,
+    };
+    const restore = createAndroidTraversalRootRestorer(driver as never, "org.example.tv", prepared);
+
+    await expect(restore()).resolves.toBe(prepared);
+  });
+});
+
+describe("Android restoration evidence", () => {
+  it("records package/activity, replay history, restart status, and exact rejection metadata", () => {
+    const expectedSnapshot = snapshotAtForRestorationEvidence(
+      "android://org.example.tv/org.example.tv.MainActivity",
+    );
+    const externalLocation = "android://com.android.tv.settings/com.android.settings.Settings";
+    const result = {
+      termination: {
+        reason: "restoration-unavailable",
+        complete: false,
+        restorationSubtype: "strategy-exhausted",
+        restorationRejectionReason: "unsafe-root-replay",
+      },
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 4, maxDurationMs: 60_000 },
+      actionOrder: ["UP"],
+      graph: {
+        screens: { states: [], transitions: [] },
+        focus: {
+          states: [{
+            id: "focus-0001",
+            screenStateId: "screen-0001",
+            fingerprint: { value: "focus-expected" },
+            stateFingerprint: "state-expected",
+            confidence: "high",
+            firstSeenDepth: 0,
+            discoveredBy: [],
+            representativeSnapshot: expectedSnapshot,
+          }],
+          transitions: [],
+        },
+        actions: [],
+      },
+      statistics: {
+        physicalActions: 1,
+        focusStates: 1,
+        screenStates: 1,
+        elapsedMs: 123,
+        restorationAttempts: 1,
+        restorationSuccesses: 0,
+        restorationFailures: 1,
+        repeatedStates: 0,
+        compressedStates: 0,
+        deferredStates: 0,
+      },
+      restorationDiagnostics: [{
+        attemptNumber: 1,
+        retryNumber: 0,
+        restorationCycleNumber: 1,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 2,
+        destinationStateId: "focus-0001",
+        strategy: "root-replay",
+        status: "failed",
+        elapsedMs: 25,
+        actionHistory: ["SELECT"],
+        before: {
+          capturedAt: "2026-09-19T10:00:00.000Z",
+          stateFingerprint: "state-external",
+          screenFingerprint: "screen-external",
+          focusFingerprint: "focus-external",
+          focusIdentity: "focus-external",
+          location: externalLocation,
+        },
+        after: {
+          capturedAt: "2026-09-19T10:00:01.000Z",
+          stateFingerprint: "state-external",
+          screenFingerprint: "screen-external",
+          focusFingerprint: "focus-external",
+          focusIdentity: "focus-external",
+          location: externalLocation,
+        },
+        expected: {
+          capturedAt: "2026-09-19T10:00:00.000Z",
+          stateFingerprint: "state-expected",
+          screenFingerprint: "screen-expected",
+          focusFingerprint: "focus-expected",
+          focusIdentity: "focus-expected",
+          location: "android://org.example.tv/org.example.tv.MainActivity",
+          applicationId: "org.example.tv",
+        },
+        history: [],
+        subtype: "strategy-exhausted",
+        rejectionReason: "unsafe-root-replay",
+      }],
+    } as never;
+
+    expect(buildAndroidExplorationEvidence(result, "org.example.tv", null, null, "android-test-scan")).toMatchObject({
+      scanId: "android-test-scan",
+      applicationPackage: "org.example.tv",
+      completionEvidence: {
+        restorationAttempts: 1,
+        restorationSuccesses: 0,
+        restorationFailures: 1,
+        appCrashCount: null,
+        appCrashCountStatus: "not-collected",
+      },
+      restorationDiagnostics: [{
+        applicationPackage: "org.example.tv",
+        scanId: "android-test-scan",
+        restorationCycleNumber: 1,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 2,
+        sourceStateId: null,
+        intendedDestinationStateId: "focus-0001",
+        strategy: "root-replay",
+        actionHistory: ["SELECT"],
+        processRestarted: false,
+        currentPackage: "com.android.tv.settings",
+        currentActivity: "com.android.settings.Settings",
+        expectedPackage: "org.example.tv",
+        expectedActivity: "org.example.tv.MainActivity",
+        failureClass: "restoration-external-surface",
+        taxonomyCategory: "application-or-system-surface",
+        rejectionReason: "unsafe-root-replay",
+      }],
+      restorationResilience: {
+        restorationCycles: { attempts: 1, successes: 0, failures: 1, successRate: 0 },
+        byRestorationOrdinal: {
+          first: { attempts: 1, successes: 0, failures: 1, successRate: 0 },
+        },
+        deepestSuccessfullyRestoredCheckpoint: null,
+        successfulRestorationCyclesInTraversal: 0,
+        multipleSuccessfulRestorations: false,
+        failureCountByTaxonomy: { "application-or-system-surface": 1 },
+      },
+    });
+  });
+
+  it("classifies timeout and strategy-exhaustion failures from the core subtype before rejection text", () => {
+    const base = {
+      termination: { reason: "settling-exhausted", complete: false },
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 4, maxDurationMs: 60_000 },
+      actionOrder: ["RIGHT"],
+      graph: { screens: { states: [], transitions: [] }, focus: { states: [], transitions: [] }, actions: [] },
+      statistics: {
+        physicalActions: 1,
+        focusStates: 1,
+        screenStates: 1,
+        elapsedMs: 50,
+        restorationAttempts: 2,
+        restorationSuccesses: 0,
+        restorationFailures: 2,
+      },
+      restorationDiagnostics: [{
+        attemptNumber: 1,
+        retryNumber: 0,
+        restorationCycleNumber: 1,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 1,
+        destinationStateId: "focus-0001",
+        strategy: "verified-local-path",
+        status: "failed",
+        elapsedMs: 20,
+        actionHistory: ["RIGHT"],
+        history: [],
+        subtype: "timeout",
+        rejectionReason: "settling-exhausted",
+      }, {
+        attemptNumber: 2,
+        retryNumber: 0,
+        restorationCycleNumber: 2,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 2,
+        destinationStateId: "focus-0002",
+        strategy: "root-replay",
+        status: "failed",
+        elapsedMs: 21,
+        actionHistory: ["RIGHT"],
+        history: [],
+        subtype: "strategy-exhausted",
+        rejectionReason: "action-budget-exhausted",
+      }],
+    } as never;
+
+    const evidence = buildAndroidExplorationEvidence(base, "org.example.tv", null, null, "taxonomy-test") as never as {
+      restorationDiagnostics: readonly { failureClass: string; taxonomyCategory: string }[];
+    };
+    expect(evidence.restorationDiagnostics).toEqual([
+      expect.objectContaining({
+        failureClass: "restoration-timeout",
+        taxonomyCategory: "asynchronous-ui-timing-or-timeout",
+      }),
+      expect.objectContaining({
+        failureClass: "restoration-strategy-exhausted",
+        taxonomyCategory: "strategy-exhausted",
+      }),
+    ]);
+  });
+
+  it("reports observed structural impact, lifecycle recovery, and incomplete retained-diagnostic aggregates conservatively", () => {
+    const shared = {
+      capturedAt: "2026-09-19T10:00:00.000Z",
+      stateFingerprint: "state-a",
+      screenFingerprint: "screen-a",
+      focusFingerprint: "focus-a",
+      focusIdentity: "focus-a",
+      focusedStableId: "play",
+      location: "android://org.example.tv/org.example.tv.MainActivity",
+      applicationId: "org.example.tv",
+      processId: 100,
+      processGeneration: 1,
+      activity: "org.example.tv.MainActivity",
+      rootIdentity: "window-1",
+      windowId: 1,
+      windowGeneration: 1,
+      actionableNodeFingerprint: "actionable-a",
+      navigationStructureFingerprint: "navigation-a",
+      visibleStructureFingerprint: "visible-a",
+    } as const;
+    const result = {
+      termination: { reason: "replay-diverged", complete: false },
+      budgets: { maxActions: 100, maxStates: 100, maxDepth: 8, maxDurationMs: 60_000 },
+      actionOrder: ["RIGHT"],
+      graph: { screens: { states: [], transitions: [] }, focus: { states: [], transitions: [] }, actions: [] },
+      statistics: {
+        physicalActions: 4,
+        focusStates: 2,
+        screenStates: 2,
+        elapsedMs: 100,
+        restorationAttempts: 65,
+        restorationSuccesses: 1,
+        restorationFailures: 64,
+      },
+      restorationDiagnostics: [{
+        attemptNumber: 1,
+        retryNumber: 0,
+        restorationCycleNumber: 1,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 2,
+        destinationStateId: "focus-0001",
+        strategy: "root-replay",
+        status: "failed",
+        elapsedMs: 30,
+        actionHistory: ["RIGHT"],
+        expected: shared,
+        after: {
+          ...shared,
+          capturedAt: "2026-09-19T10:00:01.000Z",
+          stateFingerprint: "state-b",
+          screenFingerprint: "screen-b",
+          actionableNodeFingerprint: "actionable-b",
+          navigationStructureFingerprint: "navigation-b",
+        },
+        history: [],
+        subtype: "navigation-diverged",
+        rejectionReason: "replay-checkpoint-diverged",
+      }, {
+        attemptNumber: 2,
+        retryNumber: 0,
+        restorationCycleNumber: 2,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 3,
+        destinationStateId: "focus-0002",
+        strategy: "root-replay",
+        status: "success",
+        elapsedMs: 31,
+        actionHistory: ["RIGHT"],
+        expected: shared,
+        after: {
+          ...shared,
+          capturedAt: "2026-09-19T10:00:02.000Z",
+          processId: 101,
+          processGeneration: 2,
+          rootIdentity: "window-2",
+          windowId: 2,
+          windowGeneration: 2,
+        },
+        history: [],
+      }],
+    };
+
+    const evidence = buildAndroidExplorationEvidence(result as never, "org.example.tv", null, null, "contract-test") as never as {
+      restorationDiagnostics: readonly Record<string, unknown>[];
+      restorationResilience: Record<string, unknown> & {
+        recoveryAfterProcessReplacement: { successes: number };
+        recoveryAfterRootOrWindowReplacement: { successes: number };
+        byStrategyAttemptOrdinal: Record<string, { attempts: number; successes: number; failures: number }>;
+        byRetryOrdinal: Record<string, { attempts: number; successes: number; failures: number }>;
+        byStrategy: Record<string, { attempts: number; successes: number; failures: number }>;
+      };
+    };
+    expect(evidence.restorationDiagnostics[0]).toMatchObject({
+      structuralDiagnosticDifferences: expect.arrayContaining([
+        "actionableNodeFingerprint",
+        "navigationStructureFingerprint",
+      ]),
+      observedNavigationSurfaceEquivalent: false,
+      behaviorallyEquivalent: false,
+      traversalWouldMateriallyDiffer: true,
+      reachabilityFingerprint: null,
+      reachabilityEvidenceStatus: "not-observable-from-a-single-restored-snapshot",
+      taxonomyCategory: "structurally-meaningful-divergence",
+    });
+    expect(evidence.restorationDiagnostics[1]).toMatchObject({
+      processRestarted: true,
+      behaviorallyEquivalent: true,
+      traversalWouldMateriallyDiffer: null,
+    });
+    expect(evidence.restorationResilience).toMatchObject({
+      retainedDiagnosticAttempts: 2,
+      diagnosticsComplete: false,
+      metricsDerivedFromRetainedDiagnosticsAreComplete: false,
+      recoveryAfterProcessReplacement: { successes: 1 },
+      recoveryAfterRootOrWindowReplacement: { successes: 1 },
+      byStrategyAttemptOrdinal: {
+        first: { attempts: 2, successes: 1, failures: 1 },
+        second: { attempts: 0, successes: 0, failures: 0 },
+        thirdAndLater: { attempts: 0, successes: 0, failures: 0 },
+      },
+      byRetryOrdinal: {
+        first: { attempts: 2, successes: 1, failures: 1 },
+        second: { attempts: 0, successes: 0, failures: 0 },
+        thirdAndLater: { attempts: 0, successes: 0, failures: 0 },
+      },
+      byStrategy: {
+        "root-replay": { attempts: 2, successes: 1, failures: 1 },
+      },
+    });
+
+    const largeState = {
+      ...shared,
+      focusedPath: Array.from({ length: 16 }, (_, index) => `ancestor-${String(index)}`),
+      stableIdentifiers: Array.from({ length: 32 }, (_, index) => `stable-${String(index)}`),
+    };
+    const largeResult = {
+      ...result,
+      statistics: {
+        ...result.statistics,
+        restorationAttempts: 64,
+        restorationSuccesses: 48,
+        restorationFailures: 16,
+      },
+      restorationDiagnostics: Array.from({ length: 64 }, (_, index) => ({
+        attemptNumber: index + 1,
+        retryNumber: index % 3,
+        restorationCycleNumber: index + 1,
+        successfulRestorationsBeforeAttempt: Math.max(0, index - Math.floor(index / 4)),
+        traversalDepth: index % 8,
+        destinationStateId: `focus-${String(index)}`,
+        strategy: index % 2 === 0 ? "root-replay" : "verified-local-path",
+        status: index % 4 === 0 ? "failed" : "success",
+        elapsedMs: 30 + index,
+        actionHistory: ["DOWN", "SELECT"],
+        before: largeState,
+        expected: largeState,
+        after: { ...largeState, processGeneration: index + 2, windowGeneration: index + 2 },
+        history: Array.from({ length: 16 }, () => largeState),
+        ...(index % 4 === 0 ? {
+          subtype: "navigation-diverged",
+          rejectionReason: "replay-checkpoint-diverged",
+        } : {}),
+      })),
+    } as never;
+    expect(() => sanitiseEvidenceJson(buildAndroidExplorationEvidence(
+      largeResult,
+      "org.example.tv",
+      null,
+      null,
+      "large-diagnostics-contract",
+    ))).not.toThrow();
+  });
+
+  it("does not claim verified-local process continuity from cached launch metadata", () => {
+    const cachedProcessState = {
+      capturedAt: "2026-09-19T10:00:00.000Z",
+      stateFingerprint: "state-a",
+      screenFingerprint: "screen-a",
+      focusFingerprint: "focus-a",
+      focusIdentity: "focus-a",
+      location: "android://org.example.tv/org.example.tv.MainActivity",
+      applicationId: "org.example.tv",
+      processId: 100,
+      processGeneration: 1,
+      processIdentitySource: "last-launch-or-reset-metadata",
+    } as const;
+    const result = {
+      termination: { reason: "frontier-exhausted", complete: true },
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 4, maxDurationMs: 60_000 },
+      actionOrder: ["RIGHT"],
+      graph: { screens: { states: [], transitions: [] }, focus: { states: [], transitions: [] }, actions: [] },
+      statistics: {
+        physicalActions: 1,
+        focusStates: 1,
+        screenStates: 1,
+        elapsedMs: 20,
+        restorationAttempts: 1,
+        restorationSuccesses: 1,
+        restorationFailures: 0,
+      },
+      restorationDiagnostics: [{
+        attemptNumber: 1,
+        retryNumber: 0,
+        restorationCycleNumber: 1,
+        successfulRestorationsBeforeAttempt: 0,
+        traversalDepth: 1,
+        destinationStateId: "focus-0001",
+        strategy: "verified-local-path",
+        status: "success",
+        elapsedMs: 10,
+        actionHistory: ["RIGHT"],
+        before: cachedProcessState,
+        after: { ...cachedProcessState, capturedAt: "2026-09-19T10:00:01.000Z" },
+        expected: cachedProcessState,
+        history: [],
+      }],
+    } as never;
+
+    const evidence = buildAndroidExplorationEvidence(result, "org.example.tv", null, null, "cached-process-test") as never as {
+      restorationDiagnostics: readonly { processRestarted: boolean | null }[];
+      restorationResilience: { recoveryAfterProcessReplacement: { successes: number; status: string } };
+    };
+    expect(evidence.restorationDiagnostics[0]?.processRestarted).toBeNull();
+    expect(evidence.restorationResilience.recoveryAfterProcessReplacement).toEqual({
+      successes: 0,
+      status: "partial-cached-process-identity",
+    });
+  });
+});
+
+function snapshotAtForRestorationEvidence(location: string): StateSnapshot {
+  return {
+    capturedAt: "2026-09-19T10:00:00.000Z",
+    location: { status: "available", value: location },
+    focusedElement: { status: "available", value: null },
+    uiTree: { status: "available", value: [] },
+  } as StateSnapshot;
+}
 
 describe("Android device preflight", () => {
   it("gives actionable copy when ADB is missing", async () => {

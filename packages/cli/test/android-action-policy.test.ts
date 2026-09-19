@@ -78,6 +78,23 @@ function snapshot(
         truncated: false,
       },
     },
+    restorationContext: {
+      platform: "android-tv",
+      applicationId: TARGET_PACKAGE,
+      processId: 101,
+      processGeneration: 1,
+      processIdentitySource: "last-launch-or-reset-metadata",
+      activity: ".MainActivity",
+      activityGeneration: null,
+      activityGenerationObservable: false,
+      rootIdentity: "window-1",
+      rootIdentitySource: "accessibility-window-id",
+      windowId: 1,
+      windowGeneration: 1,
+      observationSequence: 1,
+      observerStructureFingerprint: "test-structure",
+      observerStateFingerprint: "test-state",
+    },
     ...overrides,
   };
 }
