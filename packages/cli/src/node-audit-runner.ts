@@ -200,7 +200,11 @@ export async function runAudit(
         },
       }];
     }
-    if (packs.has("navigation") && navigationStartup?.status === "ready" && navigationStartup.restoreToPreparedState !== undefined) {
+    if (
+      packs.has("navigation")
+      && navigationStartup?.status === "ready"
+      && navigationStartup.restoreToPreparedState !== undefined
+    ) {
       const explorationStartedAt = performance.now();
       navigation = await explore(createSafeExplorationDriver(driver), {
         profile: request.mode,
@@ -209,10 +213,10 @@ export async function runAudit(
         ...(request.maxDurationMs === undefined ? {} : { budgets: { maxDurationMs: request.maxDurationMs } }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
         settling: {
-        strategy: "stable-snapshot",
-        maxSnapshots: 3,
-        pollIntervalMs: 20,
-        requiredStableSnapshots: 2,
+          strategy: "stable-snapshot",
+          maxSnapshots: 3,
+          pollIntervalMs: 20,
+          requiredStableSnapshots: 2,
         },
       });
       navigationExplorationMs = Math.max(0, performance.now() - explorationStartedAt);
@@ -299,9 +303,12 @@ export async function runAudit(
     ...(packs.has("streaming") ? streaming?.issues ?? [] : []),
     ...(web?.issues ?? []),
   ];
-  const uniqueIssues = rawIssues.filter((issue, index) =>
-    rawIssues.findIndex((candidate) => candidate.id === issue.id) === index
-  );
+  const seenIssueIds = new Set<string>();
+  const uniqueIssues = rawIssues.filter((issue) => {
+    if (seenIssueIds.has(issue.id)) return false;
+    seenIssueIds.add(issue.id);
+    return true;
+  });
   const evidenceStartedAt = performance.now();
   const captured = await captureIssuesWithinBudget(
     store,
@@ -345,16 +352,33 @@ export async function runAudit(
       evidenceGenerationMs,
     },
     navigationDriverPerformance,
-    navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
-    navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
-    streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
+    navigation: navigation === null ? null : {
+      termination: navigation.termination,
+      statistics: navigation.statistics,
+    },
+    navigationFindings: navigationFindings.map((finding) => ({
+      id: finding.issue.id,
+      rule: finding.issue.rule,
+      classification: finding.classification,
+    })),
+    streaming: streaming === null ? null : {
+      status: streaming.status,
+      termination: streaming.termination,
+      statistics: streaming.statistics,
+      stages: streaming.stages,
+    },
     settingsRouteDiscovery: settingsRouteDiscovery === null ? null : {
       status: settingsRouteDiscovery.status,
       detail: settingsRouteDiscovery.detail,
       sequence: settingsRouteDiscovery.sequence ?? null,
       statistics: settingsRouteDiscovery.statistics,
     },
-    web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
+    web: web === null ? null : {
+      status: web.status,
+      termination: web.termination,
+      statistics: web.statistics,
+      stages: web.stages,
+    },
   });
   const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
   const evidenceFailed = captured.some((entry) => entry.failed);

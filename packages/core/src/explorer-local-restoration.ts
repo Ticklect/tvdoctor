@@ -41,7 +41,7 @@ interface VerifiedLocalRestorationContext {
   readonly rootRestore: (
     entry: QueueEntry,
     beforeSnapshot: StateSnapshot | undefined,
-    restorationCycleNumber: number,
+    cycles: number,
   ) => Promise<RestoreResult>;
   readonly workBudgetTermination: () => ExplorationTermination | null;
   readonly withinDurationBudget: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
@@ -71,42 +71,41 @@ export interface VerifiedLocalRestorer {
   ) => Promise<ExplorationTermination | null>;
   readonly recordEdge: (edge: VerifiedStateEdge) => void;
   readonly liveIdentity: () => string | null;
-  /** Total queued-branch restoration cycles, including cycles that fail before an exploration action. */
   readonly cycleCount: () => number;
 }
 
 export function createVerifiedLocalRestorer(
   context: VerifiedLocalRestorationContext,
 ): VerifiedLocalRestorer {
-  let trustedLiveSnapshot: StateSnapshot | null = context.initialSnapshot;
-  let trustedLiveIdentity: string | null = context.initialIdentity;
-  let restorationCycleNumber = 0;
+  let liveSnapshot: StateSnapshot | null = context.initialSnapshot;
+  let liveStateId: string | null = context.initialIdentity;
+  let cycles = 0;
   const verifiedEdges: VerifiedStateEdge[] = [];
-  const verifiedEdgeKeys = new Set<string>();
+  const edgeKeys = new Set<string>();
 
   const clearLive = (): void => {
-    trustedLiveSnapshot = null;
-    trustedLiveIdentity = null;
+    liveSnapshot = null;
+    liveStateId = null;
   };
   const observeLive = (snapshot: StateSnapshot, identity: string): void => {
-    trustedLiveSnapshot = snapshot;
-    trustedLiveIdentity = identity;
+    liveSnapshot = snapshot;
+    liveStateId = identity;
   };
   const recordEdge = (edge: VerifiedStateEdge): void => {
     if (!context.enabled || !context.allowPathRestoration || !SAFE_LOCAL_RESTORATION_KEYS.has(edge.key)) return;
     const key = `${edge.fromIdentity}\u001f${edge.key}\u001f${edge.toIdentity}`;
-    if (verifiedEdgeKeys.has(key)) return;
-    verifiedEdgeKeys.add(key);
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
     verifiedEdges.push(edge);
   };
-  const liveIdentity = (): string | null => trustedLiveIdentity;
-  const cycleCount = (): number => restorationCycleNumber;
+  const liveIdentity = (): string | null => liveStateId;
+  const cycleCount = (): number => cycles;
 
   const rootRestore = async (entry: QueueEntry, cycleNumber: number): Promise<RestoreResult> => {
     const startedAt = context.monotonicNow();
-    const before = trustedLiveSnapshot === null
+    const before = liveSnapshot === null
       ? undefined
-      : restorationStateDiagnostic(trustedLiveSnapshot);
+      : restorationStateDiagnostic(liveSnapshot);
     const unsafeKey = context.enabled
       ? entry.sequence.find((key) => !context.rootReplayActions.has(key))
       : undefined;
@@ -136,7 +135,7 @@ export function createVerifiedLocalRestorer(
         ),
       };
     }
-    const result = await context.rootRestore(entry, trustedLiveSnapshot ?? undefined, cycleNumber);
+    const result = await context.rootRestore(entry, liveSnapshot ?? undefined, cycleNumber);
     if (result.status === "ok") {
       const fingerprint = context.fingerprintSnapshot(result.snapshot);
       observeLive(result.snapshot, fingerprint.stateIdentity);
@@ -147,13 +146,13 @@ export function createVerifiedLocalRestorer(
   };
 
   const restore = async (entry: QueueEntry): Promise<RestoreResult> => {
-    const cycleNumber = ++restorationCycleNumber;
+    const cycleNumber = ++cycles;
     const expected = restorationStateDiagnostic(entry.state.representativeSnapshot);
     if (!context.enabled) return rootRestore(entry, cycleNumber);
-    if (trustedLiveSnapshot !== null && trustedLiveIdentity === entry.state.identity) {
+    if (liveSnapshot !== null && liveStateId === entry.state.identity) {
       const startedAt = context.monotonicNow();
       const evidence = restorationStateDiagnostic(
-        trustedLiveSnapshot,
+        liveSnapshot,
       );
       context.onDiagnostic({
         restorationCycleNumber: cycleNumber,
@@ -169,17 +168,17 @@ export function createVerifiedLocalRestorer(
         history: [evidence],
       });
       context.onStateReuse();
-      return { status: "ok", snapshot: trustedLiveSnapshot };
+      return { status: "ok", snapshot: liveSnapshot };
     }
 
-    if (context.allowPathRestoration && trustedLiveIdentity !== null) {
+    if (context.allowPathRestoration && liveStateId !== null) {
       const localStartedAt = context.monotonicNow();
-      const localBefore = trustedLiveSnapshot === null
+      const localBefore = liveSnapshot === null
         ? undefined
-        : restorationStateDiagnostic(trustedLiveSnapshot);
+        : restorationStateDiagnostic(liveSnapshot);
       const history = localBefore === undefined ? [] : [localBefore];
       const actionHistory: RemoteKey[] = [];
-      let localAfterSnapshot = trustedLiveSnapshot;
+      let localAfterSnapshot = liveSnapshot;
       const recordLocalFailure = (
         subtype: RestorationFailureSubtype,
         rejectionReason: RestorationRejectionReason,
@@ -206,7 +205,7 @@ export function createVerifiedLocalRestorer(
       };
       const path = findShortestVerifiedPath(
         verifiedEdges,
-        trustedLiveIdentity,
+        liveStateId,
         entry.state.identity,
         context.actionOrder,
       );
@@ -327,8 +326,8 @@ export function createVerifiedLocalRestorer(
         } finally {
           context.onReplayDuration(context.durationSince(startedAt));
         }
-        if (failure === null && trustedLiveSnapshot !== null && trustedLiveIdentity === entry.state.identity) {
-          const after = restorationStateDiagnostic(trustedLiveSnapshot);
+        if (failure === null && liveSnapshot !== null && liveStateId === entry.state.identity) {
+          const after = restorationStateDiagnostic(liveSnapshot);
           context.onDiagnostic({
             restorationCycleNumber: cycleNumber,
             traversalDepth: entry.state.firstSeenDepth,
@@ -343,7 +342,7 @@ export function createVerifiedLocalRestorer(
             history,
           });
           context.onPathRestoration();
-          return { status: "ok", snapshot: trustedLiveSnapshot };
+          return { status: "ok", snapshot: liveSnapshot };
         }
         if (failure === null) {
           recordLocalFailure("state-not-found", "destination-state-not-found");
@@ -361,9 +360,9 @@ export function createVerifiedLocalRestorer(
 
     if (!context.allowRootRestorationFallback) {
       const startedAt = context.monotonicNow();
-      const before = trustedLiveSnapshot === null
+      const before = liveSnapshot === null
         ? undefined
-        : restorationStateDiagnostic(trustedLiveSnapshot);
+        : restorationStateDiagnostic(liveSnapshot);
       context.onDiagnostic({
         restorationCycleNumber: cycleNumber,
         traversalDepth: entry.state.firstSeenDepth,
@@ -411,7 +410,7 @@ export function createVerifiedLocalRestorer(
       || !hasPendingWork
       || !safelyRefreshable) return null;
     clearLive();
-    const refreshed = await rootRestore(entry, ++restorationCycleNumber);
+    const refreshed = await rootRestore(entry, ++cycles);
     return refreshed.status === "ok" ? null : refreshed.termination;
   };
 

@@ -41,7 +41,13 @@ import type {
 } from "./types.js";
 
 const CAPABILITIES: ReadonlySet<Capability> = new Set([
-  "remote-input", "ui-tree", "accessibility-tree", "screenshot", "logs", "install", "launch",
+  "remote-input",
+  "ui-tree",
+  "accessibility-tree",
+  "screenshot",
+  "logs",
+  "install",
+  "launch",
 ]);
 const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u;
 const SERIAL_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
@@ -54,12 +60,21 @@ const SYSTEM_SETUP_PACKAGES: ReadonlySet<string> = new Set([
   "com.google.android.packageinstaller",
 ]);
 const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
-  UP: "KEYCODE_DPAD_UP", DOWN: "KEYCODE_DPAD_DOWN", LEFT: "KEYCODE_DPAD_LEFT",
-  RIGHT: "KEYCODE_DPAD_RIGHT", SELECT: "KEYCODE_DPAD_CENTER", BACK: "KEYCODE_BACK",
+  UP: "KEYCODE_DPAD_UP",
+  DOWN: "KEYCODE_DPAD_DOWN",
+  LEFT: "KEYCODE_DPAD_LEFT",
+  RIGHT: "KEYCODE_DPAD_RIGHT",
+  SELECT: "KEYCODE_DPAD_CENTER",
+  BACK: "KEYCODE_BACK",
   TAB: "KEYCODE_TAB",
-  HOME: "KEYCODE_HOME", PLAY_PAUSE: "KEYCODE_MEDIA_PLAY_PAUSE", PLAY: "KEYCODE_MEDIA_PLAY",
-  PAUSE: "KEYCODE_MEDIA_PAUSE", STOP: "KEYCODE_MEDIA_STOP", NEXT: "KEYCODE_MEDIA_NEXT",
-  PREVIOUS: "KEYCODE_MEDIA_PREVIOUS", REWIND: "KEYCODE_MEDIA_REWIND",
+  HOME: "KEYCODE_HOME",
+  PLAY_PAUSE: "KEYCODE_MEDIA_PLAY_PAUSE",
+  PLAY: "KEYCODE_MEDIA_PLAY",
+  PAUSE: "KEYCODE_MEDIA_PAUSE",
+  STOP: "KEYCODE_MEDIA_STOP",
+  NEXT: "KEYCODE_MEDIA_NEXT",
+  PREVIOUS: "KEYCODE_MEDIA_PREVIOUS",
+  REWIND: "KEYCODE_MEDIA_REWIND",
   FAST_FORWARD: "KEYCODE_MEDIA_FAST_FORWARD",
 };
 
@@ -92,7 +107,7 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
 }
 
 function cleanText(value: string): string {
-  // eslint-disable-next-line no-control-regex -- ADB output may contain terminal control bytes that must not reach reports.
+  // eslint-disable-next-line no-control-regex -- strip terminal control bytes from ADB output.
   return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ").trim().slice(0, 2_000);
 }
@@ -103,7 +118,9 @@ function isObserverSignatureMismatch(error: unknown, packageName: string): boole
     && message.toLowerCase().includes(TVDOCTOR_OBSERVER_PACKAGE)
     && /signatures? do not match/iu.test(message);
 }
-function utf8(value: Uint8Array): string { return Buffer.from(value).toString("utf8"); }
+function utf8(value: Uint8Array): string {
+  return Buffer.from(value).toString("utf8");
+}
 function defaultAdbPath(): string {
   const sdkRoot = process.env["ANDROID_SDK_ROOT"] ?? process.env["ANDROID_HOME"]
     ?? (process.platform === "win32" && process.env["LOCALAPPDATA"] !== undefined
@@ -137,6 +154,7 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
     throw new TypeError("Android driver options must be an object.");
   }
   const commandTimeoutMs = positiveInteger(options.commandTimeoutMs, 15_000, "commandTimeoutMs");
+  const maxCommandOutputBytes = options.maxCommandOutputBytes ?? 2 * 1024 * 1024;
   const quietWindowMs = positiveInteger(options.quietWindowMs, 100, "quietWindowMs");
   const noResponseGraceMs = positiveInteger(options.noResponseGraceMs, 220, "noResponseGraceMs");
   const settleTimeoutMs = positiveInteger(options.settleTimeoutMs, 2_500, "settleTimeoutMs");
@@ -150,14 +168,19 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
   }
   return {
     executor: options.executor ?? new NodeAdbCommandExecutor(options.adbPath ?? defaultAdbPath(), {
-      timeoutMs: commandTimeoutMs, maxOutputBytes: options.maxCommandOutputBytes ?? 2 * 1024 * 1024,
+      timeoutMs: commandTimeoutMs,
+      maxOutputBytes: maxCommandOutputBytes,
     }),
     serial: options.serial === undefined ? undefined : validateSerial(options.serial),
     commandTimeoutMs,
-    maxCommandOutputBytes: options.maxCommandOutputBytes ?? 2 * 1024 * 1024,
+    maxCommandOutputBytes,
     maxLogEntries: options.maxLogEntries ?? 500,
     maxScreenshotBytes: options.maxScreenshotBytes ?? 25 * 1024 * 1024,
-    settleTimeoutMs, quietWindowMs, noResponseGraceMs, resetStableWindowMs, resetSettleTimeoutMs,
+    settleTimeoutMs,
+    quietWindowMs,
+    noResponseGraceMs,
+    resetStableWindowMs,
+    resetSettleTimeoutMs,
     observerConnectTimeoutMs: positiveInteger(options.observerConnectTimeoutMs, 5_000, "observerConnectTimeoutMs"),
     observerRequestTimeoutMs: positiveInteger(options.observerRequestTimeoutMs, 7_500, "observerRequestTimeoutMs"),
     signal: options.signal,
@@ -180,9 +203,12 @@ function parseDevices(output: string): readonly AndroidDeviceListEntry[] {
       if (separator > 0) values.set(attribute.slice(0, separator), attribute.slice(separator + 1));
     }
     result.push({
-      serial, state, product: values.get("product") ?? null,
+      serial,
+      state,
+      product: values.get("product") ?? null,
       model: values.get("model")?.replaceAll("_", " ") ?? null,
-      device: values.get("device") ?? null, transportId: values.get("transport_id") ?? null,
+      device: values.get("device") ?? null,
+      transportId: values.get("transport_id") ?? null,
     });
   }
   return result;
@@ -209,7 +235,8 @@ function pngDimensions(png: Uint8Array): { readonly width: number; readonly heig
     || buffer.subarray(12, 16).toString("ascii") !== "IHDR") {
     throw new Error("Android screenshot did not contain a valid PNG header.");
   }
-  const width = buffer.readUInt32BE(16); const height = buffer.readUInt32BE(20);
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
   if (width <= 0 || height <= 0) throw new Error("Android screenshot dimensions are invalid.");
   return { width, height };
 }
@@ -244,7 +271,8 @@ function parseLogcat(output: string, maximumEntries: number, pid: number, since:
   const result: AndroidLogEntry[] = [];
   const pattern = /^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEF])\s+([^:]{1,128}):\s?(.*)$/u;
   for (const line of output.split(/\r?\n/u)) {
-    const match = pattern.exec(line); if (match === null) continue;
+    const match = pattern.exec(line);
+    if (match === null) continue;
     if (optionalInteger(match[2]) !== pid || Number(match[1]) < since) continue;
     const level = match[4] === "E" || match[4] === "F" ? "error"
       : match[4] === "W" ? "warning" : match[4] === "D" || match[4] === "V" ? "debug" : "info";
@@ -357,7 +385,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#install(artifactPath, signal), signal);
   }
   async #install(artifactPath: string, signal?: AbortSignal): Promise<void> {
-    this.#ensureOpen(); const absolutePath = resolve(artifactPath);
+    this.#ensureOpen();
+    const absolutePath = resolve(artifactPath);
     if (!isAbsolute(absolutePath)) throw new TypeError("Android APK path could not be resolved.");
     const metadata = await stat(absolutePath);
     if (!metadata.isFile()) throw new TypeError("Android APK path is not a regular file.");
@@ -371,13 +400,17 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#launch(app, signal), signal);
   }
   async #launch(app: AndroidAppReference, signal?: AbortSignal): Promise<void> {
-    this.#ensureOpen(); const packageName = validatePackage(app.id);
+    this.#ensureOpen();
+    const packageName = validatePackage(app.id);
     const component = app.launchUri === undefined ? null : componentName(packageName, app.launchUri);
     if (this.#currentApp !== null && this.#currentApp.id !== packageName) await this.#disconnectObserver();
-    this.#currentApp = { ...app, id: packageName }; this.#component = component;
-    await this.#getDeviceMetadata(false, signal); await this.#ensureObserver(signal);
+    this.#currentApp = { ...app, id: packageName };
+    this.#component = component;
+    await this.#getDeviceMetadata(false, signal);
+    await this.#ensureObserver(signal);
     await this.#launchPackage(packageName, component, signal);
-    this.#appMetadata = null; this.#cachedTree = null;
+    this.#appMetadata = null;
+    this.#cachedTree = null;
     await this.#stabilizeTargetLaunch(packageName, true, signal);
     await this.#getAppMetadata(signal);
   }
@@ -396,9 +429,12 @@ export class AndroidTvDriver implements TVDoctorDriver {
     signal?: AbortSignal,
     foreground: "target" | "system-setup" = "target",
   ): Promise<ActionResult> {
-    this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
-    const totalStarted = performance.now(); const inputSentAtMs = Date.now();
-    let inputDelivered = false; let beginRoundTripMs = 0;
+    this.#ensureOpen();
+    const observer = await this.#requiredObserver(signal);
+    const totalStarted = performance.now();
+    const inputSentAtMs = Date.now();
+    let inputDelivered = false;
+    let beginRoundTripMs = 0;
     try {
       const beginStarted = performance.now();
       const begin = await observer.request({ type: "begin_action", key }, {
@@ -409,14 +445,13 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (foreground === "system-setup") await this.#assertSystemSetupForeground(signal);
       else await this.#assertTargetForeground(signal);
       const inputStarted = performance.now();
-      // Keep input synchronous after the durable focused-window launch guard.
-      // This is the delivery barrier that prevents a delayed key from crossing
-      // a reset boundary and mutating the next activity instance.
+      // Do not let a delayed key cross a reset boundary.
       await this.#deviceCommand(["shell", "input", "keyevent", KEY_CODES[key]], {
         timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: 4_096,
         ...(signal === undefined ? {} : { signal }),
       });
-      const inputDispatchMs = performance.now() - inputStarted; inputDelivered = true;
+      const inputDispatchMs = performance.now() - inputStarted;
+      inputDelivered = true;
       const settleRoundTripStarted = performance.now();
       const settled = await observer.request({
         type: "settle_action", actionId: begin.actionId, timeoutMs: this.#options.settleTimeoutMs,
@@ -472,7 +507,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#snapshot(signal), signal);
   }
   async #snapshot(signal?: AbortSignal): Promise<AndroidStateSnapshot> {
-    this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
+    this.#ensureOpen();
+    const observer = await this.#requiredObserver(signal);
     const response = await observer.request({ type: "current_state", forceFull: this.#cachedTree === null }, {
       ...(signal === undefined ? {} : { signal }),
     });
@@ -483,7 +519,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#reset(strategy, signal), signal);
   }
   async #reset(strategy: ResetStrategy, signal?: AbortSignal): Promise<void> {
-    this.#ensureOpen(); const current = this.#currentApp;
+    this.#ensureOpen();
+    const current = this.#currentApp;
     if (current === null) throw new Error("No Android app has been launched.");
     const stageError = (stage: string, error: unknown): Error => new Error(
       `Android reset stage ${stage} failed for ${current.id}. ${cleanText(error instanceof Error ? error.message : String(error))}`,
@@ -521,11 +558,11 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (pidAfterFailure === null || cleanText(pidAfterFailure).length > 0) {
         throw stageError("force-stop", error);
       }
-      // The host may time out after Android has already applied force-stop.
-      // Continue from the reconciled stopped state without repeating force-stop.
+      // A timed-out force-stop may still have succeeded on the device.
     }
     await runStage("launch", () => this.#launchPackage(current.id, this.#component, signal));
-    this.#appMetadata = null; this.#cachedTree = null;
+    this.#appMetadata = null;
+    this.#cachedTree = null;
     await runStage("focus-stabilization", () => this.#stabilizeTargetLaunch(current.id, true, signal));
     await runStage("metadata-refresh", () => this.#getAppMetadata(signal));
   }
@@ -554,7 +591,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
   async #captureScreenshot(artifactPath: string, signal?: AbortSignal): Promise<ScreenshotArtifact> {
     this.#ensureOpen();
     if (!/\.png$/iu.test(artifactPath)) throw new TypeError("Android screenshots require a .png artifact path.");
-    const absolutePath = resolve(artifactPath); const capturedAt = new Date().toISOString();
+    const absolutePath = resolve(artifactPath);
+    const capturedAt = new Date().toISOString();
     await this.#assertTargetForeground(signal);
     const result = await this.#deviceCommand(["exec-out", "screencap", "-p"], {
       timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: this.#options.maxScreenshotBytes,
@@ -563,7 +601,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const dimensions = pngDimensions(result.stdout);
     await this.#assertTargetForeground(signal);
     signal?.throwIfAborted();
-    await mkdir(dirname(absolutePath), { recursive: true }); await writeFile(absolutePath, result.stdout);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, result.stdout);
     return { path: absolutePath, mediaType: "image/png", ...dimensions, capturedAt };
   }
   async captureScreenshotFingerprint(
@@ -673,7 +712,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#getDeviceMetadata(refresh, signal), signal);
   }
   async #getDeviceMetadata(refresh: boolean, signal?: AbortSignal): Promise<AndroidDeviceMetadata> {
-    this.#ensureOpen(); if (!refresh && this.#deviceMetadata !== null) return this.#deviceMetadata;
+    this.#ensureOpen();
+    if (!refresh && this.#deviceMetadata !== null) return this.#deviceMetadata;
     const commandOptions = signal === undefined ? {} : { signal };
     const serial = await this.#serial(signal);
     const manufacturer = await this.#deviceText(["shell", "getprop", "ro.product.manufacturer"], commandOptions);
@@ -684,7 +724,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const characteristics = await this.#deviceText(["shell", "getprop", "ro.build.characteristics"], commandOptions);
     const abis = await this.#deviceText(["shell", "getprop", "ro.product.cpu.abilist"], commandOptions);
     const display = await this.#deviceText(["shell", "wm", "size"], commandOptions);
-    const sizeMatch = /(\d+)x(\d+)/u.exec(display); const semantic = `${characteristics} ${model} ${fingerprint}`.toLowerCase();
+    const sizeMatch = /(\d+)x(\d+)/u.exec(display);
+    const semantic = `${characteristics} ${model} ${fingerprint}`.toLowerCase();
     this.#deviceMetadata = {
       serial, manufacturer: optionalText(manufacturer), model: optionalText(model),
       sdkLevel: optionalInteger(cleanText(sdk)), release: optionalText(release), buildFingerprint: optionalText(fingerprint),
@@ -701,8 +742,10 @@ export class AndroidTvDriver implements TVDoctorDriver {
     return await this.#enqueueOperation(() => this.#getAppMetadata(signal), signal);
   }
   async #getAppMetadata(signal?: AbortSignal): Promise<AndroidAppMetadata> {
-    this.#ensureOpen(); if (this.#appMetadata !== null) return this.#appMetadata;
-    const current = this.#currentApp; if (current === null) throw new Error("No Android app has been launched.");
+    this.#ensureOpen();
+    if (this.#appMetadata !== null) return this.#appMetadata;
+    const current = this.#currentApp;
+    if (current === null) throw new Error("No Android app has been launched.");
     const commandOptions = signal === undefined ? {} : { signal };
     const pidText = await this.#deviceText(["shell", "pidof", "-s", current.id], commandOptions).catch(() => "");
     const packageText = await this.#deviceText(["shell", "dumpsys", "package", current.id], commandOptions);
@@ -723,12 +766,16 @@ export class AndroidTvDriver implements TVDoctorDriver {
       if (this.#closed) return;
       this.#closed = true;
       await this.#disconnectObserver();
-      this.#currentApp = null; this.#cachedTree = null; this.#logStart = null;
+      this.#currentApp = null;
+      this.#cachedTree = null;
+      this.#logStart = null;
     });
   }
   async #disconnectObserver(): Promise<void> {
-    this.#observer?.close(); this.#observer = null;
-    const port = this.#forwardPort; this.#forwardPort = null;
+    this.#observer?.close();
+    this.#observer = null;
+    const port = this.#forwardPort;
+    this.#forwardPort = null;
     if (port !== null && this.#resolvedSerial !== null) {
       await this.#options.executor.execute(
         ["-s", this.#resolvedSerial, "forward", "--remove", `tcp:${String(port)}`],
@@ -855,7 +902,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
     });
     const port = Number(cleanText(forwardText));
     if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) throw new Error("ADB did not return a valid local observer forwarding port.");
-    this.#forwardPort = port; let lastError: unknown;
+    this.#forwardPort = port;
+    let lastError: unknown;
     const connectionDeadline = performance.now() + 10_000;
     while (performance.now() < connectionDeadline) {
       try {
@@ -880,7 +928,9 @@ export class AndroidTvDriver implements TVDoctorDriver {
     ].join("\n"));
   }
   async #requiredObserver(signal?: AbortSignal): Promise<AndroidObserverConnection> {
-    await this.#ensureObserver(signal); if (this.#observer === null) throw new Error("Android observer is unavailable."); return this.#observer;
+    await this.#ensureObserver(signal);
+    if (this.#observer === null) throw new Error("Android observer is unavailable.");
+    return this.#observer;
   }
   async #launchPackage(packageName: string, component: string | null, signal?: AbortSignal): Promise<void> {
     const commandOptions = signal === undefined ? {} : { signal };
@@ -889,11 +939,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
     if (component === null) {
       await this.#deviceCommand(["shell", "monkey", "-p", packageName, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"], { timeoutMs: 30_000, ...commandOptions });
     } else {
-      // Permission-controller activities can remain attached to the app's task
-      // after force-stop. Without a clean task, Android may deliver this launch
-      // intent to that stale system dialog instead of starting the requested
-      // TV activity. NEW_TASK | CLEAR_TASK preserves app data while restoring a
-      // deterministic launch boundary.
+      // Clear stale permission-controller activities without clearing app data.
       await this.#deviceCommand([
         "shell", "am", "start", "-W", "-f", "0x10008000", "-n", component,
       ], { timeoutMs: 30_000, ...commandOptions });
@@ -908,7 +954,8 @@ export class AndroidTvDriver implements TVDoctorDriver {
         timeoutMs: this.#options.observerRequestTimeoutMs,
         ...(signal === undefined ? {} : { signal }),
       });
-      const state = parseObserverState(response.state); latestPackage = state.packageName;
+      const state = parseObserverState(response.state);
+      latestPackage = state.packageName;
       if (state.packageName === packageName || isSystemSetupPackage(state.packageName)) {
         return this.#snapshotFromState(state);
       }
@@ -1037,12 +1084,14 @@ export class AndroidTvDriver implements TVDoctorDriver {
   }
   async #serial(signal?: AbortSignal): Promise<string> {
     if (this.#resolvedSerial !== null) return this.#resolvedSerial;
-    const devices = await this.#listDevices(signal); const online = devices.filter((device) => device.state === "device");
+    const devices = await this.#listDevices(signal);
+    const online = devices.filter((device) => device.state === "device");
     if (online.length !== 1 || online[0] === undefined) {
       const states = devices.map((device) => `${device.serial}:${device.state}`).join(", ");
       throw new Error(`Exactly one online Android device is required when serial is omitted; found ${String(online.length)}${states.length === 0 ? "" : ` (${cleanText(states)})`}.`);
     }
-    this.#resolvedSerial = validateSerial(online[0].serial); return this.#resolvedSerial;
+    this.#resolvedSerial = validateSerial(online[0].serial);
+    return this.#resolvedSerial;
   }
   async #deviceCommand(arguments_: readonly string[], options: AdbCommandOptions = {}) {
     const signal = combinedSignal(this.#options.signal, options.signal);
@@ -1069,5 +1118,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
     this.#operationTail = result.then(() => undefined, () => undefined);
     return await result;
   }
-  #ensureOpen(): void { if (this.#closed) throw new Error("Android TV driver is closed."); }
+  #ensureOpen(): void {
+    if (this.#closed) throw new Error("Android TV driver is closed.");
+  }
 }
