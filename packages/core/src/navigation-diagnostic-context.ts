@@ -73,11 +73,8 @@ export function normalise(value: string | null | undefined): string {
   return value?.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase() ?? "";
 }
 
-/**
- * An enabled visible node that is already focused is demonstrably reachable
- * by the TV application's programmatic/roving focus model even when its DOM
- * sequential-tab flag is false (for example tabindex=-1).
- */
+// TV apps often use roving focus with tabindex=-1, so a visible focused node
+// still counts as reachable even when the DOM tab flag is false.
 export function isTvFocusable(node: UiNodeSnapshot): boolean {
   return node.focusable === true
     || (node.focused === true && node.visible === true && node.enabled === true);
@@ -103,12 +100,8 @@ const SCREEN_LANDMARK_ROLES: ReadonlySet<string> = new Set([
   "main",
 ]);
 
-/**
- * Keeps issue identity tied to semantic screen context without coupling it to
- * every sibling control in the structural exploration fingerprint. Controls
- * may be added, removed, or reordered during ordinary product development and
- * must not churn an otherwise identical finding ID.
- */
+// Use stable screen landmarks for issue IDs so unrelated control churn does not
+// create a new finding.
 export function semanticScreenIdentity(screen: ScreenState | undefined): {
   readonly location: string | null;
   readonly landmarks: readonly (readonly string[])[];
