@@ -5,12 +5,12 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
+      "**/.worktrees/**",
+      "**/artifacts/**",
       "**/coverage/**",
       "**/dist/**",
       "**/node_modules/**",
       "**/test-results/**",
-      "**/.worktrees/**",
-      "**/artifacts/**",
     ],
   },
   eslint.configs.recommended,

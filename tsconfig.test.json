@@ -6,10 +6,7 @@
     "declarationMap": false,
     "noEmit": true,
     "rootDir": ".",
-    "types": [
-      "node",
-      "vitest/globals"
-    ]
+    "types": ["node", "vitest/globals"]
   },
   "include": [
     "packages/*/src/**/*.ts",
