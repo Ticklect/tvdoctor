@@ -3,6 +3,12 @@
 All notable public changes will be recorded here. TVDoctor intends to follow
 Semantic Versioning after its first public release.
 
+## Unreleased
+
+### Changed
+
+- cleaned up runtime formatting and repository docs without changing product behaviour.
+
 ## [0.1.0] - 2026-09-18
 
 Initial public preview distributed through GitHub Releases.

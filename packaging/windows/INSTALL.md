@@ -1,9 +1,8 @@
 # TVDoctor 0.1.0 for Windows
 
-This GitHub Release bundle installs TVDoctor without an npm account and without
-publishing TVDoctor packages to the npm registry. TVDoctor is installed in its
-own directory under `%LOCALAPPDATA%\TVDoctor\0.1.0`; it does not globally
-install or replace Playwright or the internal TVDoctor packages.
+This bundle installs TVDoctor without an npm account. It keeps the app under
+`%LOCALAPPDATA%\TVDoctor\0.1.0` and does not replace a global Playwright or
+TVDoctor installation.
 
 ## Requirements
 

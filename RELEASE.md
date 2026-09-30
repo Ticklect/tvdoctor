@@ -1,10 +1,10 @@
 # Release procedure
 
-TVDoctor v0.1.x is distributed through GitHub Releases. The Windows release ZIP
-contains the exact TVDoctor package tarballs plus the matching Playwright
-runtime packages and installs without an npm account.
+TVDoctor v0.1.x ships through GitHub Releases. The Windows ZIP contains the
+TVDoctor package tarballs and matching Playwright runtime packages, and installs
+without an npm account.
 
-Record the exact commit SHA, local commands, hosted run URLs, conclusions, asset
+For every release, record the candidate SHA, validation commands, CI run URLs,
 checksums, and GitHub Release URL in the release audit issue.
 
 ## 1. Prepare the candidate

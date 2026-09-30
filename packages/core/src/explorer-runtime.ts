@@ -4,13 +4,30 @@ import {
   computeSnapshotFingerprint,
   type ComputedSnapshotFingerprint,
 } from "./fingerprint.js";
-import type { ExplorationActionAttempt, ExplorationGraph, FocusState, FocusTransition, ScreenState, ScreenTransition } from "./graph.js";
-import type { ExplorerOptions, ExplorationResult, ExplorationTermination } from "./explorer-contracts.js";
+import type {
+  ExplorationActionAttempt,
+  ExplorationGraph,
+  FocusState,
+  FocusTransition,
+  ScreenState,
+  ScreenTransition,
+} from "./graph.js";
+import type {
+  ExplorerOptions,
+  ExplorationResult,
+  ExplorationTermination,
+} from "./explorer-contracts.js";
 import {
   createExplorerActionHooks,
   executeExplorerAction,
 } from "./explorer-actions.js";
-import { annotateFrontierTermination, scheduleDestinationFrontier, scheduleFrontierContinuation, takePreferredFrontierWithCount, type QueueEntry } from "./explorer-frontier.js";
+import {
+  annotateFrontierTermination,
+  scheduleDestinationFrontier,
+  scheduleFrontierContinuation,
+  takePreferredFrontierWithCount,
+  type QueueEntry,
+} from "./explorer-frontier.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
 import { createVerifiedLocalRestorer } from "./explorer-local-restoration.js";
 import { createExplorerPerformance } from "./explorer-performance.js";
@@ -18,7 +35,11 @@ import {
   OperationDeadlineExceeded,
   runWithOperationDeadline,
 } from "./operation-deadline.js";
-import { createExplorerRestorer, DurationBudgetExceeded, incomplete } from "./explorer-restoration.js";
+import {
+  createExplorerRestorer,
+  DurationBudgetExceeded,
+  incomplete,
+} from "./explorer-restoration.js";
 import { RestorationDiagnosticRecorder } from "./explorer-restoration-diagnostics.js";
 import {
   explorerId as id,
@@ -39,7 +60,14 @@ export async function explore(
   options: ExplorerOptions = {},
 ): Promise<ExplorationResult> {
   const {
-    budgets, actionOrder, replayActions: rootReplayActions, frontierStrategy, restorationMode, allowRootRestorationFallback, refreshVisibleSelfLoops, repetitionCompression,
+    budgets,
+    actionOrder,
+    replayActions: rootReplayActions,
+    frontierStrategy,
+    restorationMode,
+    allowRootRestorationFallback,
+    refreshVisibleSelfLoops,
+    repetitionCompression,
     settling,
     replaySettling,
     monotonicSource,
@@ -81,7 +109,8 @@ export async function explore(
   const focusStates: InternalFocusState[] = [];
   const screenTransitions: ScreenTransition[] = [];
   const focusTransitions: FocusTransition[] = [];
-  const attempts: ExplorationActionAttempt[] = [], restorationDiagnostics = new RestorationDiagnosticRecorder();
+  const attempts: ExplorationActionAttempt[] = [];
+  const restorationDiagnostics = new RestorationDiagnosticRecorder();
   const screenByIdentity = new Map<string, MutableScreenState>();
   const stateByIdentity = new Map<string, InternalFocusState>();
   const repetitionGroups = new Map<string, RepetitionGroup>();
@@ -162,7 +191,9 @@ export async function explore(
         verifiedStateReuses,
         verifiedPathRestorations,
         restorationFallbacks,
-        restorationAttempts: restorationDiagnostics.attempts, restorationSuccesses: restorationDiagnostics.successes, restorationFailures: restorationDiagnostics.failures,
+        restorationAttempts: restorationDiagnostics.attempts,
+        restorationSuccesses: restorationDiagnostics.successes,
+        restorationFailures: restorationDiagnostics.failures,
         restorationCycles: restorationCycleCount(),
         visitedStates: focusStates.length,
         screenStates: screenStates.length,
@@ -202,9 +233,12 @@ export async function explore(
   if (options.shouldExpand !== undefined && typeof options.shouldExpand !== "function") {
     throw new TypeError("shouldExpand must be a function.");
   }
-  const actionHooks = createExplorerActionHooks({ actionOrder,
-    actionsForState: options.actionsForState, onActionObserved: options.onActionObserved,
-    withinDurationBudget });
+  const actionHooks = createExplorerActionHooks({
+    actionOrder,
+    actionsForState: options.actionsForState,
+    onActionObserved: options.onActionObserved,
+    withinDurationBudget,
+  });
 
   let capabilities: ReadonlySet<string>;
   try {
@@ -226,7 +260,10 @@ export async function explore(
     ));
   const restoreInitialSnapshot = options.restoreInitialSnapshot;
   if (restoreInitialState === undefined && restoreInitialSnapshot === undefined) {
-    return finish(incomplete("restoration-unavailable", undefined, { subtype: "strategy-exhausted", rejectionReason: "no-restoration-strategy" }));
+    return finish(incomplete("restoration-unavailable", undefined, {
+      subtype: "strategy-exhausted",
+      rejectionReason: "no-restoration-strategy",
+    }));
   }
 
   const restoreAndCapture = async (signal: AbortSignal): Promise<StateSnapshot> => {
@@ -367,14 +404,17 @@ export async function explore(
       physicalActions += 1;
       replayActions += 1;
     },
-        onSettlingObservation: recordSettlingObservation,
+    onSettlingObservation: recordSettlingObservation,
     onReplayDuration: (durationMs) => {
       phaseTimings.pathReplayMs += durationMs;
     },
-    onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
+    onDiagnostic: (diagnostic) => {
+      restorationDiagnostics.record(diagnostic);
+    },
   });
   const localRestorer = createVerifiedLocalRestorer({
-    enabled: restorationMode !== "root-only", allowPathRestoration: restorationMode === "verified-local",
+    enabled: restorationMode !== "root-only",
+    allowPathRestoration: restorationMode === "verified-local",
     allowRootRestorationFallback,
     refreshVisibleSelfLoops,
     actionOrder,
@@ -391,12 +431,23 @@ export async function explore(
     stateByIdentity,
     monotonicNow,
     durationSince,
-    onReplayAction: () => { physicalActions += 1; replayActions += 1; },
+    onReplayAction: () => {
+      physicalActions += 1;
+      replayActions += 1;
+    },
     onSettlingObservation: recordSettlingObservation,
-    onReplayDuration: (durationMs) => { phaseTimings.pathReplayMs += durationMs; },
-    onStateReuse: () => { verifiedStateReuses += 1; },
-    onPathRestoration: () => { verifiedPathRestorations += 1; },
-    onFallback: () => { restorationFallbacks += 1; },
+    onReplayDuration: (durationMs) => {
+      phaseTimings.pathReplayMs += durationMs;
+    },
+    onStateReuse: () => {
+      verifiedStateReuses += 1;
+    },
+    onPathRestoration: () => {
+      verifiedPathRestorations += 1;
+    },
+    onFallback: () => {
+      restorationFallbacks += 1;
+    },
     onDiagnostic: (diagnostic) => { restorationDiagnostics.record(diagnostic); },
   });
   restorationCycleCount = localRestorer.cycleCount;
@@ -406,7 +457,9 @@ export async function explore(
   let skippedRestoration: ExplorationTermination | null = null;
   exploration: while (frontier.length > 0) {
     const selected = measureSynchronous("graphBookkeepingMs", () => takePreferredFrontierWithCount(
-      frontier, frontierStrategy, actionRank,
+      frontier,
+      frontierStrategy,
+      actionRank,
       restorationMode === "root-only" ? null : localRestorer.liveIdentity(),
     ));
     pendingStates = selected.pendingStates;
@@ -465,7 +518,7 @@ export async function explore(
         withinDurationBudget,
         signalAborted,
         clearLiveState: localRestorer.clearLive,
-    onSettlingObservation: recordSettlingObservation,
+        onSettlingObservation: recordSettlingObservation,
       });
       if (actionExecution.status === "stop") {
         termination = actionExecution.termination;

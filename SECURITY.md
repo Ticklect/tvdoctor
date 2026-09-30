@@ -1,8 +1,8 @@
 # Security policy
 
-TVDoctor launches applications, sends input, reads UI/log observations, and
-writes local evidence. Treat it as a developer tool with access to the target
-and the current user's filesystem—not as a security sandbox.
+TVDoctor can launch apps, send input, read UI and log data, and write evidence
+to disk. Treat it as a developer tool with access to the target and the current
+user's files, not as a security sandbox.
 
 ## Reporting a vulnerability
 

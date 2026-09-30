@@ -10,12 +10,12 @@
   <a href="https://github.com/Ticklect/tvdoctor/releases/tag/v0.1.0"><img alt="0.1.0 public preview" src="https://img.shields.io/badge/0.1.0-public%20preview-FFBE55"></a>
 </p>
 
-TVDoctor explores TV interfaces with the same small remote vocabulary people use—
-Up, Down, Left, Right, Select, and Back—then produces evidence-linked findings and
-deterministic replays that developers can act on.
+TVDoctor tests TV-style interfaces with the same D-pad controls people use:
+Up, Down, Left, Right, Select, and Back. Failures come with screenshots,
+navigation evidence, and replayable steps.
 
-It runs locally: no AI service, cloud account, API key, or telemetry service is
-required.
+It runs locally and does not require an AI service, cloud account, API key, or
+telemetry.
 
 > **v0.1.0 public preview:** TVDoctor is distributed through GitHub Releases,
 > including a Windows install bundle that does not require an npm account.

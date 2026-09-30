@@ -1,7 +1,6 @@
 # Contributing to TVDoctor
 
-Thank you for helping make remote-first application testing more rigorous.
-TVDoctor values small, evidence-backed changes over broad capability claims.
+Keep changes small, scoped, and backed by tests or reproducible evidence.
 
 ## Before opening work
 
