@@ -239,6 +239,12 @@ export interface ExplorerOptions {
    */
   readonly restorationMode?: ExplorationRestorationMode;
   /**
+   * Allow verified-live continuation to reorder queued branches for throughput.
+   * Defaults to false so bounded scans retain the priority traversal order used
+   * by root-only and do not starve other screens to follow a live branch.
+   */
+  readonly opportunisticFrontier?: boolean;
+  /**
    * In verified-local mode, allow an unmatched live state to fall back to a
    * full root restoration. Defaults to true. Android hosts may disable this to
    * avoid force-stopping/relaunching the target during exploration.
@@ -322,9 +328,13 @@ export interface ExplorationStatistics {
   readonly verifiedStateReuses?: number;
   /** Verified local path restorations completed without a root reset. */
   readonly verifiedPathRestorations?: number;
-  /** Local restoration attempts that failed closed and used root replay. */
+  /**
+   * Root replays attempted after a verified live/path mismatch or missing local
+   * route. A missing route is an expected fallback, not a restoration failure.
+   * Unsafe or disabled root replay is excluded from this count.
+   */
   readonly restorationFallbacks?: number;
-  /** Queued-branch restoration strategy attempts, including verified live reuse. */
+  /** Actual restoration strategy attempts; an absent local route is not one. */
   readonly restorationAttempts?: number;
   readonly restorationSuccesses?: number;
   readonly restorationFailures?: number;

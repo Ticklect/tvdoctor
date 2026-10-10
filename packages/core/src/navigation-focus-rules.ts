@@ -16,6 +16,7 @@ import {
   flattenSnapshot,
   focusNode,
   focusedTarget,
+  frontierCoverageComplete,
   geometricCandidates,
   isTvFocusable,
   localCoverage,
@@ -63,6 +64,8 @@ export function addLostFocusFindings(
 
     const sourceElement = metadataForTarget(before);
     const observedScreen = attempt.toScreenStateId ?? attempt.fromScreenStateId;
+    // Losing the actual focus is directly observed, independent of geometry
+    // or whether all other frontier states were expanded.
     const classification = "deterministic";
     add({
       classification,
@@ -129,7 +132,8 @@ export function addSelfLoopFindings(
 
     const sourceElement = metadataForTarget(source);
     const expectedElement = metadataForNode(best.indexed.node);
-    const classification = "deterministic";
+    // The self-loop is observed; the expected destination is a geometric guess.
+    const classification = "heuristic";
     add({
       classification,
       issue: issue(
@@ -137,9 +141,9 @@ export function addSelfLoopFindings(
         classification,
         "medium",
         "Directional action loops on the same control",
-        "Focus remained on the same control even though the pre-action snapshot contained a visible, focusable control in the requested direction.",
+        "Focus remained on the same control. An adjacent visible, focusable control is a plausible directional destination, but its intended key mapping is not known.",
         attempt.fromScreenStateId,
-        `Move toward ${elementLabel(expectedElement) ?? "the visible directional candidate"}.`,
+        `A possible destination is ${elementLabel(expectedElement) ?? "the visible directional candidate"}; the app's intended mapping needs confirmation.`,
         `Focus remained on ${elementLabel(sourceElement) ?? "the source control"}.`,
         {
           fromElement: elementLabel(sourceElement),
@@ -148,7 +152,7 @@ export function addSelfLoopFindings(
           observedElement: elementLabel(sourceElement),
         },
         attempt.actionSequence,
-        `${attempt.key} produced a same-state transition while a visible, focusable geometric candidate was present.`,
+        `Observed ${attempt.key} returning to the same focus state; geometry alone suggests a different possible destination.`,
         attempt.id,
         resetStrategy,
         [{
@@ -314,17 +318,21 @@ export function addUnreachableFindings(
       if (sourceTarget === null) continue;
       const sourceElement = metadataForTarget(sourceTarget);
       const observedElement = metadataForTarget(witness.observed);
-      const classification = "deterministic";
+      // Even complete observed traversal proves only that no focus state reached
+      // this control during the recorded actions. Its intended directional
+      // mapping is a geometric hypothesis, not a deterministic expectation.
+      const classification = "heuristic";
+      const exhaustiveFrontier = frontierCoverageComplete(result);
       add({
         classification,
         issue: issue(
           NAVIGATION_DIAGNOSTIC_RULES.unreachable,
           classification,
           "medium",
-          "Visible interactive control is remote-unreachable",
-          "The control is visible and semantically interactive, but it is not the target of any discovered focus state after the screen was locally expanded for every configured remote action.",
+          "Visible interactive control may be remote-unreachable",
+          "The control is visibly interactive and was not reached by any recorded focus state. The likely directional route is inferred from nearby geometry; local action coverage does not establish the intended mapping.",
           screen.id,
-          `${witness.attempt.key} should reach ${elementLabel(targetElement) ?? "the visible interactive control"}.`,
+          `${witness.attempt.key} may be expected to reach ${elementLabel(targetElement) ?? "the visible interactive control"}; verify the app's intended navigation mapping.`,
           `${witness.attempt.key} moved to ${elementLabel(observedElement) ?? "a different control"}, skipping the candidate.`,
           {
             fromElement: elementLabel(sourceElement),
@@ -333,9 +341,15 @@ export function addUnreachableFindings(
             observedElement: elementLabel(observedElement),
           },
           witness.attempt.actionSequence,
-          `${witness.attempt.key} from ${elementLabel(sourceElement) ?? "the reached sibling"} skipped the aligned candidate and focused ${elementLabel(observedElement) ?? "another control"}; all local states were fully expanded.`,
+          `${witness.attempt.key} visibly focused ${elementLabel(observedElement) ?? "another control"} instead of the geometrically aligned candidate ${elementLabel(targetElement) ?? "nearby"}. All recorded local actions were applied${exhaustiveFrontier ? " with no deferred frontier" : ", but global exploration was deferred or incomplete"}; intended navigation remains unverified.`,
           witness.attempt.id,
           resetStrategy,
+          [{
+            kind: "inference",
+            summary: `Shared parent and aligned geometry suggest ${elementLabel(targetElement) ?? "the visible control"} as a possible destination; observed focus and graph coverage do not prove its expected key mapping.`,
+            source: witness.attempt.id,
+            artifact: null,
+          }],
         ),
         source: actionSource(witness.attempt, "action-attempt", null, true),
         target: diagnosticTarget(

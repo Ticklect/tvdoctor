@@ -1,4 +1,4 @@
-import type { RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
+import type { ActionOutcome, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
 
 import {
   pressAndObserve,
@@ -21,7 +21,7 @@ import {
   type RestoreResult,
 } from "./explorer-restoration.js";
 import {
-  findShortestVerifiedPath,
+  IncrementalVerifiedPathIndex,
   type VerifiedStateEdge,
 } from "./verified-path.js";
 
@@ -68,6 +68,7 @@ export interface VerifiedLocalRestorer {
     entry: QueueEntry,
     expandable: boolean,
     hasPendingWork: boolean,
+    outcome: ActionOutcome,
   ) => Promise<ExplorationTermination | null>;
   readonly recordEdge: (edge: VerifiedStateEdge) => void;
   readonly liveIdentity: () => string | null;
@@ -81,7 +82,7 @@ export function createVerifiedLocalRestorer(
   let trustedLiveSnapshot: StateSnapshot | null = context.initialSnapshot;
   let trustedLiveIdentity: string | null = context.initialIdentity;
   let restorationCycleNumber = 0;
-  const verifiedEdges: VerifiedStateEdge[] = [];
+  const verifiedPaths = new IncrementalVerifiedPathIndex(context.actionOrder);
   const verifiedEdgeKeys = new Set<string>();
 
   const clearLive = (): void => {
@@ -97,7 +98,7 @@ export function createVerifiedLocalRestorer(
     const key = `${edge.fromIdentity}\u001f${edge.key}\u001f${edge.toIdentity}`;
     if (verifiedEdgeKeys.has(key)) return;
     verifiedEdgeKeys.add(key);
-    verifiedEdges.push(edge);
+    verifiedPaths.add(edge);
   };
   const liveIdentity = (): string | null => trustedLiveIdentity;
   const cycleCount = (): number => restorationCycleNumber;
@@ -146,30 +147,135 @@ export function createVerifiedLocalRestorer(
     return result;
   };
 
+  /**
+   * An absent local route is a cache miss, not evidence that restoration failed.
+   * Count a fallback only when a safe root replay is actually attempted, and
+   * honour the no-root policy even after a previously trusted live state drifts.
+   */
+  const fallbackToRoot = async (
+    entry: QueueEntry,
+    cycleNumber: number,
+    attemptedAlternative: boolean,
+  ): Promise<RestoreResult> => {
+    if (!context.allowRootRestorationFallback) {
+      const startedAt = context.monotonicNow();
+      const before = trustedLiveSnapshot === null
+        ? undefined
+        : restorationStateDiagnostic(trustedLiveSnapshot);
+      context.onDiagnostic({
+        restorationCycleNumber: cycleNumber,
+        traversalDepth: entry.state.firstSeenDepth,
+        destinationStateId: entry.state.id,
+        strategy: "root-replay",
+        status: "failed",
+        elapsedMs: context.durationSince(startedAt),
+        actionHistory: entry.sequence,
+        ...(before === undefined ? {} : { before }),
+        expected: restorationStateDiagnostic(entry.state.representativeSnapshot),
+        history: before === undefined ? [] : [before],
+        subtype: "strategy-exhausted",
+        rejectionReason: "root-fallback-disabled",
+      });
+      clearLive();
+      return {
+        status: "skip",
+        termination: incomplete(
+          "restoration-unavailable",
+          "The queued branch could not be restored from the current verified live state without a root relaunch.",
+          { subtype: "strategy-exhausted", rejectionReason: "root-fallback-disabled" },
+        ),
+      };
+    }
+    if (attemptedAlternative
+      && entry.sequence.every((key) => context.rootReplayActions.has(key))) {
+      context.onFallback();
+    }
+    return rootRestore(entry, cycleNumber);
+  };
+
   const restore = async (entry: QueueEntry): Promise<RestoreResult> => {
     const cycleNumber = ++restorationCycleNumber;
     const expected = restorationStateDiagnostic(entry.state.representativeSnapshot);
     if (!context.enabled) return rootRestore(entry, cycleNumber);
     if (trustedLiveSnapshot !== null && trustedLiveIdentity === entry.state.identity) {
       const startedAt = context.monotonicNow();
-      const evidence = restorationStateDiagnostic(
-        trustedLiveSnapshot,
-      );
+      const before = restorationStateDiagnostic(trustedLiveSnapshot);
+      let freshSnapshot: StateSnapshot;
+      try {
+        freshSnapshot = await context.withinDurationBudget(
+          (signal) => context.measuredDriver.snapshot({ signal }),
+        );
+      } catch (error) {
+        const interrupted = context.signalAborted();
+        const timedOut = error instanceof DurationBudgetExceeded;
+        context.onDiagnostic({
+          restorationCycleNumber: cycleNumber,
+          traversalDepth: entry.state.firstSeenDepth,
+          destinationStateId: entry.state.id,
+          strategy: "verified-live-state",
+          status: "failed",
+          elapsedMs: context.durationSince(startedAt),
+          actionHistory: [],
+          before,
+          expected,
+          history: [before],
+          subtype: interrupted ? "interrupted" : timedOut ? "timeout" : "operation-failed",
+          rejectionReason: interrupted ? "interrupted" : timedOut
+            ? "duration-budget-exhausted" : "local-path-action-error",
+        });
+        clearLive();
+        if (interrupted || timedOut) {
+          return {
+            status: "stop",
+            termination: incomplete(
+              interrupted ? "interrupted" : "max-duration",
+              undefined,
+              {
+                subtype: interrupted ? "interrupted" : "timeout",
+                rejectionReason: interrupted ? "interrupted" : "duration-budget-exhausted",
+              },
+            ),
+          };
+        }
+        return fallbackToRoot(entry, cycleNumber, true);
+      }
+      const observed = context.fingerprintSnapshot(freshSnapshot);
+      const after = restorationStateDiagnostic(freshSnapshot, observed);
+      if (observed.stateIdentity === entry.state.identity) {
+        context.onDiagnostic({
+          restorationCycleNumber: cycleNumber,
+          traversalDepth: entry.state.firstSeenDepth,
+          destinationStateId: entry.state.id,
+          strategy: "verified-live-state",
+          status: "success",
+          elapsedMs: context.durationSince(startedAt),
+          actionHistory: [],
+          before,
+          after,
+          expected,
+          history: [before, after],
+        });
+        observeLive(freshSnapshot, observed.stateIdentity);
+        context.onStateReuse();
+        return { status: "ok", snapshot: freshSnapshot };
+      }
       context.onDiagnostic({
         restorationCycleNumber: cycleNumber,
         traversalDepth: entry.state.firstSeenDepth,
         destinationStateId: entry.state.id,
         strategy: "verified-live-state",
-        status: "success",
+        status: "failed",
         elapsedMs: context.durationSince(startedAt),
         actionHistory: [],
-        before: evidence,
-        after: evidence,
+        before,
+        after,
         expected,
-        history: [evidence],
+        history: [before, after],
+        subtype: "navigation-diverged",
+        rejectionReason: "local-path-edge-diverged",
       });
-      context.onStateReuse();
-      return { status: "ok", snapshot: trustedLiveSnapshot };
+      clearLive();
+      return fallbackToRoot(entry, cycleNumber, true);
     }
 
     if (context.allowPathRestoration && trustedLiveIdentity !== null) {
@@ -204,16 +310,19 @@ export function createVerifiedLocalRestorer(
           rejectionReason,
         });
       };
-      const path = findShortestVerifiedPath(
-        verifiedEdges,
-        trustedLiveIdentity,
-        entry.state.identity,
-        context.actionOrder,
-      );
-      if (path === null) {
-        recordLocalFailure("state-not-found", "local-path-not-found");
-      }
-      if (path !== null && path.length > 0) {
+      const path = verifiedPaths.find(trustedLiveIdentity, entry.state.identity);
+      // Prefer local reconstruction only when it cannot consume *more remote
+      // inputs* than the proven root path. Reset latency and keypress cost vary
+      // per device, but spending extra keys can prematurely hit Deep's strict
+      // physical-action budget and lose reachable frontier. If root replay is
+      // unsafe or explicitly disabled, retain the local path as the only route.
+      const rootReplayPermitted = context.allowRootRestorationFallback
+        && entry.sequence.every((key) => context.rootReplayActions.has(key));
+      const worthwhilePath = path !== null && path.length > 0
+        && (!rootReplayPermitted || path.length <= entry.sequence.length);
+      // A disconnected/longer verified path is a route-selection miss, not a
+      // failed restoration. Root reconstruction remains the next strategy.
+      if (worthwhilePath && path !== null) {
         const startedAt = context.monotonicNow();
         let failure: {
           readonly subtype: RestorationFailureSubtype;
@@ -355,40 +464,11 @@ export function createVerifiedLocalRestorer(
           );
         }
         clearLive();
-        context.onFallback();
+        return fallbackToRoot(entry, cycleNumber, true);
       }
+      if (path === null) return fallbackToRoot(entry, cycleNumber, true);
     }
-
-    if (!context.allowRootRestorationFallback) {
-      const startedAt = context.monotonicNow();
-      const before = trustedLiveSnapshot === null
-        ? undefined
-        : restorationStateDiagnostic(trustedLiveSnapshot);
-      context.onDiagnostic({
-        restorationCycleNumber: cycleNumber,
-        traversalDepth: entry.state.firstSeenDepth,
-        destinationStateId: entry.state.id,
-        strategy: "root-replay",
-        status: "failed",
-        elapsedMs: context.durationSince(startedAt),
-        actionHistory: entry.sequence,
-        ...(before === undefined ? {} : { before }),
-        expected,
-        history: before === undefined ? [] : [before],
-        subtype: "strategy-exhausted",
-        rejectionReason: "root-fallback-disabled",
-      });
-      clearLive();
-      return {
-        status: "skip",
-        termination: incomplete(
-          "restoration-unavailable",
-          "The queued branch could not be restored from the current verified live state without a root relaunch.",
-          { subtype: "strategy-exhausted", rejectionReason: "root-fallback-disabled" },
-        ),
-      };
-    }
-    return rootRestore(entry, cycleNumber);
+    return fallbackToRoot(entry, cycleNumber, false);
   };
 
   const observeAfterAction = async (
@@ -397,6 +477,7 @@ export function createVerifiedLocalRestorer(
     entry: QueueEntry,
     expandable: boolean,
     hasPendingWork: boolean,
+    outcome: ActionOutcome,
   ): Promise<ExplorationTermination | null> => {
     if (!expandable) {
       clearLive();
@@ -409,6 +490,9 @@ export function createVerifiedLocalRestorer(
       || !context.refreshVisibleSelfLoops
       || !visibleSelfLoop
       || !hasPendingWork
+      // Unsupported keys were never applied; they cannot create the hidden
+      // action history that requires a fresh root before the next sibling.
+      || outcome === "unsupported"
       || !safelyRefreshable) return null;
     clearLive();
     const refreshed = await rootRestore(entry, ++restorationCycleNumber);

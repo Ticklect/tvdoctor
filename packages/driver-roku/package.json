@@ -1,0 +1,59 @@
+{
+  "name": "@tvdoctor/driver-roku",
+  "version": "0.1.0",
+  "description": "Unvalidated Roku WebDriver adapter for TVDoctor contributor qualification.",
+  "keywords": [
+    "tvdoctor",
+    "roku",
+    "webdriver",
+    "tv",
+    "testing",
+    "remote-control"
+  ],
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/Ticklect/tvdoctor#readme",
+  "bugs": {
+    "url": "https://github.com/Ticklect/tvdoctor/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ticklect/tvdoctor.git",
+    "directory": "packages/driver-roku"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0 <23 || >=24.0.0 <25"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
+    "prepack": "npm run build -- --force"
+  },
+  "dependencies": {
+    "@tvdoctor/protocol": "0.1.0"
+  },
+  "devDependencies": {
+    "@tvdoctor/core": "0.1.0",
+    "@types/node": "26.5.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

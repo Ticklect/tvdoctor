@@ -5,6 +5,10 @@ path before their main remote-control interface appears. `--journey` runs that
 preparation before the selected audit packs and preserves the resulting browser
 storage in every isolated audit and evidence session.
 
+A journey is **preparation**, not a manually authored navigation test. Keep it to
+the minimum deterministic setup needed to reach the surface under test; TVDoctor
+should still discover the application navigation graph itself after preparation.
+
 Create a JSON file that contains only remote keys, environment-variable names,
 and an optional final focus assertion:
 
@@ -28,7 +32,7 @@ Set the values outside the file and run the audit:
 ```sh
 export TVDOCTOR_JOURNEY_EMAIL='tv-test@example.test'
 export TVDOCTOR_JOURNEY_PASSWORD='use-a-secret-store-in-ci'
-npx tvdoctor test https://example.test/tv --journey journey.json
+tvdoctor test https://example.test/tv --journey journey.json
 ```
 
 On PowerShell, set the variables for the current process with
@@ -60,5 +64,5 @@ journey fingerprint, `tvdoctor replay` requires `--journey` and rejects a
 missing or different file before creating a browser driver:
 
 ```sh
-npx tvdoctor replay ISSUE_ID --report Tests/run/report.json --journey journey.json
+tvdoctor replay ISSUE_ID --report Tests/run/report.json --journey journey.json
 ```

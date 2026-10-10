@@ -289,11 +289,23 @@ export async function waitForPageSettle(
         const quiet = now - lastMeaningfulChange >= settleConfiguration.quietWindowMs;
         const noResponseIsStable = now - actionBaseline.capturedAtEpochMs
           >= settleConfiguration.noResponseGraceMs;
+        if (document.readyState === "loading") return false;
+        const regularSettle = quiet && (responded || noResponseIsStable);
+        const ambientSettle = (ambientChurn || postBaselineAmbientChurn)
+          && settleConfiguration.ambientChurnEscape
+          && ambientChurnBoundReached;
+        // Until there is a candidate settle boundary, the expensive DOM/style
+        // and animation scans cannot change the result of this poll.
+        if (!regularSettle && !ambientSettle) return false;
         const busy = Array.from(document.querySelectorAll<HTMLElement>("[aria-busy='true']"))
           .some((element) => {
             const styles = getComputedStyle(element);
             return styles.display !== "none" && styles.visibility !== "hidden";
           });
+        if (busy) return false;
+        // Ambient escape is intentionally allowed despite continuing finite
+        // animations; the canonical post-action snapshot remains the safety gate.
+        if (ambientSettle) return true;
         const finiteAnimationRunning = document.getAnimations().some((animation) => {
           if (animation.playState !== "running") {
             return false;
@@ -302,12 +314,7 @@ export async function waitForPageSettle(
           return iterations !== Infinity;
         });
 
-        return document.readyState !== "loading"
-          && !busy
-          && ((quiet && !finiteAnimationRunning && (responded || noResponseIsStable))
-            || ((ambientChurn || postBaselineAmbientChurn)
-              && settleConfiguration.ambientChurnEscape
-              && ambientChurnBoundReached));
+        return regularSettle && !finiteAnimationRunning;
       },
       {
         actionBaseline: baseline,

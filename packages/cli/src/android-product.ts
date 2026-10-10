@@ -19,12 +19,15 @@ import {
 } from "@tvdoctor/core";
 import {
   AndroidTvDriver,
+  classifyAndroidTvPlatform,
   resolveAdbExecutable,
+  resolveAndroidObserverAsset,
 } from "@tvdoctor/driver-android";
 import type {
   AndroidDeviceMetadata,
   AndroidScreenshotFingerprint,
   AndroidStateSnapshot,
+  AndroidTvPlatform,
   AndroidUiNodeSnapshot,
 } from "@tvdoctor/driver-android";
 import {
@@ -37,12 +40,18 @@ import {
 } from "@tvdoctor/protocol";
 import {
   buildTVDoctorReportV1,
+  highestVerifiedSeverity,
   sanitiseEvidenceJson,
   stableJson,
   type JsonValue,
 } from "@tvdoctor/reporters";
 import { CLI_VERSION } from "./version.js";
 import { reserveAuditOutput } from "./node-audit.js";
+import {
+  NAVIGATION_GRAPH_JSON_PATH,
+  NAVIGATION_GRAPH_MARKDOWN_PATH,
+  writeNavigationGraphArtifacts,
+} from "./navigation-graph-output.js";
 import { writeReportBundle } from "@tvdoctor/reporters";
 import {
   decideAndroidActions,
@@ -556,6 +565,14 @@ export function buildAndroidExplorationEvidence(
   finalTargetValidationError: string | null,
   scanId = "android-scan",
 ): JsonValue {
+  const persistedTermination = {
+    ...result.termination,
+    ...(result.termination.detail === undefined
+      ? {}
+      : {
+          detail: `Android traversal stopped at ${result.termination.reason}; raw device diagnostics were withheld.`,
+        }),
+  };
   const focusStatesById = new Map(result.graph.focus.states.map((state) => [state.id, state]));
   const focusStateIdsByFingerprint = new Map(
     result.graph.focus.states.map((state) => [state.stateFingerprint, state.id]),
@@ -667,10 +684,10 @@ export function buildAndroidExplorationEvidence(
   return JSON.parse(JSON.stringify({
     scanId,
     applicationPackage: targetPackage,
-    termination: result.termination,
+    termination: persistedTermination,
     finalTargetValidation: finalTargetValidationError === null
       ? { status: "verified" }
-      : { status: "failed", detail: finalTargetValidationError },
+      : { status: "failed", detail: "Android final target ownership could not be verified." },
     budgets: result.budgets,
     actionOrder: result.actionOrder,
     statistics: result.statistics,
@@ -768,6 +785,30 @@ export interface ApkInspectionDependencies {
   readonly exists?: (path: string) => Promise<boolean>;
 }
 
+export interface AndroidBuildToolsPreflightResult {
+  readonly available: boolean;
+  readonly path: string | null;
+  readonly detail: string;
+}
+
+export interface AndroidBuildToolsDependencies {
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly exists?: (path: string) => Promise<boolean>;
+}
+
+export interface AndroidObserverPreflightResult {
+  readonly status: "ok" | "unavailable" | "unsupported";
+  readonly detail: string;
+}
+
+export interface AndroidObserverPreflightDependencies {
+  readonly validateObserverAsset?: () => Promise<unknown>;
+  readonly runAdb?: (
+    adbPath: string,
+    arguments_: readonly string[],
+  ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
+}
+
 interface BuildToolsCandidate {
   readonly directory: string;
   readonly name: string;
@@ -796,7 +837,8 @@ function normaliseComponents(values: readonly string[], packageName: string): re
   return [...new Set(values)].map((value) => {
     if (value.startsWith(`${packageName}/`)) return value.slice(packageName.length + 1);
     if (value.startsWith(`${packageName}.`)) return `.${value.slice(packageName.length + 1)}`;
-    return value.startsWith(".") ? value : `.${value}`;
+    if (value.startsWith(".") || value.includes(".")) return value;
+    return `.${value}`;
   });
 }
 
@@ -864,14 +906,12 @@ async function inspectWithAapt(
   const injectedCommands = dependencies.toolCommands;
   const candidates = injectedCommands === undefined ? (() => {
     const environment = dependencies.environment ?? process.env;
-    let sdkRoot = environment["ANDROID_SDK_ROOT"] ?? environment["ANDROID_HOME"];
-    if (sdkRoot === undefined && process.platform === "win32" && environment["LOCALAPPDATA"] !== undefined) {
-      sdkRoot = join(environment["LOCALAPPDATA"], "Android", "Sdk");
-    }
-    if (sdkRoot === undefined || sdkRoot.trim().length === 0) {
-      throw new Error("APK inspection requires ANDROID_SDK_ROOT or ANDROID_HOME.");
-    }
-    return buildToolsCandidates(sdkRoot);
+    const sdkCandidates = androidSdkRoots(environment).flatMap((root) => buildToolsCandidates(root));
+    const pathCandidates = pathBuildToolCandidates(environment).map((path) => ({
+      directory: dirname(path),
+      name: basename(path),
+    }));
+    return [...sdkCandidates, ...pathCandidates];
   })() : injectedCommands.map((path) => ({
     directory: dirname(path),
     name: basename(path),
@@ -974,7 +1014,6 @@ export async function androidPreflight(
   const driver = createDriver({ adbPath });
   try {
     const entries = await driver.listDevices();
-    const onlineEntries = entries.filter((entry) => entry.state === "device");
     const devices: AndroidPreflightDevice[] = [];
     for (const entry of entries) {
       if (entry.state !== "device") {
@@ -1025,12 +1064,16 @@ export async function androidPreflight(
         await metadataDriver.close();
       }
     }
+    const listedOnlineCount = entries.filter((entry) => entry.state === "device").length;
+    const readyDeviceCount = devices.filter((device) => device.online).length;
     return {
       available: true,
       adbPath,
-      message: onlineEntries.length === 0
-        ? "ADB is available, but no online Android devices were found."
-        : `Found ${String(onlineEntries.length)} online Android device${onlineEntries.length === 1 ? "" : "s"}.`,
+      message: readyDeviceCount === 0
+        ? listedOnlineCount > 0
+          ? `ADB found ${String(listedOnlineCount)} online Android device${listedOnlineCount === 1 ? "" : "s"}, but TVDoctor could not read ${listedOnlineCount === 1 ? "its" : "their"} metadata.`
+          : "ADB is available, but no online Android devices were found."
+        : `Found ${String(readyDeviceCount)} online Android device${readyDeviceCount === 1 ? "" : "s"}.`,
       devices,
     };
   } catch (error) {
@@ -1049,13 +1092,21 @@ export interface AndroidScanOptions {
   readonly adbPath?: string;
   readonly serial: string;
   readonly apkPath: string;
+  /** Android-derived TV platform. Fire TV reuses the ADB/observer transport. */
+  readonly platform?: AndroidTvPlatform;
   readonly mode: "quick" | "deep";
   readonly outputPath: string;
+  readonly screenshots?: boolean;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: AndroidScanProgress) => void;
   readonly onSetupScreen?: (
     detection: AndroidSetupDetection,
   ) => Promise<"select-highlighted" | "press-back" | "leave-unchanged">;
+}
+
+/** Public report identity for an Android app. Device serials stay local CLI input. */
+export function androidPublicTargetLocation(packageName: string): string {
+  return `android-app://${packageName}`;
 }
 
 interface AndroidRestorationBenchmarkScanOptions extends AndroidScanOptions {
@@ -1083,6 +1134,7 @@ export interface AndroidScanResult {
   readonly status: "completed" | "partial" | "failed" | "setup-blocker";
   readonly issueCount: number;
   readonly highestSeverity: "critical" | "high" | "medium" | "low" | "info" | null;
+  readonly highestVerifiedSeverity?: "critical" | "high" | "medium" | "low" | "info" | null;
   readonly reportPath: string | null;
   readonly details: readonly string[];
 }
@@ -1138,6 +1190,119 @@ function observedPackage(snapshot: StateSnapshot): string | null {
     return decodeURIComponent(match[1]);
   } catch {
     return match[1];
+  }
+}
+
+function androidSdkRoots(environment: NodeJS.ProcessEnv): readonly string[] {
+  const roots: string[] = [];
+  const declared = environment["ANDROID_SDK_ROOT"] ?? environment["ANDROID_HOME"];
+  if (declared !== undefined && declared.trim().length > 0) roots.push(declared);
+  if (process.platform === "win32" && environment["LOCALAPPDATA"] !== undefined) {
+    roots.push(join(environment["LOCALAPPDATA"], "Android", "Sdk"));
+  }
+  return [...new Set(roots.map((root) => resolve(root)))];
+}
+
+function pathBuildToolCandidates(environment: NodeJS.ProcessEnv): readonly string[] {
+  const rawPath = environment["PATH"] ?? environment["Path"] ?? environment["path"];
+  if (rawPath === undefined) return [];
+  const names = process.platform === "win32" ? ["aapt2.exe", "aapt.exe"] : ["aapt2", "aapt"];
+  return rawPath
+    .split(process.platform === "win32" ? ";" : ":")
+    .map((directory) => directory.trim())
+    .filter((directory) => directory.length > 0)
+    .flatMap((directory) => names.map((name) => join(directory, name)));
+}
+
+async function resolveAndroidBuildTool(
+  dependencies: AndroidBuildToolsDependencies = {},
+): Promise<string | null> {
+  const environment = dependencies.environment ?? process.env;
+  const exists = dependencies.exists ?? pathExists;
+  const sdkCandidates = androidSdkRoots(environment).flatMap((root) => (
+    buildToolsCandidates(root).map((candidate) => join(candidate.directory, candidate.name))
+  ));
+  const candidates = [...sdkCandidates, ...pathBuildToolCandidates(environment)];
+  for (const candidate of [...new Set(candidates)]) {
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+export async function androidBuildToolsPreflight(
+  dependencies: AndroidBuildToolsDependencies = {},
+): Promise<AndroidBuildToolsPreflightResult> {
+  const tool = await resolveAndroidBuildTool(dependencies);
+  if (tool === null) {
+    return {
+      available: false,
+      path: null,
+      detail: "Android SDK build-tools (aapt2/aapt) were not found.",
+    };
+  }
+  return {
+    available: true,
+    path: tool,
+    detail: `${basename(tool)} is available at ${tool}.`,
+  };
+}
+
+export async function androidObserverPreflight(
+  adbPath: string,
+  serial: string,
+  dependencies: AndroidObserverPreflightDependencies = {},
+): Promise<AndroidObserverPreflightResult> {
+  if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(serial)) {
+    return { status: "unsupported", detail: "The Android device serial is invalid." };
+  }
+  const runAdb = dependencies.runAdb ?? (async (command, arguments_) => {
+    const result = await execFileAsync(command, [...arguments_], {
+      timeout: 8_000,
+      maxBuffer: 256 * 1024,
+      windowsHide: true,
+    });
+    return { stdout: result.stdout, stderr: result.stderr };
+  });
+  const runShell = async (arguments_: readonly string[]): Promise<string> => {
+    const result = await runAdb(adbPath, ["-s", serial, ...arguments_]);
+    return `${result.stdout}\n${result.stderr}`.trim();
+  };
+  try {
+    try {
+      await (dependencies.validateObserverAsset ?? resolveAndroidObserverAsset)();
+    } catch {
+      return {
+        status: "unavailable",
+        detail: "The packaged TVDoctor Observer failed integrity validation.",
+      };
+    }
+    const packagePath = await runShell(["shell", "pm", "path", "org.tvdoctor.observer"]);
+    if (!/^package:\/data\/app\//mu.test(packagePath)) {
+      return {
+        status: "unavailable",
+        detail: `TVDoctor Observer is not installed on ${serial}. Start an Android TV scan once to install it, then enable its accessibility access.`,
+      };
+    }
+    const [enabledFlag, enabledServices] = await Promise.all([
+      runShell(["shell", "settings", "get", "secure", "accessibility_enabled"]),
+      runShell(["shell", "settings", "get", "secure", "enabled_accessibility_services"]),
+    ]);
+    const observerEnabled = enabledFlag.trim() === "1"
+      && enabledServices.toLowerCase().includes("org.tvdoctor.observer");
+    return observerEnabled
+      ? {
+          status: "ok",
+          detail: `TVDoctor Observer is installed and accessibility access is enabled on ${serial}.`,
+        }
+      : {
+          status: "unavailable",
+          detail: `TVDoctor Observer is installed on ${serial}, but accessibility access is not enabled. Enable TVDoctor Observer in Android Accessibility settings.`,
+        };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      detail: `Observer readiness could not be checked on ${serial}: ${friendlyDeviceError(error)}`,
+    };
   }
 }
 
@@ -1475,6 +1640,7 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
   let progressTimer: ReturnType<typeof setInterval> | undefined;
   let selectedPackage: string | null = null;
   const driver = new AndroidTvDriver({
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
     ...(options.adbPath === undefined ? {} : { adbPath: options.adbPath }),
     serial: options.serial,
     ...ANDROID_LAUNCH_SETTLING,
@@ -1489,7 +1655,8 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
       ?? apk.leanbackActivity
       ?? apk.launchableActivities.at(0)
       ?? null;
-    await driver.getDeviceMetadata(true);
+    const deviceMetadata = await driver.getDeviceMetadata(true);
+    const platform = classifyAndroidTvPlatform(deviceMetadata, options.platform);
     await driver.install(options.apkPath);
     await driver.launch({
       id: packageName,
@@ -1543,19 +1710,21 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
 
     const outputRoot = resolve(options.outputPath);
     const store = await reserveAuditOutput(options.outputPath);
-    const beforeScreenshotPath = join(outputRoot, "before-screenshot.png");
-    await driver.captureScreenshot(beforeScreenshotPath);
     const runArtifacts: ArtifactDescriptor[] = [];
-    try {
-      runArtifacts.push(await fileArtifact(
-        outputRoot,
-        beforeScreenshotPath,
-        "run:before-screenshot",
-        "report",
-        "image/png",
-      ));
-    } catch {
-      // A screenshot is supplementary evidence and must not invalidate navigation results.
+    if (options.screenshots !== false) {
+      const beforeScreenshotPath = join(outputRoot, "before-screenshot.png");
+      try {
+        await driver.captureScreenshot(beforeScreenshotPath);
+        runArtifacts.push(await fileArtifact(
+          outputRoot,
+          beforeScreenshotPath,
+          "run:before-screenshot",
+          "report",
+          "image/png",
+        ));
+      } catch {
+        // A screenshot is supplementary evidence and must not invalidate navigation results.
+      }
     }
 
     const policyRecorder = createAndroidTraversalPolicyRecorder({
@@ -1604,14 +1773,12 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
       try {
         await restoreAndroidTargetForFinalEvidence(driver, packageName);
         return null;
-      } catch (error) {
-        return (error instanceof Error ? error.message : String(error))
-          .replace(/\s+/gu, " ")
-          .slice(0, 500);
+      } catch {
+        return "Android final target ownership could not be verified.";
       }
     };
     let finalTargetValidationError = await validateFinalTarget();
-    if (finalTargetValidationError === null) try {
+    if (finalTargetValidationError === null && options.screenshots !== false) try {
       const afterScreenshotPath = join(outputRoot, "after-screenshot.png");
       await driver.captureScreenshot(afterScreenshotPath);
       runArtifacts.push(await fileArtifact(
@@ -1662,11 +1829,8 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
         "report",
         "application/json",
       ));
-    } catch (error) {
-      coverageLedgerFailure = (error instanceof Error ? error.message : String(error))
-        .replace(/\s+/gu, " ")
-        .trim()
-        .slice(0, 500) || "Android coverage ledger persistence failed.";
+    } catch {
+      coverageLedgerFailure = "Android coverage ledger could not be safely retained.";
       runArtifacts.push({
         id: "run:android-coverage-ledger",
         kind: "report",
@@ -1703,11 +1867,8 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
         "report",
         "application/json",
       ));
-    } catch (error) {
-      const reason = (error instanceof Error ? error.message : String(error))
-        .replace(/\s+/gu, " ")
-        .trim()
-        .slice(0, 500) || "Android exploration diagnostics persistence failed.";
+    } catch {
+      const reason = "Android exploration diagnostics could not be safely retained.";
       runArtifacts.push({
         id: "run:android-exploration",
         kind: "report",
@@ -1779,13 +1940,14 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
     } catch {
       // Profiling evidence is supplementary and must never rewrite the run verdict.
     }
+    runArtifacts.push(...await writeNavigationGraphArtifacts(store, result, findings));
     const replays = issues.flatMap((issue) => {
       const compiled = compileIssueReplay(issue);
       return compiled.status === "compiled" ? [compiled.plan.replay] : [];
     });
     const report = buildTVDoctorReportV1({
       run: {
-        id: `android-${startedAt.getTime().toString(36)}`,
+        id: runId,
         tvdoctorVersion: CLI_VERSION,
         mode: options.mode,
         status: complete ? "completed" : "partial",
@@ -1795,13 +1957,15 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
       },
       target: {
         name: apk.label ?? apk.packageName,
-        platform: "android-tv",
-        location: options.serial,
+        platform,
+        location: androidPublicTargetLocation(apk.packageName),
         environment: {
           package: apk.packageName,
           version: apk.versionName ?? "unknown",
           architecture: apk.supportedAbis.join(", ") || "unknown",
-          explorer: "experimental Android TV navigation audit",
+          explorer: platform === "fire-tv"
+            ? "experimental Fire TV navigation audit"
+            : "experimental Android TV navigation audit",
           driver: "persistent TVDoctor observer v2",
         },
       },
@@ -1831,30 +1995,60 @@ async function runAndroidScan(options: AndroidScanExecutionOptions): Promise<And
       status: report.run.status,
       issueCount: issues.length,
       highestSeverity: severityOrder.find((severity) => issues.some((issue) => issue.severity === severity)) ?? null,
+      highestVerifiedSeverity: highestVerifiedSeverity(report.issues),
       reportPath: bundle.reportJson.absolutePath,
       details: complete
-        ? ["All reachable navigation work was exhausted."]
+        ? [
+          "All reachable navigation work was exhausted.",
+          `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+          `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+        ]
         : finalTargetValidationError !== null
-          ? [`Final target-window validation failed: ${finalTargetValidationError}`]
+          ? [
+            "Final target-window validation failed; raw device diagnostics were withheld.",
+            `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+            `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+          ]
           : coverageLedger !== null && hasIncompleteSafeCoverage(coverageLedger)
-            ? ["The Android traversal retained incomplete safe coverage; see android-coverage-ledger.json."]
+            ? [
+              "The Android traversal retained incomplete safe coverage; see android-coverage-ledger.json.",
+              `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+              `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+            ]
             : coverageLedgerFailure !== null
-              ? [`Android coverage ledger failed: ${coverageLedgerFailure}`]
+              ? [
+                `Android coverage ledger failed: ${coverageLedgerFailure}`,
+                `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+                `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+              ]
           : result.termination.reason === "interrupted"
-          ? ["The scan was interrupted; completed coverage was retained in this partial report."]
+          ? [
+            "The scan was interrupted; completed coverage was retained in this partial report.",
+            `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+            `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+          ]
         : [
-          `Safety ceiling reached: ${result.termination.reason}. Unexplored work remained.`,
+          exhausted.length > 0
+            ? `Safety ceiling reached: ${result.termination.reason}. Unexplored work remained.`
+            : `Traversal ended before reachable work was exhausted: ${result.termination.reason}.`,
+          ...(result.termination.restorationSubtype === undefined
+            ? []
+            : [`Restoration subtype: ${result.termination.restorationSubtype}.`]),
+          ...(result.termination.restorationRejectionReason === undefined
+            ? []
+            : [`Restoration rejection: ${result.termination.restorationRejectionReason}.`]),
           ...(result.termination.detail === undefined ? [] : [result.termination.detail]),
+          `Navigation graph JSON: ${join(outputRoot, NAVIGATION_GRAPH_JSON_PATH)}`,
+          `Navigation graph: ${join(outputRoot, NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
         ],
     };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+  } catch {
     return {
       status: "failed",
       issueCount: 0,
       highestSeverity: null,
       reportPath: null,
-      details: [reason],
+      details: ["Android audit failed before a trustworthy report could be produced; raw device diagnostics were withheld."],
     };
   } finally {
     if (progressTimer !== undefined) clearInterval(progressTimer);

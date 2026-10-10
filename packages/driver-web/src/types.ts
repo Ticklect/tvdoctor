@@ -25,6 +25,8 @@ export interface PlaywrightWebDriverOptions {
   readonly artifactsDirectory?: string;
   readonly browserLaunchOptions?: LaunchOptions;
   readonly contextOptions?: BrowserContextOptions;
+  /** Optional browser-context video directory. Recording is disabled when omitted. */
+  readonly recordVideoDirectory?: string;
   readonly headless?: boolean;
   readonly maxLogEntries?: number;
   /** Maximum DOM depth inspected while constructing a UI snapshot. */

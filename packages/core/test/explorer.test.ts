@@ -466,8 +466,8 @@ describe("bounded deterministic explorer", () => {
 
     expect(result.termination.reason).toBe("max-states");
     expect(result.termination.complete).toBe(false);
-    expect(result.termination.remainingFrontierEntries ?? 0).toBe(0);
-    expect(result.termination.remainingCandidateActions ?? 0).toBe(0);
+    expect(result.termination.remainingFrontierEntries).toBe(1);
+    expect(result.termination.remainingCandidateActions).toBe(1);
   });
 
   it.each([
@@ -496,7 +496,13 @@ describe("bounded deterministic explorer", () => {
       monotonicNow: () => 0,
     });
 
-    expect(result.termination).toEqual({ reason, complete: false });
+    expect(result.termination).toMatchObject({ reason, complete: false });
+    if (reason === "max-actions") {
+      expect(result.termination).toMatchObject({
+        remainingFrontierEntries: 1,
+        remainingCandidateActions: 1,
+      });
+    }
     expect(result.statistics).toMatchObject(expected);
     expect(result.graph.focus.states.map((state) => state.discoveredBy)).toEqual([
       [],
@@ -727,6 +733,26 @@ describe("bounded deterministic explorer", () => {
     expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(1);
   });
 
+  it("reports sibling actions left inside the active state when the action budget runs out", async () => {
+    const driver = new MachineDriver(
+      "root",
+      { root: { screen: "home", focus: "root" } },
+      { root: { UP: "root", DOWN: "root", LEFT: "root", RIGHT: "root" } },
+    );
+    const result = await explore(driver, {
+      actions: ["UP", "DOWN", "LEFT", "RIGHT"],
+      budgets: { maxActions: 2, maxStates: 10, maxDepth: 3, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+    expect(result.termination).toMatchObject({
+      reason: "max-actions",
+      complete: false,
+      remainingFrontierEntries: 1,
+      remainingCandidateActions: 2,
+    });
+    expect(result.statistics.physicalActions).toBe(2);
+  });
+
   it("can benchmark traversal without reconstructing abandoned branches", async () => {
     const states = {
       A: { screen: "home", focus: "A" },
@@ -789,9 +815,9 @@ describe("bounded deterministic explorer", () => {
     expect(result.statistics.resetCount).toBe(1);
     expect(result.statistics.replayRestorations).toBe(0);
     expect(result.statistics).toMatchObject({
-      restorationAttempts: 4,
+      restorationAttempts: 3,
       restorationSuccesses: 1,
-      restorationFailures: 3,
+      restorationFailures: 2,
     });
     expect(result.restorationDiagnostics).toEqual([
       expect.objectContaining({
@@ -806,16 +832,6 @@ describe("bounded deterministic explorer", () => {
         attemptNumber: 2,
         retryNumber: 0,
         destinationStateId: "focus-0001",
-        strategy: "verified-local-path",
-        status: "failed",
-        actionHistory: [],
-        subtype: "state-not-found",
-        rejectionReason: "local-path-not-found",
-      }),
-      expect.objectContaining({
-        attemptNumber: 3,
-        retryNumber: 0,
-        destinationStateId: "focus-0001",
         strategy: "root-replay",
         status: "failed",
         actionHistory: [],
@@ -823,7 +839,7 @@ describe("bounded deterministic explorer", () => {
         rejectionReason: "root-fallback-disabled",
       }),
       expect.objectContaining({
-        attemptNumber: 4,
+        attemptNumber: 3,
         retryNumber: 0,
         destinationStateId: "focus-0002",
         strategy: "root-replay",
@@ -841,9 +857,7 @@ describe("bounded deterministic explorer", () => {
         location: expect.any(String),
         focusIdentity: "b|button",
       },
-      after: {
-        stateFingerprint: expect.stringMatching(/^state-/u),
-      },
+      expected: { stateFingerprint: expect.stringMatching(/^state-/u) },
       history: [expect.objectContaining({ stateFingerprint: expect.stringMatching(/^state-/u) })],
       elapsedMs: 0,
     });
@@ -921,7 +935,7 @@ describe("bounded deterministic explorer", () => {
 
     expect(result.termination.complete).toBe(true);
     expect(result.statistics.verifiedPathRestorations).toBe(1);
-    expect(result.statistics.restorationFallbacks).toBe(0);
+    expect(result.statistics.restorationFallbacks).toBe(1);
     expect(result.statistics.resetCount).toBe(4);
     expect(result.statistics.physicalActions).toBe(6);
   });
@@ -963,7 +977,10 @@ describe("bounded deterministic explorer", () => {
     ]));
     expect(result.statistics.restorationAttempts).toBeGreaterThan(7);
     expect(result.statistics.restorationSuccesses).toBeGreaterThan(0);
-    expect(result.statistics.restorationFailures).toBeGreaterThan(0);
+    // A missing local path is expected cache miss; root reconstruction
+    // succeeds, so there is no failed restoration strategy to report.
+    expect(result.statistics.restorationFailures).toBe(0);
+    expect(result.statistics.restorationFallbacks).toBeGreaterThan(0);
     expect(result.restorationDiagnostics?.some((diagnostic) => (
       diagnostic.strategy === "root-replay" && diagnostic.status === "success"
     ))).toBe(true);
@@ -973,7 +990,7 @@ describe("bounded deterministic explorer", () => {
     ))).toBe(true);
   });
 
-  it("falls back once to root replay when a verified local path no longer matches", async () => {
+  it("retains local-path divergence evidence and counts all permitted root fallbacks", async () => {
     const driver = new FlakyLocalPathDriver();
     const result = await explore(driver, {
       actions: ["RIGHT", "UP"],
@@ -983,7 +1000,12 @@ describe("bounded deterministic explorer", () => {
     });
 
     expect(result.termination.complete).toBe(true);
-    expect(result.statistics.restorationFallbacks).toBe(1);
+    expect(result.statistics.restorationFallbacks).toBe(2);
+    expect(result.restorationDiagnostics?.some((entry) => (
+      entry.strategy === "verified-local-path"
+      && entry.status === "failed"
+      && entry.rejectionReason === "local-path-edge-diverged"
+    ))).toBe(true);
     expect(result.statistics.verifiedPathRestorations).toBe(0);
     expect(driver.eventLog.filter((event) => event === "reset")).toHaveLength(5);
     expect(result.graph.focus.states.some((state) => state.representativeSnapshot.focusedElement.status === "available"
@@ -1016,6 +1038,7 @@ describe("bounded deterministic explorer", () => {
       actions: ["RIGHT", "SELECT"],
       replayActions: ["RIGHT"],
       restorationMode: "verified-local",
+      opportunisticFrontier: true,
       frontierStrategy: "priority",
       budgets: { maxActions: 40, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
       monotonicNow: () => 0,

@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/cli" },
     { "path": "./packages/core" },
+    { "path": "./packages/driver-roku" },
     { "path": "./packages/driver-web" },
     { "path": "./packages/protocol" },
     { "path": "./packages/pack-streaming" },

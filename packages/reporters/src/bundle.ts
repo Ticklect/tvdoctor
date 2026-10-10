@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
 import type { TVDoctorReportV1 } from "@tvdoctor/protocol";
-import type { ArtifactStore } from "./artifact-store.js";
+import { assertPortableRelativePath, type ArtifactStore } from "./artifact-store.js";
 import { renderAiCoderReport } from "./render-ai.js";
 import { renderCiSummary, renderJunitReport, type CiFailureThreshold } from "./render-ci.js";
-import { renderReportHtml } from "./render-html.js";
+import { renderReportHtml, type ReportHtmlSidecarLink } from "./render-html.js";
 import { renderReportMarkdown } from "./render-markdown.js";
 import { renderReportJson, sanitiseReportForOutput } from "./report-builder.js";
 
@@ -27,6 +27,8 @@ export interface ReportBundle {
 
 export interface ReportBundleOptions {
   readonly ci?: { readonly failOn: CiFailureThreshold };
+  /** Optional local files linked only from this HTML render, never canonical report JSON. */
+  readonly htmlSidecars?: readonly ReportHtmlSidecarLink[];
 }
 
 interface PendingBundleFile {
@@ -57,6 +59,7 @@ export async function writeReportBundle(
   options: ReportBundleOptions = {},
 ): Promise<ReportBundle> {
   const safe = sanitiseReportForOutput(report);
+  for (const sidecar of options.htmlSidecars ?? []) assertPortableRelativePath(sidecar.href);
   // Do not publish a report which advertises missing, redirected, or mutated
   // evidence. This check intentionally happens before the first derivative is
   // written so report.json can never bless an unverifiable artifact inventory.
@@ -67,7 +70,10 @@ export async function writeReportBundle(
   const html = await writeOutput(store, {
     relativePath: "report.html",
     mediaType: "text/html",
-    content: renderReportHtml(safe),
+    content: renderReportHtml(
+      safe,
+      options.htmlSidecars === undefined ? {} : { sidecars: options.htmlSidecars },
+    ),
   });
   const markdown = await writeOutput(store, {
     relativePath: "exports/portable-summary.md",

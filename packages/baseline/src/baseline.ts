@@ -71,11 +71,7 @@ function text(value: unknown, path: string, maximum = TEXT_LIMIT): string {
   return value;
 }
 
-function nullableText(value: unknown, path: string): string | null {
-  return value === null ? null : text(value, path);
-}
-
-function sanitiseUntrustedText(value: string, maximum = TEXT_LIMIT): string {
+export function sanitiseUntrustedText(value: string, maximum = TEXT_LIMIT): string {
   const withoutTerminalSequences = value
     // These patterns intentionally name terminal control bytes so hostile
     // labels cannot alter CI output or a rendered baseline diff.
@@ -90,16 +86,18 @@ function sanitiseUntrustedText(value: string, maximum = TEXT_LIMIT): string {
     })
     .join("")
     .replace(BIDI_FORMAT_CONTROLS, "")
-    .replace(/https?:\/\/[^\s<>"']+/giu, (candidate) => {
+    .replace(/[A-Za-z][A-Za-z0-9+.-]{1,31}:\/\/[^\s<>"']+/gu, (match) => {
+      const trailing = match.match(/[),.;!?\]}]+$/u)?.[0] ?? "";
+      const candidate = trailing.length === 0 ? match : match.slice(0, -trailing.length);
       try {
         const url = new URL(candidate);
         url.username = "";
         url.password = "";
         url.search = "";
         url.hash = "";
-        return url.toString();
+        return `${url.toString()}${trailing}`;
       } catch {
-        return candidate;
+        return match;
       }
     })
     .replace(
@@ -109,7 +107,7 @@ function sanitiseUntrustedText(value: string, maximum = TEXT_LIMIT): string {
     .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
     .replace(/\bBasic\s+[A-Za-z0-9+/_=.:-]+/giu, "Basic [REDACTED]")
     .replace(
-      /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|authorization|cookie|password|passwd|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
+      /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|access[-_ ]?key[-_ ]?id|secret[-_ ]?access[-_ ]?key|authorization|cookie|credentials?|database[-_ ]?url|github[-_ ]?pat|gitlab[-_ ]?pat|pat|password|passwd|private[-_ ]?key|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
       (_match, quote: string, key: string, separator: string) => `${quote}${key}${quote}${separator}${quote}[REDACTED]${quote}`,
     );
   return Array.from(printable).slice(0, maximum).join("").trim();
@@ -122,6 +120,16 @@ function untrustedText(value: unknown, path: string, maximum = TEXT_LIMIT): stri
 
 function nullableUntrustedText(value: unknown, path: string): string | null {
   return value === null ? null : untrustedText(value, path);
+}
+
+function sanitiseRenderableValue(value: unknown): unknown {
+  if (typeof value === "string") return sanitiseUntrustedText(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitiseRenderableValue(entry));
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value as Readonly<Record<string, unknown>>)
+      .map(([key, entry]) => [key, sanitiseRenderableValue(entry)]),
+  );
 }
 
 function finiteNonNegative(value: unknown, path: string): number {
@@ -165,7 +173,7 @@ function canonicalJson(value: unknown): string {
 function parseScreen(value: unknown, path: string): BaselineScreenObservation {
   const item = exact(value, path, ["key", "label"]);
   return {
-    key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
+    key: untrustedText(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
     label: nullableUntrustedText(item["label"], `${path}.label`),
   };
 }
@@ -173,8 +181,8 @@ function parseScreen(value: unknown, path: string): BaselineScreenObservation {
 function parseFocus(value: unknown, path: string): BaselineFocusObservation {
   const item = exact(value, path, ["key", "screenKey", "role", "name"]);
   return {
-    key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
-    screenKey: text(item["screenKey"], `${path}.screenKey`, IDENTIFIER_LIMIT),
+    key: untrustedText(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
+    screenKey: untrustedText(item["screenKey"], `${path}.screenKey`, IDENTIFIER_LIMIT),
     role: nullableUntrustedText(item["role"], `${path}.role`),
     name: nullableUntrustedText(item["name"], `${path}.name`),
   };
@@ -192,19 +200,19 @@ function parseTransition(value: unknown, path: string): BaselineTransitionObserv
   const action = text(item["action"], `${path}.action`, 16);
   if (!REMOTE_KEY_SET.has(action)) throw new TypeError(`${path}.action is not a remote key.`);
   return {
-    key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
-    fromScreenKey: text(item["fromScreenKey"], `${path}.fromScreenKey`, IDENTIFIER_LIMIT),
-    fromFocusKey: nullableText(item["fromFocusKey"], `${path}.fromFocusKey`),
+    key: untrustedText(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
+    fromScreenKey: untrustedText(item["fromScreenKey"], `${path}.fromScreenKey`, IDENTIFIER_LIMIT),
+    fromFocusKey: nullableUntrustedText(item["fromFocusKey"], `${path}.fromFocusKey`),
     action: action as RemoteKey,
-    toScreenKey: text(item["toScreenKey"], `${path}.toScreenKey`, IDENTIFIER_LIMIT),
-    toFocusKey: nullableText(item["toFocusKey"], `${path}.toFocusKey`),
+    toScreenKey: untrustedText(item["toScreenKey"], `${path}.toScreenKey`, IDENTIFIER_LIMIT),
+    toFocusKey: nullableUntrustedText(item["toFocusKey"], `${path}.toFocusKey`),
   };
 }
 
 function parseLatency(value: unknown, path: string): BaselineLatencyObservation {
   const item = exact(value, path, ["key", "operation", "measuredMs"]);
   return {
-    key: text(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
+    key: untrustedText(item["key"], `${path}.key`, IDENTIFIER_LIMIT),
     operation: untrustedText(item["operation"], `${path}.operation`),
     measuredMs: finiteNonNegative(item["measuredMs"], `${path}.measuredMs`),
   };
@@ -237,14 +245,28 @@ function parseInventory(
   uniqueBy(screens, (entry) => entry.key, `${path}.screens`);
   uniqueBy(focusTargets, (entry) => `${entry.screenKey}\u001f${entry.key}`, `${path}.focusTargets`);
   uniqueBy(transitions, (entry) => entry.key, `${path}.transitions`);
+  uniqueBy(
+    transitions,
+    (entry) => JSON.stringify([entry.fromScreenKey, entry.fromFocusKey, entry.action]),
+    `${path}.transitions by source/action`,
+  );
   uniqueBy(latencies, (entry) => entry.key, `${path}.latencies`);
   const screenKeys = new Set(screens.map((entry) => entry.key));
+  const focusKeys = new Set(focusTargets.map((entry) => `${entry.screenKey}\u001f${entry.key}`));
   for (const focus of focusTargets) {
     if (!screenKeys.has(focus.screenKey)) throw new TypeError(`${path}.focusTargets references an unknown screen.`);
   }
   for (const transition of transitions) {
     if (!screenKeys.has(transition.fromScreenKey) || !screenKeys.has(transition.toScreenKey)) {
       throw new TypeError(`${path}.transitions references an unknown screen.`);
+    }
+    if (transition.fromFocusKey !== null
+      && !focusKeys.has(`${transition.fromScreenKey}\u001f${transition.fromFocusKey}`)) {
+      throw new TypeError(`${path}.transitions references an unknown source focus target.`);
+    }
+    if (transition.toFocusKey !== null
+      && !focusKeys.has(`${transition.toScreenKey}\u001f${transition.toFocusKey}`)) {
+      throw new TypeError(`${path}.transitions references an unknown destination focus target.`);
     }
   }
   return { status: item["status"], screens, focusTargets, transitions, latencies };
@@ -257,9 +279,9 @@ function parseIssue(value: unknown, path: string): BaselineIssueObservation {
   if (!SEVERITIES.has(severity)) throw new TypeError(`${path}.severity is invalid.`);
   if (!CONFIDENCES.has(confidence)) throw new TypeError(`${path}.confidence is invalid.`);
   return {
-    id: text(item["id"], `${path}.id`, IDENTIFIER_LIMIT),
-    rule: text(item["rule"], `${path}.rule`, IDENTIFIER_LIMIT),
-    pack: text(item["pack"], `${path}.pack`, IDENTIFIER_LIMIT),
+    id: untrustedText(item["id"], `${path}.id`, IDENTIFIER_LIMIT),
+    rule: untrustedText(item["rule"], `${path}.rule`, IDENTIFIER_LIMIT),
+    pack: untrustedText(item["pack"], `${path}.pack`, IDENTIFIER_LIMIT),
     severity: severity as IssueSeverity,
     confidence: confidence as IssueConfidence,
   };
@@ -308,7 +330,7 @@ export function parseBaseline(value: unknown): TVDoctorBaselineV1 {
     throw new TypeError("$baseline.observability.capabilities contains an invalid capability.");
   }
   const completedPacks = array(observability["completedPacks"], "$baseline.observability.completedPacks")
-    .map((entry, index) => text(entry, `$baseline.observability.completedPacks[${String(index)}]`, IDENTIFIER_LIMIT));
+    .map((entry, index) => untrustedText(entry, `$baseline.observability.completedPacks[${String(index)}]`, IDENTIFIER_LIMIT));
   uniqueBy(capabilities, (entry) => entry, "$baseline.observability.capabilities");
   uniqueBy(completedPacks, (entry) => entry, "$baseline.observability.completedPacks");
   const issues = array(root["issues"], "$baseline.issues").map((entry, index) => (
@@ -320,12 +342,12 @@ export function parseBaseline(value: unknown): TVDoctorBaselineV1 {
   return {
     schemaVersion: BASELINE_SCHEMA_VERSION_V1,
     createdAt: parseDate(root["createdAt"], "$baseline.createdAt"),
-    tvdoctorVersion: text(root["tvdoctorVersion"], "$baseline.tvdoctorVersion", IDENTIFIER_LIMIT),
-    targetId: text(root["targetId"], "$baseline.targetId", IDENTIFIER_LIMIT),
-    platform: text(root["platform"], "$baseline.platform", IDENTIFIER_LIMIT),
+    tvdoctorVersion: untrustedText(root["tvdoctorVersion"], "$baseline.tvdoctorVersion", IDENTIFIER_LIMIT),
+    targetId: untrustedText(root["targetId"], "$baseline.targetId", IDENTIFIER_LIMIT),
+    platform: untrustedText(root["platform"], "$baseline.platform", IDENTIFIER_LIMIT),
     source: {
       reportSchemaVersion: "tvdoctor.report/v1",
-      runId: text(source["runId"], "$baseline.source.runId", IDENTIFIER_LIMIT),
+      runId: untrustedText(source["runId"], "$baseline.source.runId", IDENTIFIER_LIMIT),
       runMode: source["runMode"],
     },
     observability: {
@@ -339,7 +361,7 @@ export function parseBaseline(value: unknown): TVDoctorBaselineV1 {
 }
 
 export function defaultTargetId(platform: string, location: string): string {
-  const safePlatform = text(platform, "platform", IDENTIFIER_LIMIT);
+  const safePlatform = untrustedText(platform, "platform", IDENTIFIER_LIMIT);
   if (safePlatform === "web") {
     try {
       const url = new URL(location);
@@ -411,6 +433,7 @@ function emptyChanges(): BaselineComparisonChanges {
   return {
     newIssues: [],
     resolvedIssues: [],
+    unchangedIssues: [],
     screensAdded: [],
     screensRemoved: [],
     focusAdded: [],
@@ -499,7 +522,7 @@ export function compareBaseline(
     ? defaultTargetId(report.target.platform, report.target.location)
     : (() => {
         try {
-          return text(options.targetId, "targetId", IDENTIFIER_LIMIT);
+          return untrustedText(options.targetId, "targetId", IDENTIFIER_LIMIT);
         } catch (error) {
           return `invalid:${error instanceof Error ? error.message : String(error)}`;
         }
@@ -539,14 +562,16 @@ export function compareBaseline(
   }
   if (blockers.length > 0) return failedClosed(baseline.source.runId, report.run.id, blockers);
 
-  const currentIssues: BaselineIssueObservation[] = report.issues.map((issue) => ({
+  const currentIssues: BaselineIssueObservation[] = report.issues.map((issue, index) => parseIssue({
     id: issue.id,
     rule: issue.rule,
     pack: issue.pack,
     severity: issue.severity,
     confidence: issue.confidence,
-  }));
+  }, `$currentReport.issues[${String(index)}]`));
   const issueDifference = difference(baseline.issues, currentIssues, (entry) => `${entry.rule}\u001f${entry.id}`);
+  const baselineIssueKeys = new Set(baseline.issues.map((entry) => `${entry.rule}\u001f${entry.id}`));
+  const unchangedIssues = currentIssues.filter((entry) => baselineIssueKeys.has(`${entry.rule}\u001f${entry.id}`));
   const screenDifference = difference(baseline.inventory.screens, inventory.screens, (entry) => entry.key);
   const focusDifference = difference(
     baseline.inventory.focusTargets,
@@ -588,6 +613,7 @@ export function compareBaseline(
   const changes: BaselineComparisonChanges = {
     newIssues: [...issueDifference.added].sort((left, right) => compareText(left.id, right.id)),
     resolvedIssues: [...issueDifference.removed].sort((left, right) => compareText(left.id, right.id)),
+    unchangedIssues: [...unchangedIssues].sort((left, right) => compareText(left.id, right.id)),
     screensAdded: [...screenDifference.added].sort((left, right) => compareText(left.key, right.key)),
     screensRemoved: [...screenDifference.removed].sort((left, right) => compareText(left.key, right.key)),
     focusAdded: [...focusDifference.added].sort((left, right) => compareText(left.key, right.key)),
@@ -603,7 +629,16 @@ export function compareBaseline(
     || changes.transitionsRemoved.length > 0
     || changes.transitionsChanged.length > 0
     || changes.latencyRegressions.length > 0;
-  const changed = Object.values(changes).some((entries) => entries.length > 0);
+  const changed = changes.newIssues.length > 0
+    || changes.resolvedIssues.length > 0
+    || changes.screensAdded.length > 0
+    || changes.screensRemoved.length > 0
+    || changes.focusAdded.length > 0
+    || changes.focusRemoved.length > 0
+    || changes.transitionsAdded.length > 0
+    || changes.transitionsRemoved.length > 0
+    || changes.transitionsChanged.length > 0
+    || changes.latencyRegressions.length > 0;
   return {
     schemaVersion: COMPARISON_SCHEMA_VERSION_V1,
     baselineRunId: baseline.source.runId,
@@ -620,5 +655,5 @@ export function renderBaselineJson(baseline: TVDoctorBaselineV1): string {
 }
 
 export function renderComparisonJson(comparison: TVDoctorBaselineComparisonV1): string {
-  return canonicalJson(comparison);
+  return canonicalJson(sanitiseRenderableValue(comparison));
 }

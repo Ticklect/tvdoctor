@@ -4,6 +4,7 @@ import {
   link,
   lstat,
   mkdir,
+  open,
   readFile,
   realpath,
   rename,
@@ -62,6 +63,12 @@ export interface IssueEvidenceSlotDetails {
   readonly extension: string;
   readonly kind: ArtifactKind;
   readonly mediaType: string;
+}
+
+export interface StreamedBundleFile {
+  readonly absolutePath: string;
+  readonly byteLength: number;
+  readonly sha256: string;
 }
 
 const SAFE_PATH_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
@@ -244,6 +251,39 @@ export class ArtifactStore {
     return resolve(this.#outputRoot, ...relativePath.split("/"));
   }
 
+  /** Commit an iterable as a single complete file without retaining all bytes in memory. */
+  async writeBundleFileStream(
+    relativePath: string,
+    chunks: Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array>,
+  ): Promise<StreamedBundleFile> {
+    const digest = createHash("sha256");
+    let byteLength = 0;
+    await this.#atomicWriteUsing(relativePath, async (temporaryPath) => {
+      const file = await open(temporaryPath, "wx");
+      try {
+        for await (const chunk of chunks) {
+          const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+          if (bytes.byteLength === 0) continue;
+          let offset = 0;
+          while (offset < bytes.byteLength) {
+            const { bytesWritten } = await file.write(bytes, offset, bytes.byteLength - offset);
+            if (bytesWritten === 0) throw new Error("Streaming artifact write made no progress.");
+            offset += bytesWritten;
+          }
+          digest.update(bytes);
+          byteLength += bytes.byteLength;
+        }
+      } finally {
+        await file.close();
+      }
+    });
+    return {
+      absolutePath: resolve(this.#outputRoot, ...relativePath.split("/")),
+      byteLength,
+      sha256: digest.digest("hex"),
+    };
+  }
+
   /**
    * In overwrite mode, remove the old canonical completeness marker before
    * replacing any derivative. A failed refresh can then leave an incomplete
@@ -334,6 +374,15 @@ export class ArtifactStore {
   }
 
   async #atomicWrite(relativePath: string, data: Uint8Array | string): Promise<void> {
+    await this.#atomicWriteUsing(relativePath, async (temporaryPath) => {
+      await writeFile(temporaryPath, data, { flag: "wx" });
+    });
+  }
+
+  async #atomicWriteUsing(
+    relativePath: string,
+    writeTemporary: (temporaryPath: string) => Promise<void>,
+  ): Promise<void> {
     assertPortableRelativePath(relativePath);
     const absolutePath = resolve(this.#outputRoot, ...relativePath.split("/"));
     if (!isContained(this.#outputRoot, absolutePath)) {
@@ -353,7 +402,7 @@ export class ArtifactStore {
     this.#temporarySequence += 1;
     const temporaryPath = `${absolutePath}.${String(process.pid)}.${String(this.#temporarySequence)}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporaryPath, data, { flag: "wx" });
+      await writeTemporary(temporaryPath);
       if (this.#overwrite) {
         await rename(temporaryPath, absolutePath);
       } else {

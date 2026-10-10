@@ -666,7 +666,7 @@ async function assertIssueArtifactCoverage(
   }
 }
 
-test("M5 detects, reports, inspects, and reliably replays three deterministic fixture failures", async ({
+test("M5 preserves three findings with honest confidence and deterministic replay safeguards", async ({
   baseURL,
   page,
 }, testInfo) => {
@@ -716,8 +716,11 @@ test("M5 detects, reports, inspects, and reliably replays three deterministic fi
       screen: "Player > Settings > Captions > Appearance",
     },
   ] satisfies readonly TVDoctorIssue[];
-  for (const issue of rawIssues) {
-    expect(issue.confidence, issue.id).toBe("deterministic");
+  for (const [index, issue] of rawIssues.entries()) {
+    // Reachability based on inferred directional adjacency remains heuristic,
+    // even when this fixture's seeded oracle knows which targets are broken.
+    // Only the directly observed incorrect BACK transition is deterministic.
+    expect(issue.confidence, issue.id).toBe(index === 1 ? "deterministic" : "heuristic");
     expect(issue.reproduction.status, issue.id).toBe("available");
     expect(issue.transition?.expectedElement, issue.id).not.toBeNull();
   }
@@ -838,7 +841,8 @@ test("M5 detects, reports, inspects, and reliably replays three deterministic fi
       }, true);
     });
     const fixed = await executeReplay(fixedDriver, captionPlan);
-    expect(fixed.status).toBe("fixed");
+    expect(fixed.status).toBe("inconclusive");
+    expect(fixed.reason?.code).toBe("best-effort-cannot-prove-fixed");
   } finally {
     await fixedDriver.close();
   }
@@ -874,11 +878,17 @@ test("M5 detects, reports, inspects, and reliably replays three deterministic fi
       "--target",
       fixtureUrl,
     ]);
-    expect(cli.code, issue.id).toBe(1);
-    expect(cli.stderr, issue.id).toBe("");
-    expect(cli.stdout, issue.id).toContain("Issue reproduced.");
-    expect(cli.stdout, issue.id).toContain("Checkpoint PASS");
-    expect(cli.stdout, issue.id).toContain("dispatch PASS");
+    if (issue.confidence === "deterministic") {
+      expect(cli.code, issue.id).toBe(1);
+      expect(cli.stderr, issue.id).toBe("");
+      expect(cli.stdout, issue.id).toContain("Issue reproduced.");
+      expect(cli.stdout, issue.id).toContain("Checkpoint PASS");
+      expect(cli.stdout, issue.id).toContain("dispatch PASS");
+    } else {
+      expect(cli.code, issue.id).not.toBe(1);
+      expect(cli.stdout, issue.id).toContain("Status: ERROR");
+      expect(cli.stderr, issue.id).toContain("CLI replay supports only deterministic issues");
+    }
   }
 
   const reportConsoleErrors: string[] = [];
@@ -899,7 +909,9 @@ test("M5 detects, reports, inspects, and reliably replays three deterministic fi
     await expect(issuePanel, issue.id).toContainText(issue.title);
     await expect(issuePanel, issue.id).toContainText(issue.expected);
     await expect(issuePanel, issue.id).toContainText(issue.observed);
-    await expect(issuePanel, issue.id).toContainText(`tvdoctor replay ${issue.id}`);
+    await expect(issuePanel, issue.id).toContainText(issue.confidence === "deterministic"
+      ? `tvdoctor replay ${issue.id}`
+      : "Deterministic replay required.");
     await expect(issuePanel.locator("img"), `${issue.id} screenshot pair`).toHaveCount(2);
   }
   await expect(page.locator("img")).toHaveCount(6);
@@ -931,12 +943,16 @@ test("M5 detects, reports, inspects, and reliably replays three deterministic fi
   for (const issue of parsed.issues) {
     expect(markdown).toContain(issue.id);
     expect(aiMarkdown).toContain(issue.id);
-    expect(aiMarkdown).toContain(`# TVDoctor Fix Task — ${issue.id}`);
-    expect(aiMarkdown).toContain(`tvdoctor replay ${issue.id}`);
+    expect(aiMarkdown).toContain(issue.confidence === "deterministic"
+      ? `# TVDoctor Fix Task — ${issue.id}`
+      : `# TVDoctor Review Task — ${issue.id}`);
+    if (issue.confidence === "deterministic") {
+      expect(aiMarkdown).toContain(`tvdoctor replay ${issue.id}`);
+    }
     if (issue.transition === null
       || issue.transition.expectedElement === null
       || issue.transition.observedElement === null) {
-      throw new Error(`Deterministic gate issue ${issue.id} needs a complete transition.`);
+      throw new Error(`Evidence gate issue ${issue.id} needs a complete transition.`);
     }
     expect(aiMarkdown).toContain(issue.transition.expectedElement);
     expect(aiMarkdown).toContain(issue.transition.observedElement);

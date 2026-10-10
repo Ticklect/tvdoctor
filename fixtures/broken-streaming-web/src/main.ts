@@ -104,6 +104,7 @@ const state: FixtureState = {
 };
 
 const fixtureParameters = new URLSearchParams(window.location.search);
+const useNavigationDemo = fixtureParameters.get("tvdoctorDemo") === "navigation";
 
 function boundedCarouselSize(value: string | null): number {
   if (value === null || !/^\d{1,3}$/u.test(value)) return 0;
@@ -315,6 +316,41 @@ function stressPoster(index: number): string {
 }
 
 function homeScreen(): string {
+  if (useNavigationDemo) {
+    return `
+      <div class="shell demo-shell" data-screen="home">
+        <main class="home demo-home" data-screen="home" aria-label="Northstar TVDoctor demo">
+          <section class="hero" aria-labelledby="hero-title">
+            <div class="hero__wash" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div class="hero__content">
+              <p class="eyebrow"><span>TVDoctor controlled demo</span> · seeded navigation fixture</p>
+              <h1 id="hero-title">The Ember Line</h1>
+              <p class="hero__summary">Use a TV remote to move right from Explore film. The visible More info control is deliberately missing from the D-pad focus graph.</p>
+              <div class="hero__actions">
+                <button
+                  class="button button--primary"
+                  ${tvAttributes("hero-watch", "home", "hero", {
+                    up: "hero-watch",
+                    right: "hero-watch",
+                    down: "hero-watch",
+                    left: "hero-watch",
+                  })}
+                  aria-label="Explore film"
+                ><span aria-hidden="true">▶</span> Explore film</button>
+                <button
+                  class="button button--glass"
+                  ${tvAttributes("hero-more-info", "home", "hero", {}, false)}
+                  data-action="show-more-info"
+                  data-defect-id="fixture-home-more-info-unreachable"
+                >More info</button>
+              </div>
+              <p class="menu-hint">Controlled fixture: More info works with a pointer but has no D-pad path.</p>
+            </div>
+          </section>
+        </main>
+      </div>
+    `;
+  }
   const continueItems = catalogue.slice(0, 4).map((item, index) => poster(item, index, "continue")).join("");
   const freshItems = catalogue.slice(2, 6).map((item, index) => poster(item, index, "fresh")).join("");
   const stressItems = stressCarouselSize === 0
@@ -998,7 +1034,7 @@ window.setInterval(() => {
   }
 }, 1_000);
 
-render(useSemanticAlternateRoute ? "home-card-1" : "home-nav-home");
+render(useNavigationDemo ? "hero-watch" : useSemanticAlternateRoute ? "home-card-1" : "home-nav-home");
 
 // Intentionally emitted once. The startup error is a fixture contract for future log capture.
 console.error("[Northstar fixture] Seeded startup console error: catalogue sync failed intentionally.");

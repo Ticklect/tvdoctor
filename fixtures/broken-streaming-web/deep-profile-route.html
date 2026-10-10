@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TVDoctor Profile Route Stress Fixture</title>
+  <style>
+    body { background:#111b28; color:#f4f8ff; font:20px system-ui; margin:0; padding:40px }
+    main { max-width:950px; margin:auto }
+    nav, section, [role="dialog"] { display:flex; gap:16px; flex-wrap:wrap; margin:24px 0 }
+    button { border:3px solid #647993; background:#203149; color:inherit;
+      padding:24px 30px; min-width:170px; font:inherit; border-radius:8px }
+    button:focus { outline:5px solid #ffe277; outline-offset:4px }
+    h1 { font-size:28px }
+  </style>
+</head>
+<body data-screen="profile-picker">
+  <main id="app"></main>
+  <script type="module">
+    const app = document.querySelector('#app');
+    let route = 'profile';
+    let focusId = 'profile-primary';
+    let lastHomeFocus = 'home-browse';
+    let lastSearchFocus = 'search-result-a';
+    let previousPage = 'home';
+    let selectedTitleId = 'none';
+    // Finite, independent carousel controls, opt-in for full-frontier stress.
+    // Keep the original fixture unchanged when the parameter is omitted.
+    const stressSize = Number(new URLSearchParams(location.search).get('stressCards'));
+    const cards = Number.isSafeInteger(stressSize) && stressSize >= 3 && stressSize <= 24
+      ? Array.from({ length: stressSize }, (_, index) => [
+          `stress-card-${String(index + 1).padStart(2, '0')}`,
+          `Open catalogue item ${String(index + 1).padStart(2, '0')}`,
+        ])
+      : [];
+    const buttons = (items) => items.map(([id,label]) =>
+      `<button id="${id}" data-tv-id="${id}">${label}</button>`).join('');
+    const pages = {
+      profile: () => `<h1>Choose a profile</h1><div role="dialog" aria-label="Choose a profile" aria-modal="true" data-screen="profile-picker">${buttons([
+        ['profile-primary','Night owl'], ['profile-kids','Little stars'],
+      ])}</div>`,
+      home: () => `<h1>Browse</h1><nav aria-label="Primary navigation">${buttons([
+        ['home-browse','Browse titles'], ['home-search','Search'], ['home-settings','Settings'], ['home-profiles','Profiles'],
+      ])}</nav><section data-stress-size="${cards.length}" aria-label="Finite catalogue carousel">${buttons(
+        cards.length > 0 ? cards : [['home-card-a','Open Ember'],['home-card-b','Open Atlas']],
+      )}</section>`,
+      search: () => `<h1>Search library</h1><section>${buttons([
+        ['search-home','Home'], ['search-result-a','Ember result'], ['search-result-b','Atlas result'],
+      ])}</section>`,
+      settings: () => `<h1>Settings</h1><div role="dialog" aria-label="Display settings" aria-modal="true" data-screen="settings">${buttons([
+        ['settings-close','Close settings'], ['settings-preview','Preview captions'],
+      ])}</div>`,
+      // Surface both route origin and selected item. Without this semantic
+      // identity, different BACK destinations share an apparently identical
+      // screen/focus fingerprint and can be incorrectly merged by an auditor.
+      details: () => `<h1 data-tv-id="detail-${previousPage}-${selectedTitleId}">Title details — ${previousPage} — ${selectedTitleId}</h1><section>${buttons([
+        [`details-back-${selectedTitleId}`,`Back to ${previousPage} from ${selectedTitleId}`],
+        [`details-preview-${selectedTitleId}`,`Preview ${selectedTitleId}`],
+      ])}</section>`,
+    };
+    function availableIds() { return [...app.querySelectorAll('button')].map((button) => button.id); }
+    function render(id) {
+      document.body.dataset.screen = route;
+      app.innerHTML = pages[route]();
+      focusId = id;
+      requestAnimationFrame(() => document.getElementById(id)?.focus());
+    }
+    function open(next, id) {
+      if (route === 'home') lastHomeFocus = focusId;
+      if (route === 'search') lastSearchFocus = focusId;
+      route = next;
+      render(id);
+    }
+    function back() {
+      if (route === 'profile') return; // Intentional controlled modal trap.
+      if (route === 'details') return open(previousPage, previousPage === 'search' ? lastSearchFocus : lastHomeFocus);
+      return open('home', lastHomeFocus);
+    }
+    function activate(id) {
+      if (route === 'profile') return open('home', 'home-browse');
+      if (id === 'home-search') return open('search', 'search-home');
+      if (id === 'home-settings') return open('settings', 'settings-close');
+      if (id === 'home-profiles') return open('profile', 'profile-primary');
+      if (id === 'search-home' || id === 'settings-close') return back();
+      if (id === 'home-card-a' || id === 'home-card-b' || id.startsWith('stress-card-') || id.startsWith('search-result-')) {
+        previousPage = route;
+        selectedTitleId = id;
+        return open('details',`details-back-${selectedTitleId}`);
+      }
+      if (id.startsWith('details-back-')) return back();
+      // Preview actions are harmless self-loops, with the focused element retained.
+      render(id);
+    }
+    document.addEventListener('keydown', (event) => {
+      const ids = availableIds();
+      const current = document.activeElement?.id;
+      if (event.key === 'Enter') { event.preventDefault(); activate(current); return; }
+      if (event.key === 'Escape' || event.key === 'Backspace') { event.preventDefault(); back(); return; }
+      const direction = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1
+        : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0;
+      if (direction === 0) return;
+      event.preventDefault();
+      const index = ids.indexOf(current);
+      const next = ids[(index + direction + ids.length) % ids.length];
+      if (next) { focusId = next; document.getElementById(next)?.focus(); }
+    });
+    app.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (button) activate(button.id);
+    });
+    render(focusId);
+  </script>
+</body>
+</html>

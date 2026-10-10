@@ -89,10 +89,17 @@ test("bounded exploration terminates, emits separate graphs, and repeats consist
     expect(result.termination).toMatchObject({
       reason: "max-actions",
       complete: false,
-      remainingFrontierEntries: 9,
-      remainingCandidateActions: 54,
-      detail: "Bounded-incomplete: 9 frontier entries remain after max-actions.",
     });
+    // The exact frontier length depends on scheduling decisions, but every
+    // unfinished branch must remain recorded when the action budget expires.
+    const remainingEntries = result.termination.remainingFrontierEntries ?? 0;
+    const remainingActions = result.termination.remainingCandidateActions ?? 0;
+    expect(remainingEntries).toBeGreaterThan(0);
+    expect(remainingActions).toBeGreaterThan(0);
+    expect(remainingActions).toBeLessThanOrEqual(remainingEntries * ACTIONS.length);
+    expect(result.termination.detail).toBe(
+      `Bounded-incomplete: ${String(remainingEntries)} frontier entries remain after max-actions.`,
+    );
     expect(result.statistics).toMatchObject({
       physicalActions: BUDGETS.maxActions,
     });
@@ -136,5 +143,7 @@ test("bounded exploration terminates, emits separate graphs, and repeats consist
     expect(result.graph.focus.transitions.some((edge) => edge.fromFocusStateId === edge.toFocusStateId)).toBe(true);
   }
 
+  expect(second.termination.remainingFrontierEntries).toBe(first.termination.remainingFrontierEntries);
+  expect(second.termination.remainingCandidateActions).toBe(first.termination.remainingCandidateActions);
   expect(canonicalGraph(second)).toEqual(canonicalGraph(first));
 });

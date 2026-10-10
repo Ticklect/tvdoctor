@@ -1,8 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Observation } from "@tvdoctor/protocol";
 import type { Page } from "playwright";
 import {
+  capturePageObservation,
   PlaywrightWebDriver,
   WEB_DRIVER_CAPABILITIES,
   WEB_REMOTE_KEYBOARD_MAP,
@@ -89,6 +91,30 @@ test("reports an exact, deliberately limited capability set", async () => {
   expect(capabilities).not.toContain("accessibility-tree");
   expect(capabilities).not.toContain("install");
   expect(capabilities).not.toContain("video-capture");
+});
+
+test("video recording is off by default", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "no-video", launchUri: requireBaseURL(baseURL) });
+  await driver.close();
+
+  expect(driver.getRecordedVideoPath()).toBeNull();
+});
+
+test("records one bounded browser-context video into the requested directory", async ({ baseURL }, testInfo) => {
+  const recordingDirectory = testInfo.outputPath("video");
+  const driver = new PlaywrightWebDriver({ recordVideoDirectory: recordingDirectory });
+  await driver.launch({ id: "recorded-video", launchUri: requireBaseURL(baseURL) });
+  await driver.press("RIGHT");
+  await driver.close();
+
+  const videoPath = driver.getRecordedVideoPath();
+  expect(videoPath).not.toBeNull();
+  if (videoPath === null) throw new Error("Expected a recorded video path.");
+  expect(videoPath).toBe(resolve(recordingDirectory, "audit-session.webm"));
+  const metadata = await stat(videoPath);
+  expect(metadata.isFile()).toBe(true);
+  expect(metadata.size).toBeGreaterThan(0);
 });
 
 test("retires the browser session after a cancelled operation", async ({ baseURL }) => {
@@ -350,6 +376,135 @@ test("a failed launch cleans up lifecycle state", async () => {
   await driver.close();
 });
 
+test("reload and relaunch preserve the original tab and sessionStorage; clear-data is explicit", async ({ baseURL }) => {
+  const fixtureUrl = requireBaseURL(baseURL);
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "reset-tab-identity", launchUri: `${fixtureUrl}/` });
+
+  try {
+    const originalPage = driver.getPage();
+    await originalPage.evaluate(() => {
+      localStorage.setItem("tvdoctor-persistent", "local");
+      sessionStorage.setItem("tvdoctor-tab-scoped", "session");
+      history.replaceState({}, "", "/?temporary-screen=one");
+    });
+
+    await driver.reset("reload");
+    expect(driver.getPage()).toBe(originalPage);
+    expect(originalPage.url()).toContain("temporary-screen=one");
+    expect(await originalPage.evaluate(() => sessionStorage.getItem("tvdoctor-tab-scoped"))).toBe("session");
+    expect(await originalPage.evaluate(() => localStorage.getItem("tvdoctor-persistent"))).toBe("local");
+
+    // A TV single-page app can move to a different resource pathname.
+    // The root-restoration strategy must return to the launch route.
+    await originalPage.evaluate(() => {
+      history.pushState({}, "", "/title/123");
+    });
+    await driver.reset("relaunch");
+    expect(driver.getPage()).toBe(originalPage);
+    expect(originalPage.url()).toBe(`${fixtureUrl}/`);
+    expect(await originalPage.evaluate(() => sessionStorage.getItem("tvdoctor-tab-scoped"))).toBe("session");
+    expect(await originalPage.evaluate(() => localStorage.getItem("tvdoctor-persistent"))).toBe("local");
+
+    await driver.reset("clear-data");
+    expect(driver.getPage()).toBe(originalPage);
+    expect(await originalPage.evaluate(() => sessionStorage.getItem("tvdoctor-tab-scoped"))).toBeNull();
+    expect(await originalPage.evaluate(() => localStorage.getItem("tvdoctor-persistent"))).toBeNull();
+  } finally {
+    await driver.close();
+  }
+});
+
+for (const strategy of ["reload", "relaunch"] as const) {
+  test(`failed ${strategy} reset does not silently substitute a fresh browser tab`, async ({ baseURL }) => {
+    const driver = new PlaywrightWebDriver({ navigationTimeoutMs: 1_000 });
+    await driver.launch({ id: "reset-fail-closed", launchUri: `${requireBaseURL(baseURL)}/` });
+    try {
+      const originalPage = driver.getPage();
+      await originalPage.evaluate(() => sessionStorage.setItem("tvdoctor-tab-scoped", "must-not-disappear"));
+      await originalPage.route("**/*", async (route) => {
+        if (route.request().isNavigationRequest()) {
+          await route.abort();
+        } else {
+          await route.continue();
+        }
+      });
+
+      await expect(driver.reset(strategy)).rejects.toThrow(
+        `Web ${strategy} reset did not complete in its original tab; the driver state is unverified.`,
+      );
+      expect(driver.getPage()).toBe(originalPage);
+      expect(originalPage.isClosed()).toBe(false);
+      expect(originalPage.context().pages()).toEqual([originalPage]);
+      // A failed navigation may display an opaque browser error document.
+      // Inspect the same tab after an explicit manual return to the origin.
+      await originalPage.unrouteAll({ behavior: "wait" });
+      await originalPage.goto(`${requireBaseURL(baseURL)}/`);
+      expect(await originalPage.evaluate(
+        () => sessionStorage.getItem("tvdoctor-tab-scoped"),
+      )).toBe("must-not-disappear");
+      // A partly completed navigation must not be used as a verified root.
+      await expect(driver.snapshot()).rejects.toThrow("unusable after cancellation or a failed reset");
+      await expect(driver.reset("reload")).rejects.toThrow("unusable after cancellation or a failed reset");
+    } finally {
+      await driver.close();
+    }
+  });
+}
+
+test("a loaded but unsettled reset is incomplete, not a verified root", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver({
+    settle: { timeoutMs: 180, quietWindowMs: 20, noResponseGraceMs: 20 },
+  });
+  await driver.launch({ id: "reset-unsettled", launchUri: `${requireBaseURL(baseURL)}/` });
+  try {
+    const originalPage = driver.getPage();
+    await originalPage.route("**/*", async (route) => {
+      if (route.request().isNavigationRequest()) {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html",
+          body: "<!doctype html><html><body aria-busy='true'><button>Busy</button></body></html>",
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await expect(driver.reset("reload")).rejects.toThrow(
+      "Web reload reset did not complete in its original tab; the driver state is unverified.",
+    );
+    expect(driver.getPage()).toBe(originalPage);
+    expect(originalPage.context().pages()).toEqual([originalPage]);
+    await expect(driver.press("RIGHT")).rejects.toThrow("unusable after cancellation or a failed reset");
+  } finally {
+    await driver.close();
+  }
+});
+
+test("cancelling an active reset retires its original page without opening a replacement", async ({ baseURL }) => {
+  const driver = new PlaywrightWebDriver();
+  await driver.launch({ id: "reset-cancel", launchUri: `${requireBaseURL(baseURL)}/` });
+  const originalPage = driver.getPage();
+  const controller = new AbortController();
+  const reason = new DOMException("reset cancelled", "AbortError");
+  const onNavigationRequest = (request: import("playwright").Request): void => {
+    if (request.isNavigationRequest() && !controller.signal.aborted) controller.abort(reason);
+  };
+  originalPage.on("request", onNavigationRequest);
+  try {
+    await expect(driver.reset("reload", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(controller.signal.aborted).toBe(true);
+    expect(originalPage.isClosed()).toBe(true);
+    await expect(driver.snapshot()).rejects.toThrow("unusable after cancellation");
+  } finally {
+    originalPage.off("request", onNavigationRequest);
+    await driver.close();
+  }
+});
+
 test("captures console errors, page errors, sanitised network outcomes, timing, and media state", async ({ baseURL }) => {
   const fixtureUrl = requireBaseURL(baseURL);
   const launchUri = `${fixtureUrl}/?token=do-not-store#private-fragment`;
@@ -462,6 +617,14 @@ test("captures a deterministic large DOM with bounded semantic node retention", 
     expect(metadata.capturedNodeCount).toBe(604);
     expect(metadata.truncated).toBe(false);
     expect(availableValue(snapshot.focusedElement)?.stableId).toBe("stress-start");
+    const observation = await capturePageObservation(driver.getPage(), 750);
+    expect(observation.timings.browserEvaluationMs).toBeGreaterThanOrEqual(
+      observation.timings.domEnumerationMs + observation.timings.semanticAnalysisMs,
+    );
+    expect(observation.timings.domEnumerationMs).toBeGreaterThanOrEqual(0);
+    expect(observation.timings.semanticAnalysisMs).toBeGreaterThanOrEqual(0);
+    expect(observation.uiTreeMetadata.domElementCount).toBe(metadata.domElementCount);
+    expect(observation.uiTreeMetadata.truncated).toBe(false);
   } finally {
     await driver.close();
   }

@@ -27,6 +27,7 @@ export interface NormalisedExplorerOptions {
   readonly replayActions: readonly RemoteKey[];
   readonly frontierStrategy: ExplorationFrontierStrategy;
   readonly restorationMode: ExplorationRestorationMode;
+  readonly opportunisticFrontier: boolean;
   readonly allowRootRestorationFallback: boolean;
   readonly refreshVisibleSelfLoops: boolean;
   readonly repetitionCompression: NormalisedRepetitionCompressionOptions;
@@ -101,7 +102,9 @@ function profileCompressionDefaults(
   const representatives = profile === "quick" ? 1 : profile === "standard" ? 2 : 4;
   const expanded = profile === "deep" ? 2 : 1;
   return {
-    enabled: true,
+    // Deep is the accuracy-oriented profile: reducing unique carousel cells
+    // can suppress their distinct routes and leave exhaustive scans partial.
+    enabled: profile !== "deep",
     maxRepresentativesPerGroup: representatives,
     maxExpandedRepresentativesPerGroup: expanded,
     minimumEquivalentSiblings: 3,
@@ -208,6 +211,10 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     && restorationMode !== "verified-local") {
     throw new TypeError("restorationMode must be root-only, verified-live-only, or verified-local.");
   }
+  if (options.opportunisticFrontier !== undefined
+    && typeof options.opportunisticFrontier !== "boolean") {
+    throw new TypeError("opportunisticFrontier must be a boolean.");
+  }
   const repetitionCompression = normaliseRepetitionCompression(
     options.profile,
     options.repetitionCompression,
@@ -250,6 +257,7 @@ export function normaliseExplorerOptions(options: ExplorerOptions): NormalisedEx
     replayActions,
     frontierStrategy,
     restorationMode,
+    opportunisticFrontier: options.opportunisticFrontier ?? false,
     allowRootRestorationFallback: options.allowRootRestorationFallback ?? true,
     refreshVisibleSelfLoops: options.refreshVisibleSelfLoops ?? true,
     repetitionCompression,

@@ -1,9 +1,10 @@
-# Fixtures and benchmark controls
+# Controlled fixture validation
 
 `fixtures/broken-streaming-web` contains Northstar, an original ten-foot web UI
-with deliberately seeded defects. It supports integration tests, demonstrations,
-exploration benchmarks, and baseline regressions. It is not an example of a
-correct TV application.
+with deliberately seeded defects. It validates that TVDoctor can discover remote
+paths and identify known failures without reading a stored route or fixture
+metadata. It also supports demonstrations, stress controls, and baseline
+regressions. It is not an example of a correct TV application.
 
 ## Run Northstar
 
@@ -35,6 +36,26 @@ The stress carousel and baseline harness are mutually exclusive: requesting a
 non-zero carousel suppresses the baseline surface. The default URL adds neither
 surface and retains the 13-seed contract.
 
+## Explicit profile-selection test mode
+
+The Northstar fixture includes a deliberately trapped profile picker with two
+harmless buttons (`profile-primary` and `profile-kids`). The normal web SELECT
+policy withholds profile actions, so the default audit can report unverified
+SELECT edges on that dialog. To exercise those edges in a local fixture scan:
+
+```sh
+npm run tvdoctor -- scan http://127.0.0.1:5173/ --mode deep --fixture-profile-select
+```
+
+Start the fixture first with `npm run fixture:dev`. The flag is accepted only
+for loopback web targets with the navigation pack; immediately before each
+SELECT, the browser must still show the fixture's `Choose a profile` dialog,
+with one of the two exact control IDs and expected labels. It does not authorize
+profile changes on ordinary TV applications,
+does not permit consent or payment actions, and remains off by default. Reports
+record whether the fixture exception was enabled. Even with this option, a
+bounded Deep scan is complete only when no work or unsafe edges remain.
+
 ## Fixture invariants
 
 - Every seed has a stable fixture ID and expected diagnostic rule.
@@ -59,3 +80,6 @@ surface and retains the 13-seed contract.
 
 Never weaken a diagnostic merely to match the fixture. A controlled fixture
 exists to test the product, not define product truth.
+
+See [Benchmarking](BENCHMARKING.md) for the required separation between seeded
+fixture validation, synthetic stress tests, and real-app evidence.

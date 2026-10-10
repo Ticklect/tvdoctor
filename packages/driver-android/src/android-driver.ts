@@ -36,6 +36,7 @@ import type {
   AndroidObserverMetrics,
   AndroidScreenshotFingerprint,
   AndroidStateSnapshot,
+  AndroidTvPlatform,
   AndroidTvDriverOptions,
   AndroidUiNodeSnapshot,
 } from "./types.js";
@@ -64,6 +65,7 @@ const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
 };
 
 interface NormalisedOptions {
+  readonly platform: AndroidTvPlatform | undefined;
   readonly executor: NonNullable<AndroidTvDriverOptions["executor"]>;
   readonly serial: string | undefined;
   readonly commandTimeoutMs: number;
@@ -149,6 +151,7 @@ function normaliseOptions(options: AndroidTvDriverOptions): NormalisedOptions {
     throw new TypeError("Android reset stability window must be shorter than resetSettleTimeoutMs.");
   }
   return {
+    platform: options.platform,
     executor: options.executor ?? new NodeAdbCommandExecutor(options.adbPath ?? defaultAdbPath(), {
       timeoutMs: commandTimeoutMs, maxOutputBytes: options.maxCommandOutputBytes ?? 2 * 1024 * 1024,
     }),
@@ -197,10 +200,38 @@ function optionalInteger(value: string | undefined): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 function focusedWindowPackage(output: string): string | null {
-  const currentFocus = output.split(/\r?\n/u).find((line) => line.includes("mCurrentFocus="));
+  const lines = output.split(/\r?\n/u);
+  const currentFocus = lines.find((line) => line.includes("mCurrentFocus="));
   if (currentFocus === undefined || /mCurrentFocus=(?:null|Window\{[^}]*\snull(?:\s|\}))/u.test(currentFocus)) return null;
   const match = /\s([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)\//u.exec(currentFocus);
-  return match?.[1] ?? null;
+  if (match?.[1] !== undefined) return match[1];
+
+  // Android may give the focused window a generic title (for example "Info")
+  // instead of a package/activity component. Resolve that exact Window token to
+  // its own dumpsys block and use the owner package recorded there. Do not fall
+  // back to mFocusedApp because a system overlay can be focused while the target
+  // activity remains the focused app underneath it.
+  const token = /mCurrentFocus=Window\{([A-Fa-f0-9]+)\s/u.exec(currentFocus)?.[1];
+  if (token === undefined) return null;
+  const blockStart = lines.findIndex((line) => /^\s*Window #\d+\s+Window\{/u.test(line) && line.includes(`Window{${token} `));
+  if (blockStart < 0) return null;
+  for (let index = blockStart + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^\s*Window #\d+\s+Window\{/u.test(line)) break;
+    const owner = /\b(?:package|mPackageName)=([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)/u.exec(line);
+    if (owner?.[1] !== undefined) return owner[1];
+  }
+  return null;
+}
+
+export function classifyAndroidTvPlatform(
+  metadata: Pick<AndroidDeviceMetadata, "manufacturer" | "buildFingerprint">,
+  requested?: AndroidTvPlatform,
+): AndroidTvPlatform {
+  if (requested !== undefined) return requested;
+  const manufacturer = metadata.manufacturer?.trim().toLowerCase() ?? "";
+  const fingerprint = metadata.buildFingerprint?.trim().toLowerCase() ?? "";
+  return manufacturer === "amazon" || fingerprint.includes("amazon") ? "fire-tv" : "android-tv";
 }
 function pngDimensions(png: Uint8Array): { readonly width: number; readonly height: number } {
   const buffer = Buffer.from(png);
@@ -282,6 +313,7 @@ function combinedSignal(
 
 export class AndroidTvDriver implements TVDoctorDriver {
   readonly #options: NormalisedOptions;
+  #platform: AndroidTvPlatform;
   #resolvedSerial: string | null;
   #closed = false;
   #currentApp: AndroidAppReference | null = null;
@@ -304,6 +336,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
 
   constructor(options: AndroidTvDriverOptions = {}) {
     this.#options = normaliseOptions(options);
+    this.#platform = options.platform ?? "android-tv";
     this.#resolvedSerial = this.#options.serial ?? null;
   }
   async capabilities(options?: DriverOperationOptions): Promise<ReadonlySet<Capability>> {
@@ -684,16 +717,21 @@ export class AndroidTvDriver implements TVDoctorDriver {
     const characteristics = await this.#deviceText(["shell", "getprop", "ro.build.characteristics"], commandOptions);
     const abis = await this.#deviceText(["shell", "getprop", "ro.product.cpu.abilist"], commandOptions);
     const display = await this.#deviceText(["shell", "wm", "size"], commandOptions);
-    const sizeMatch = /(\d+)x(\d+)/u.exec(display); const semantic = `${characteristics} ${model} ${fingerprint}`.toLowerCase();
+    const density = await this.#deviceText(["shell", "wm", "density"], commandOptions).catch(() => "");
+    const sizeMatch = /(\d+)x(\d+)/u.exec(display);
+    const densityMatches = [...density.matchAll(/(?:Physical|Override)?\s*density:\s*(\d+)/giu)];
+    const densityMatch = densityMatches.at(-1)?.[1];
+    const semantic = `${characteristics} ${model} ${fingerprint}`.toLowerCase();
     this.#deviceMetadata = {
       serial, manufacturer: optionalText(manufacturer), model: optionalText(model),
       sdkLevel: optionalInteger(cleanText(sdk)), release: optionalText(release), buildFingerprint: optionalText(fingerprint),
       characteristics: cleanText(characteristics).split(",").map((item) => item.trim()).filter(Boolean),
       supportedAbis: cleanText(abis).split(",").map((item) => item.trim()).filter(Boolean),
       displayWidth: optionalInteger(sizeMatch?.[1]), displayHeight: optionalInteger(sizeMatch?.[2]),
-      displayDensityDpi: null,
+      displayDensityDpi: optionalInteger(densityMatch),
       isTelevision: /(?:^|[^a-z])(?:tv|atv|leanback|android[_ -]?tv)(?:[^a-z]|$)/u.test(semantic),
     };
+    this.#platform = classifyAndroidTvPlatform(this.#deviceMetadata, this.#options.platform);
     return this.#deviceMetadata;
   }
   async getAppMetadata(options?: DriverOperationOptions): Promise<AndroidAppMetadata> {
@@ -788,7 +826,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
         truncated: state.nodeCount >= 4_096 || state.maxDepth >= 64,
       }),
       restorationContext: {
-        platform: "android-tv",
+        platform: this.#platform,
         applicationId: state.packageName,
         processId: targetOwned ? this.#appMetadata?.pid ?? null : null,
         processGeneration: targetOwned && this.#processGeneration > 0 ? this.#processGeneration : null,

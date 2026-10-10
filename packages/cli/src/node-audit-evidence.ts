@@ -21,11 +21,13 @@ import {
 } from "@tvdoctor/reporters";
 import {
   EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
+  MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
   MAX_EVIDENCE_CAPTURE_DURATION_MS,
   MAX_ISSUES_WITH_FRESH_EVIDENCE,
   type AuditRunProducts,
   type CapturedIssue,
 } from "./node-audit-contracts.js";
+import { createSafeExplorationDriver } from "./node-audit-navigation.js";
 import { sequenceForIssue } from "./node-audit-selection.js";
 
 function asJson(value: unknown): import("@tvdoctor/reporters").JsonValue {
@@ -33,6 +35,7 @@ function asJson(value: unknown): import("@tvdoctor/reporters").JsonValue {
 }
 
 export const EVIDENCE_EXCERPT_MAX_NODES = 150;
+const EVIDENCE_CAPTURE_FAILED_REASON = "Evidence capture was inconclusive because the bounded evidence journey failed.";
 
 /**
  * Bounded excerpt of a snapshot's UI tree for report embedding. Complex real
@@ -67,20 +70,41 @@ export function boundedSnapshot(snapshot: StateSnapshot): StateSnapshot {
   };
 }
 
+function persistedSnapshot(snapshot: StateSnapshot, targetRedaction?: "origin"): StateSnapshot {
+  const bounded = boundedSnapshot(snapshot);
+  if (targetRedaction !== "origin" || bounded.location.status !== "available") return bounded;
+  try {
+    return {
+      ...bounded,
+      location: { status: "available", value: new URL(bounded.location.value).origin },
+    };
+  } catch {
+    return {
+      ...bounded,
+      location: { status: "unavailable", reason: "Location omitted by strict target redaction." },
+    };
+  }
+}
+
 async function withinDeadline<T>(
-  operation: Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
   deadlineMs: number,
   label: string,
 ): Promise<T> {
-  const remainingMs = deadlineMs - Date.now();
+  const remainingMs = deadlineMs - performance.now();
   if (remainingMs <= 0) throw new Error(`${label} exceeded the bounded evidence-capture deadline.`);
+  const controller = new AbortController();
+  const deadlineError = new Error(`${label} exceeded the bounded evidence-capture deadline.`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      operation,
+      Promise.resolve().then(() => operation(controller.signal)),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`${label} exceeded the bounded evidence-capture deadline.`)),
+          () => {
+            controller.abort(deadlineError);
+            reject(deadlineError);
+          },
           remainingMs,
         );
       }),
@@ -96,46 +120,64 @@ async function captureContext(
   driver: PlaywrightWebDriver,
   closeDriver: boolean,
   maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
+  captureScreenshots = true,
+  fixtureProfileSelection = false,
 ): Promise<{
   readonly before: StateSnapshot;
   readonly after: StateSnapshot;
-  readonly beforePng: Uint8Array;
-  readonly afterPng: Uint8Array;
+  readonly beforePng: Uint8Array | null;
+  readonly afterPng: Uint8Array | null;
   readonly action: ActionResult | null;
   readonly logs: readonly WebLogEntry[];
 }> {
-  const deadlineMs = Date.now() + maximumDurationMs;
+  const deadlineMs = performance.now() + maximumDurationMs;
+  // Use the same per-press semantic SELECT guard as exploration. It captures a
+  // fresh focus snapshot and refuses an ambiguous or unsafe activation before
+  // forwarding the key to the browser, including during setup replay.
+  const safeDriver = createSafeExplorationDriver(driver, { fixtureProfileSelection });
   try {
     await withinDeadline(
-      driver.launch({ id: "cli-issue-evidence", launchUri: target }),
+      (signal) => driver.launch({ id: "cli-issue-evidence", launchUri: target }, { signal }),
       deadlineMs,
       "Evidence browser launch",
     );
     const setup = sequence.length === 0 ? [] : sequence.slice(0, -1);
     for (const key of setup) {
-      const result = await withinDeadline(driver.press(key), deadlineMs, `Evidence setup ${key}`);
+      const result = await withinDeadline(
+        (signal) => safeDriver.press(key, { signal }), deadlineMs, `Evidence setup ${key}`,
+      );
       if (result.outcome !== "applied") throw new Error(`Evidence setup ${key} was ${result.outcome}.`);
     }
-    const before = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence before snapshot");
-    const beforePng = await withinDeadline(
-      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-      deadlineMs,
-      "Evidence before screenshot",
+    const before = await withinDeadline(
+      (signal) => driver.snapshot({ signal }), deadlineMs, "Evidence before snapshot",
     );
+    const beforePng = captureScreenshots
+      ? await withinDeadline(
+        () => driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+        deadlineMs,
+        "Evidence before screenshot",
+      )
+      : null;
     const assertion = sequence.at(-1);
     const action = assertion === undefined
       ? null
-      : await withinDeadline(driver.press(assertion), deadlineMs, `Evidence assertion ${assertion}`);
+      : await withinDeadline(
+        (signal) => safeDriver.press(assertion, { signal }), deadlineMs, `Evidence assertion ${assertion}`,
+      );
     if (action !== null && action.outcome !== "applied") {
       throw new Error(`Evidence assertion ${assertion} was ${action.outcome}.`);
     }
-    const after = await withinDeadline(driver.snapshot(), deadlineMs, "Evidence after snapshot");
-    const afterPng = await withinDeadline(
-      driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-      deadlineMs,
-      "Evidence after screenshot",
+    const after = await withinDeadline(
+      (signal) => driver.snapshot({ signal }), deadlineMs, "Evidence after snapshot",
     );
-    const logs = await withinDeadline(driver.getLogs(), deadlineMs, "Evidence log capture");
+    const afterPng = captureScreenshots
+      ? await withinDeadline(
+        () => driver.getPage().screenshot({ type: "png", animations: "disabled" }),
+        deadlineMs,
+        "Evidence after screenshot",
+      )
+      : null;
+    const logs = await withinDeadline(() => driver.getLogs(), deadlineMs, "Evidence log capture");
     return { before, after, beforePng, afterPng, action, logs };
   } catch (error) {
     // A pooled session that fails mid-operation is retired before reuse. The
@@ -143,8 +185,8 @@ async function captureContext(
     // keep the process alive and receive a fresh BrowserContext on launch().
     if (!closeDriver) {
       await withinDeadline(
-        driver.close(),
-        Date.now() + 5_000,
+        () => driver.close(),
+        performance.now() + 5_000,
         "Evidence browser retirement",
       ).catch(() => undefined);
     }
@@ -152,8 +194,8 @@ async function captureContext(
   } finally {
     if (closeDriver) {
       await withinDeadline(
-        driver.close(),
-        Date.now() + 5_000,
+        () => driver.close(),
+        performance.now() + 5_000,
         "Evidence browser cleanup",
       ).catch(() => undefined);
     }
@@ -229,14 +271,19 @@ async function writeFailedCaptureEvidence(
   sourceIssue: TVDoctorIssue,
   sequence: readonly RemoteKey[],
   rawReason: string,
+  captureScreenshots = true,
 ): Promise<CapturedIssue> {
   const reason = sanitiseUntrustedText(rawReason, 600)
     || "Fresh issue evidence was unavailable.";
   const written = await writeIssueEvidence(store, {
     issueId: sourceIssue.id,
     artifacts: [
-      { slot: "before-screenshot", capture: { status: "failed", reason } },
-      { slot: "after-screenshot", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
+      { slot: "before-screenshot", capture: captureScreenshots
+        ? { status: "failed", reason }
+        : { status: "unavailable", reason: "Screenshot persistence was disabled by --no-screenshots." } },
+      { slot: "after-screenshot", capture: captureScreenshots
+        ? { status: "failed", reason: "The bounded evidence journey did not complete." }
+        : { status: "unavailable", reason: "Screenshot persistence was disabled by --no-screenshots." } },
       { slot: "ui-excerpt", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
       { slot: "transition", capture: { status: "failed", reason: "A fresh matching transition was not observed." } },
       { slot: "console-log", capture: { status: "failed", reason: "The bounded evidence journey did not complete." } },
@@ -267,6 +314,10 @@ export async function captureIssue(
   sourceIssue: TVDoctorIssue,
   createDriver: () => PlaywrightWebDriver,
   reuseDriver?: PlaywrightWebDriver,
+  captureScreenshots = true,
+  targetRedaction?: "origin",
+  fixtureProfileSelection = false,
+  maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
 ): Promise<CapturedIssue> {
   const sequence = sequenceForIssue(products, sourceIssue);
   const compiled = sourceIssue.reproduction.status === "available" ? compileIssueReplay(sourceIssue) : null;
@@ -278,15 +329,24 @@ export async function captureIssue(
   let context: Awaited<ReturnType<typeof captureContext>>;
   try {
     const driver = reuseDriver ?? createDriver();
-    context = await captureContext(target, sequence, driver, reuseDriver === undefined);
+    context = await captureContext(
+      target,
+      sequence,
+      driver,
+      reuseDriver === undefined,
+      maximumDurationMs,
+      captureScreenshots,
+      fixtureProfileSelection,
+    );
     const driftReason = freshEvidenceDriftReason(sourceIssue, context);
     if (driftReason !== null) throw new Error(driftReason);
-  } catch (error) {
+  } catch {
     return await writeFailedCaptureEvidence(
       store,
       sourceIssue,
       sequence,
-      `Evidence capture was inconclusive: ${error instanceof Error ? error.message : String(error)}`,
+      EVIDENCE_CAPTURE_FAILED_REASON,
+      captureScreenshots,
     );
   }
 
@@ -297,8 +357,8 @@ export async function captureIssue(
     ): IssueEvidenceArtifactInput => {
       try {
         return build();
-      } catch (error) {
-        return failedSlot(slot, `${error instanceof Error ? error.message : String(error)}`);
+      } catch {
+        return failedSlot(slot, `The ${slot} evidence could not be safely retained.`);
       }
     };
     // Each JSON capture is bounded independently so one oversized payload
@@ -309,8 +369,8 @@ export async function captureIssue(
         slot: "ui-excerpt" as const,
         capture: (() => {
           const value = sanitiseEvidenceJson(asJson({
-            before: boundedSnapshot(context.before),
-            after: boundedSnapshot(context.after),
+            before: persistedSnapshot(context.before, targetRedaction),
+            after: persistedSnapshot(context.after, targetRedaction),
           }));
           return { status: "available" as const, format: "json" as const, value };
         })(),
@@ -340,8 +400,12 @@ export async function captureIssue(
     const written = await writeIssueEvidence(store, {
       issueId: sourceIssue.id,
       artifacts: [
-        { slot: "before-screenshot", capture: { status: "available", format: "binary", data: context.beforePng, mediaType: "image/png" } },
-        { slot: "after-screenshot", capture: { status: "available", format: "binary", data: context.afterPng, mediaType: "image/png" } },
+        { slot: "before-screenshot", capture: context.beforePng === null
+          ? { status: "unavailable", reason: "Screenshot persistence was disabled by --no-screenshots." }
+          : { status: "available", format: "binary", data: context.beforePng, mediaType: "image/png" } },
+        { slot: "after-screenshot", capture: context.afterPng === null
+          ? { status: "unavailable", reason: "Screenshot persistence was disabled by --no-screenshots." }
+          : { status: "available", format: "binary", data: context.afterPng, mediaType: "image/png" } },
         ...artifacts,
         {
           slot: "navigation-path",
@@ -402,7 +466,7 @@ export async function captureIssue(
     // writing a second set into the same immutable store. Surface the failure
     // to the command rather than publishing a mixed bundle.
     throw new Error(
-      `Evidence artifacts could not be retained for ${sourceIssue.id}: ${sanitiseUntrustedText(error instanceof Error ? error.message : String(error), 400)}`,
+      `Evidence artifacts could not be safely retained for ${sourceIssue.id}.`,
       { cause: error },
     );
   }
@@ -417,6 +481,59 @@ function skippedEvidenceIssue(sourceIssue: TVDoctorIssue, reason: string): Captu
   };
 }
 
+const EVIDENCE_SEVERITIES: readonly TVDoctorIssue["severity"][] = [
+  "critical", "high", "medium", "low", "info",
+];
+
+function evidenceActionability(issue: TVDoctorIssue): number {
+  if (issue.confidence === "deterministic") {
+    return issue.reproduction.status === "available" && issue.reproduction.confidence === "deterministic"
+      ? 0
+      : 1;
+  }
+  if (issue.confidence === "heuristic") return 2;
+  if (issue.confidence === "inference") return 3;
+  return 4;
+}
+
+/** Schedule globally by severity and actionability, then fairly across packs.
+ * Indices retain the original order within each pack/tier and allow report
+ * results to be restored to their exact source positions after capture.
+ */
+function evidenceCaptureOrder(issues: readonly TVDoctorIssue[]): readonly number[] {
+  const tiers = new Map<number, Map<string, number[]>>();
+  for (const [index, issue] of issues.entries()) {
+    const priority = EVIDENCE_SEVERITIES.indexOf(issue.severity) * 5 + evidenceActionability(issue);
+    let packGroups = tiers.get(priority);
+    if (packGroups === undefined) {
+      packGroups = new Map();
+      tiers.set(priority, packGroups);
+    }
+    const indices = packGroups.get(issue.pack) ?? [];
+    indices.push(index);
+    packGroups.set(issue.pack, indices);
+  }
+
+  const order: number[] = [];
+  for (const priority of [...tiers.keys()].sort((left, right) => left - right)) {
+    const groups = tiers.get(priority);
+    if (groups === undefined) continue;
+    let active = [...groups.values()].map((indices) => ({ indices, offset: 0 }));
+    while (active.length > 0) {
+      const remaining: typeof active = [];
+      for (const group of active) {
+        const index = group.indices[group.offset];
+        if (index === undefined) continue;
+        order.push(index);
+        group.offset += 1;
+        if (group.offset < group.indices.length) remaining.push(group);
+      }
+      active = remaining;
+    }
+  }
+  return order;
+}
+
 type IssueCapturer = typeof captureIssue;
 
 export async function captureIssuesWithinBudget(
@@ -426,51 +543,72 @@ export async function captureIssuesWithinBudget(
   issues: readonly TVDoctorIssue[],
   createDriver: () => PlaywrightWebDriver,
   capture: IssueCapturer = captureIssue,
-  now: () => number = Date.now,
+  now: () => number = () => performance.now(),
   signal?: AbortSignal,
+  captureScreenshots = true,
+  targetRedaction?: "origin",
+  fixtureProfileSelection = false,
+  maxIssuesWithFreshEvidence = MAX_ISSUES_WITH_FRESH_EVIDENCE,
 ): Promise<readonly CapturedIssue[]> {
+  if (!Number.isSafeInteger(maxIssuesWithFreshEvidence)
+    || maxIssuesWithFreshEvidence < 1
+    || maxIssuesWithFreshEvidence > MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE) {
+    throw new TypeError("Fresh evidence issue limit must be a positive bounded integer.");
+  }
   const startedAtMs = now();
-  const captured: CapturedIssue[] = [];
+  const captured: (CapturedIssue | undefined)[] = Array.from({ length: issues.length }, () => undefined);
+  let attemptedCaptures = 0;
   let sharedDriver: PlaywrightWebDriver | null = null;
   try {
-    for (const [index, issue] of issues.entries()) {
+    for (const index of evidenceCaptureOrder(issues)) {
+      const issue = issues[index];
+      if (issue === undefined) throw new Error("Evidence capture order referenced a missing issue.");
       if (signal?.aborted === true) {
-        captured.push(skippedEvidenceIssue(
+        captured[index] = skippedEvidenceIssue(
           issue,
           "Fresh evidence was not recaptured because the scan was interrupted.",
-        ));
+        );
         continue;
       }
-      if (index >= MAX_ISSUES_WITH_FRESH_EVIDENCE) {
-        captured.push(skippedEvidenceIssue(
+      if (attemptedCaptures >= maxIssuesWithFreshEvidence) {
+        captured[index] = skippedEvidenceIssue(
           issue,
-          `Fresh evidence was not recaptured because the per-run limit of ${String(MAX_ISSUES_WITH_FRESH_EVIDENCE)} issues was reached.`,
-        ));
+          `Fresh evidence was not recaptured because the per-run limit of ${String(maxIssuesWithFreshEvidence)} issues was reached.`,
+        );
         continue;
       }
-      if (now() - startedAtMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
-        captured.push(skippedEvidenceIssue(
+      const elapsedMs = Math.max(0, now() - startedAtMs);
+      if (elapsedMs >= MAX_EVIDENCE_CAPTURE_DURATION_MS) {
+        captured[index] = skippedEvidenceIssue(
           issue,
           `Fresh evidence was not recaptured because the ${String(MAX_EVIDENCE_CAPTURE_DURATION_MS)} ms run budget was reached.`,
-        ));
+        );
         continue;
       }
+      attemptedCaptures += 1;
       if (capture === captureIssue) {
         sharedDriver ??= createDriver();
-        captured.push(await capture(
+        captured[index] = await capture(
           store,
           target,
           products,
           issue,
           createDriver,
           sharedDriver,
-        ));
+          captureScreenshots,
+          targetRedaction,
+          fixtureProfileSelection,
+          Math.min(EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS, MAX_EVIDENCE_CAPTURE_DURATION_MS - elapsedMs),
+        );
       } else {
-        captured.push(await capture(store, target, products, issue, createDriver));
+        captured[index] = await capture(store, target, products, issue, createDriver);
       }
     }
   } finally {
     await sharedDriver?.close().catch(() => undefined);
   }
-  return captured;
+  return captured.map((result) => {
+    if (result === undefined) throw new Error("Evidence capture omitted a source issue.");
+    return result;
+  });
 }

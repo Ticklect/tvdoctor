@@ -66,9 +66,17 @@ export interface IssueEvidenceWriteResult {
 
 interface JsonSanitiseBudget {
   nodes: number;
+  readonly maxNodes: number;
+  readonly maxEntries: number;
 }
 
 const PROTOTYPE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const ISSUE_EVIDENCE_JSON_BUDGET = { maxNodes: 10_000, maxEntries: 2_000 } as const;
+// Navigation graph and audit-inventory exports aggregate many *already bounded*
+// observations; applying the much smaller per-issue limit discards the entire
+// Deep report at roughly a few hundred edges. Keep both formats bounded, but
+// do not confuse one issue excerpt with a complete navigation graph.
+const AGGREGATE_REPORT_JSON_BUDGET = { maxNodes: 250_000, maxEntries: 20_000 } as const;
 
 function sanitiseJsonValue(
   value: JsonValue,
@@ -76,7 +84,7 @@ function sanitiseJsonValue(
   depth: number,
 ): JsonValue {
   budget.nodes += 1;
-  if (budget.nodes > 10_000) throw new TypeError("Evidence JSON exceeds the node limit.");
+  if (budget.nodes > budget.maxNodes) throw new TypeError("Evidence JSON exceeds the node limit.");
   if (depth > 40) throw new TypeError("Evidence JSON exceeds the nesting limit.");
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") {
@@ -85,7 +93,7 @@ function sanitiseJsonValue(
   }
   if (typeof value === "string") return sanitiseUntrustedText(value, 4_000);
   if (Array.isArray(value)) {
-    if (value.length > 2_000) throw new TypeError("Evidence JSON array exceeds the item limit.");
+    if (value.length > budget.maxEntries) throw new TypeError("Evidence JSON array exceeds the item limit.");
     return value.map((item) => sanitiseJsonValue(item, budget, depth + 1));
   }
 
@@ -98,7 +106,7 @@ function sanitiseJsonValue(
     throw new TypeError("Evidence JSON cannot contain symbol properties.");
   }
   const keys = Object.keys(record);
-  if (keys.length > 2_000) throw new TypeError("Evidence JSON object exceeds the property limit.");
+  if (keys.length > budget.maxEntries) throw new TypeError("Evidence JSON object exceeds the property limit.");
   const result = Object.create(null) as Record<string, JsonValue>;
   for (const rawKey of keys.sort()) {
     const descriptor = Object.getOwnPropertyDescriptor(record, rawKey);
@@ -122,7 +130,12 @@ function sanitiseJsonValue(
 }
 
 export function sanitiseEvidenceJson(value: JsonValue): JsonValue {
-  return sanitiseJsonValue(value, { nodes: 0 }, 0);
+  return sanitiseJsonValue(value, { nodes: 0, ...ISSUE_EVIDENCE_JSON_BUDGET }, 0);
+}
+
+/** Sanitise bounded aggregate navigation/report sidecars, not per-issue evidence. */
+export function sanitiseAggregateReportJson(value: JsonValue): JsonValue {
+  return sanitiseJsonValue(value, { nodes: 0, ...AGGREGATE_REPORT_JSON_BUDGET }, 0);
 }
 
 function assertFormatMatchesSlot(slot: IssueEvidenceSlot, capture: EvidenceCapture): void {

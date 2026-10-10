@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Route restoration test</title>
+  <style>
+    body { background: #101c27; color: white; font: 28px system-ui; margin: 48px; }
+    button { font: inherit; padding: 12px 24px; margin: 12px; }
+    button:focus { outline: 4px solid #71dfb1; }
+  </style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+  // Separate, disposable app route fixture. Reloading a nested ?view= route
+  // must NOT return Home; relaunching the original URL does.
+  const app = document.getElementById("app");
+  function view() {
+    const selector = new URLSearchParams(location.search).get("view");
+    return selector === "search" || selector === "settings" ? selector : "home";
+  }
+  function render() {
+    const current = view();
+    if (current === "home") {
+      app.innerHTML = '<h1>Route Home</h1><nav aria-label="Primary navigation"><button id="home-search" data-tv-id="home-search">Search</button><button id="home-settings" data-tv-id="home-settings">Settings</button></nav>';
+    } else if (current === "search") {
+      app.innerHTML = '<h1>Route Search</h1><button id="search-result" data-tv-id="search-result">Search result</button><button id="search-back" data-tv-id="search-back">Back to Home</button>';
+    } else {
+      app.innerHTML = '<h1>Route Settings</h1><button id="settings-appearance" data-tv-id="settings-appearance">Appearance menu</button><button id="settings-back" data-tv-id="settings-back">Back to Home</button>';
+    }
+    app.querySelector("button")?.focus();
+  }
+  function navigate(next) {
+    history.pushState({}, "", next === "home" ? location.pathname : "?view=" + next);
+    render();
+  }
+  document.addEventListener("keydown", (event) => {
+    const buttons = [...app.querySelectorAll("button")];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      event.preventDefault();
+      buttons[Math.min(buttons.length - 1, index + 1)]?.focus();
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      buttons[Math.max(0, index - 1)]?.focus();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const id = document.activeElement?.id ?? "";
+      if (id === "home-search") navigate("search");
+      else if (id === "home-settings") navigate("settings");
+      else if (id.endsWith("-back")) navigate("home");
+    } else if (event.key === "Escape" || event.key === "Backspace") {
+      event.preventDefault();
+      if (view() !== "home") navigate("home");
+    }
+  });
+  window.addEventListener("popstate", render);
+  render();
+</script>
+</body>
+</html>

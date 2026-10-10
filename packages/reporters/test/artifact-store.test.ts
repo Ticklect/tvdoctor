@@ -288,7 +288,7 @@ describe("secure artifact storage", () => {
     expect(bundle.ciSummaryMarkdown?.relativePath).toBe("exports/ci-summary.md");
     expect(bundle.junitXml?.relativePath).toBe("exports/junit.xml");
     expect(await readFile(bundle.ciSummaryMarkdown?.absolutePath ?? "", "utf8"))
-      .toContain("Policy: fail on **high**");
+      .toContain("Policy: fail on **VERIFIED high**");
     expect(await readFile(bundle.junitXml?.absolutePath ?? "", "utf8"))
       .toContain('<testsuite name="TVDoctor"');
   });

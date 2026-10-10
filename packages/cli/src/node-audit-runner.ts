@@ -4,6 +4,7 @@ import {
   explore,
   prepareStartup,
   type ExplorationResult,
+  type ExplorationRestorationMode,
   type NavigationDiagnosticFinding,
   type StartupPreparationResult,
 } from "@tvdoctor/core";
@@ -11,6 +12,9 @@ import type {
   PlaywrightWebDriver,
   WebDriverPerformanceProfile,
 } from "@tvdoctor/driver-web";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import {
   discoverStreamingSettingsRoute,
   runStreamingPack,
@@ -24,8 +28,11 @@ import {
 import type { Capability, RemoteKey } from "@tvdoctor/protocol";
 import {
   buildTVDoctorReportV1,
+  highestVerifiedSeverity,
   writeReportBundle,
+  type ArtifactStore,
   type JsonValue,
+  type ReportBundleOptions,
 } from "@tvdoctor/reporters";
 import type {
   TestCommandRequest,
@@ -34,9 +41,14 @@ import type {
 import {
   REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
   REPLAY_TARGET_OVERRIDE_REQUIRED,
+  PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY,
+  PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO,
+  MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
+  MAX_ISSUES_WITH_FRESH_EVIDENCE,
   STREAMING_BUDGETS,
   WEB_BUDGETS,
   type AuditRunProducts,
+  type NodeAuditDriverOptions,
   type WebStorageState,
 } from "./node-audit-contracts.js";
 import {
@@ -47,10 +59,10 @@ import {
   createSafeExplorationDriver,
   navigationInventory,
   resolveStartupDecisionThroughFocus,
-  specialisedReachabilityScreen,
 } from "./node-audit-navigation.js";
 import {
   highestSeverity,
+  publicTargetLocation,
   reserveAuditOutput,
   targetRequiresReplayOverride,
   writeAuditAuxiliaryArtifacts,
@@ -66,10 +78,20 @@ import {
   streamingSettingsSequence,
 } from "./node-audit-selection.js";
 import {
+  NAVIGATION_GRAPH_JSON_PATH,
+  NAVIGATION_GRAPH_MARKDOWN_PATH,
+  writeNavigationGraphArtifacts,
+} from "./navigation-graph-output.js";
+import {
   createStreamingAuditPointerProbe,
   createWebAuditHooks,
 } from "./web-audit-hooks.js";
 import { CLI_VERSION } from "./version.js";
+import {
+  SOURCE_CORRELATION_JSON_PATH,
+  SOURCE_CORRELATION_MARKDOWN_PATH,
+  writeSourceCorrelationArtifacts,
+} from "./source-correlation.js";
 import {
   executeJourney,
   JOURNEY_HASH_ENVIRONMENT_KEY,
@@ -83,20 +105,96 @@ function asJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
+/**
+ * Experimental, opt-in web traversal optimisation. Root-only stays the default
+ * until real-app recall and replay equivalence have been demonstrated. Never
+ * disable root fallback or self-loop refresh: both isolate uncertain app state.
+ *
+ * Set TVDOCTOR_WEB_NAV_RESTORATION=verified-live-only or verified-local to
+ * compare against the default root-only run with the same navigation budget.
+ */
+export function webNavigationRestorationMode(
+  environment: NodeJS.ProcessEnv = process.env,
+): ExplorationRestorationMode {
+  const value = environment["TVDOCTOR_WEB_NAV_RESTORATION"];
+  if (value === undefined || value === "" || value === "root-only") return "root-only";
+  if (value === "verified-live-only" || value === "verified-local") return value;
+  throw new TypeError("TVDOCTOR_WEB_NAV_RESTORATION must be root-only, verified-live-only, or verified-local.");
+}
+
+interface VideoEvidenceSidecar {
+  readonly absolutePath: string;
+  readonly relativePath: "video/audit-session.webm";
+}
+
+async function recordedVideoSidecar(
+  store: ArtifactStore,
+  driver: PlaywrightWebDriver,
+  requested: boolean,
+): Promise<VideoEvidenceSidecar | null> {
+  if (!requested || typeof driver.getRecordedVideoPath !== "function") return null;
+  let candidate: string | null;
+  try {
+    candidate = driver.getRecordedVideoPath();
+  } catch {
+    return null;
+  }
+  if (candidate === null) return null;
+
+  const expected = resolve(store.outputRoot, "video", "audit-session.webm");
+  if (resolve(candidate) !== expected) return null;
+  try {
+    const metadata = await lstat(expected);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    const [realRoot, realFile] = await Promise.all([realpath(store.outputRoot), realpath(expected)]);
+    const difference = relative(realRoot, realFile);
+    if (difference === ".." || difference.startsWith(`..${sep}`) || isAbsolute(difference)) return null;
+  } catch {
+    return null;
+  }
+  return { absolutePath: expected, relativePath: "video/audit-session.webm" };
+}
+
+function videoBundleOptions(video: VideoEvidenceSidecar | null): Pick<ReportBundleOptions, "htmlSidecars"> {
+  if (video === null) return {};
+  return {
+    htmlSidecars: [{
+      href: video.relativePath,
+      label: "Audit session video",
+      mediaType: "video/webm",
+      warning: "Optional recording; may contain sensitive target content. Review before sharing.",
+    }],
+  };
+}
+
+function videoDetails(requested: boolean, video: VideoEvidenceSidecar | null): readonly string[] {
+  if (!requested) return [];
+  return video === null
+    ? ["Video evidence unavailable; audit classification does not depend on video recording."]
+    : [`Video evidence: ${video.absolutePath} (optional; may contain sensitive target content).`];
+}
+
 export async function runAudit(
   request: TestCommandRequest,
-  createDriver: () => PlaywrightWebDriver,
+  createDriver: (options?: NodeAuditDriverOptions) => PlaywrightWebDriver,
   createSessionDriver: (storageState: WebStorageState) => PlaywrightWebDriver = () => {
     throw new Error("Prepared-session driver creation is unavailable.");
   },
 ): Promise<TestCommandResult> {
+  const packs = selectedPacks(request);
+  const navigationRestorationMode = packs.has("navigation")
+    ? webNavigationRestorationMode()
+    : "root-only";
+  // Validate the opt-in before reserving a unique output directory. An invalid
+  // local setting must not leave a report-less directory behind.
   const store = await reserveAuditOutput(request.outputPath);
   const startedAt = new Date();
-  const packs = selectedPacks(request);
   const webStages = selectedWebStages(packs);
   const needSettingsRoute = !packs.has("streaming")
     && (webStages.includes("layout") || webStages.includes("performance"));
-  const driver = createDriver();
+  const driver = createDriver(request.recordVideo === true
+    ? { recordVideoDirectory: join(store.outputRoot, "video") }
+    : undefined);
   let capabilities: ReadonlySet<Capability> = new Set();
   let navigation: ExplorationResult | null = null;
   let navigationFindings: readonly NavigationDiagnosticFinding[] = [];
@@ -114,24 +212,33 @@ export async function runAudit(
   let journey: JourneyV1 | null = null;
   let journeyExecution: JourneyExecutionResult | null = null;
   let sessionState: WebStorageState | null = null;
+  let setupNotStarted: { readonly startup: StartupPreparationResult; readonly findings: readonly NavigationDiagnosticFinding[] } | null = null;
   const createIsolatedDriver = (): PlaywrightWebDriver => {
     const preparedState = sessionState;
     return preparedState === null ? createDriver() : createSessionDriver(preparedState);
   };
   try {
-    await driver.launch({ id: "cli-web-audit", launchUri: request.target });
+    await driver.launch(
+      { id: "cli-web-audit", launchUri: request.target },
+      request.signal === undefined ? undefined : { signal: request.signal },
+    );
     if (request.journeyPath !== undefined) {
       journey = await loadJourney(request.journeyPath);
       journeyExecution = await executeJourney(driver, journey, process.env, request.signal);
     }
-    capabilities = await driver.capabilities();
+    capabilities = await driver.capabilities(
+      request.signal === undefined ? undefined : { signal: request.signal },
+    );
     if (packs.has("navigation") || journey !== null) {
       const preparationStartedAt = performance.now();
       navigationStartup = await prepareStartup(driver, {
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
         policy: request.startupActions === undefined
           ? { kind: "observe" }
           : { kind: "remote-sequence", actions: request.startupActions as RemoteKey[] },
-        resetStrategy: "reload",
+        // prepareStartup captures this reset in restoreToPreparedState; use
+        // relaunch so replay returns to launchUri after a nested SPA route.
+        resetStrategy: "relaunch",
         stability: request.mode === "quick"
           ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
           : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
@@ -149,11 +256,14 @@ export async function runAudit(
           request.startupDecision,
           blocker.kind,
           navigationStartup.representativeSnapshot,
+          request.signal === undefined ? undefined : { signal: request.signal },
         );
+        request.signal?.throwIfAborted();
         if (actions !== null && actions.length > 0) {
           navigationStartup = await prepareStartup(driver, {
+            ...(request.signal === undefined ? {} : { signal: request.signal }),
             policy: { kind: "remote-sequence", actions },
-            resetStrategy: "reload",
+            resetStrategy: "relaunch",
             stability: request.mode === "quick"
               ? { maxSnapshots: 4, requiredStableSnapshots: 2, pollIntervalMs: 100, timeoutMs: 8_000 }
               : { maxSnapshots: 8, requiredStableSnapshots: 2, pollIntervalMs: 200, timeoutMs: 20_000 },
@@ -202,11 +312,27 @@ export async function runAudit(
     }
     if (packs.has("navigation") && navigationStartup?.status === "ready" && navigationStartup.restoreToPreparedState !== undefined) {
       const explorationStartedAt = performance.now();
-      navigation = await explore(createSafeExplorationDriver(driver), {
+      navigation = await explore(createSafeExplorationDriver(driver, {
+        fixtureProfileSelection: request.fixtureProfileSelection === true,
+      }), {
         profile: request.mode,
-        resetStrategy: "reload",
+        restorationMode: navigationRestorationMode,
+        allowRootRestorationFallback: true,
+        refreshVisibleSelfLoops: true,
+        // Restore the initial launch route even after the app pushes a new
+        // history pathname; reload would preserve the current nested route.
+        // Web relaunch uses the original tab and retains sessionStorage.
+        resetStrategy: "relaunch",
         restoreInitialSnapshot: navigationStartup.restoreToPreparedState,
-        ...(request.maxDurationMs === undefined ? {} : { budgets: { maxDurationMs: request.maxDurationMs } }),
+        ...((request.maxDurationMs === undefined && request.navigationBudgets === undefined)
+          ? {}
+          : { budgets: {
+            ...request.navigationBudgets,
+            ...(request.maxDurationMs === undefined ? {} : { maxDurationMs: request.maxDurationMs }),
+          } }),
+        ...(request.disableRepetitionCompression === true
+          ? { repetitionCompression: { enabled: false } }
+          : {}),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
         settling: {
         strategy: "stable-snapshot",
@@ -220,38 +346,30 @@ export async function runAudit(
       const diagnosticsStartedAt = performance.now();
       navigationFindings = [
         ...startupFindings,
-        ...diagnoseNavigation(navigation).findings.filter((finding) => (
-          !specialisedReachabilityScreen(finding, navigation as ExplorationResult)
-        )),
+        ...diagnoseNavigation(navigation).findings,
       ];
       navigationDiagnosticsMs = Math.max(0, performance.now() - diagnosticsStartedAt);
     }
     if ((packs.has("navigation") || journey !== null) && navigationStartup?.status !== "ready") {
       navigationFindings = startupFindings;
       if (navigationStartup !== null) {
-        return await writeSetupNotStartedReport(
-          store,
-          request,
-          startedAt,
-          navigationStartup,
-          navigationFindings,
-        );
+        setupNotStarted = { startup: navigationStartup, findings: navigationFindings };
       }
     }
-    if (request.signal?.aborted !== true && packs.has("streaming")) {
+    if (setupNotStarted === null && request.signal?.aborted !== true && packs.has("streaming")) {
       streaming = await runStreamingPack(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
-        resetStrategy: "reload",
+            resetStrategy: "relaunch",
         ...(navigationStartup?.restoreToPreparedState === undefined
           ? {}
           : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
         pointerProbe: createStreamingAuditPointerProbe(request.target, createIsolatedDriver),
       });
       playerSettingsSequence = streamingSettingsSequence(streaming);
-    } else if (request.signal?.aborted !== true && needSettingsRoute) {
+    } else if (setupNotStarted === null && request.signal?.aborted !== true && needSettingsRoute) {
       settingsRouteDiscovery = await discoverStreamingSettingsRoute(driver, {
         budgets: STREAMING_BUDGETS[request.mode],
-        resetStrategy: "reload",
+        resetStrategy: "relaunch",
         ...(navigationStartup?.restoreToPreparedState === undefined
           ? {}
           : { restoreInitialState: async () => { await navigationStartup?.restoreToPreparedState?.(); } }),
@@ -260,7 +378,7 @@ export async function runAudit(
         playerSettingsSequence = settingsRouteDiscovery.sequence;
       }
     }
-    if (request.signal?.aborted !== true && webStages.length > 0) {
+    if (setupNotStarted === null && request.signal?.aborted !== true && webStages.length > 0) {
       web = await runWebPack(driver, {
         stages: webStages,
         budgets: WEB_BUDGETS[request.mode],
@@ -283,8 +401,23 @@ export async function runAudit(
       if (runFailure === null && request.signal?.aborted !== true) throw error;
     });
   }
+  const video = await recordedVideoSidecar(store, driver, request.recordVideo === true);
+  const bundleSidecars = videoBundleOptions(video);
+  const recordingDetails = videoDetails(request.recordVideo === true, video);
   if (runFailure !== null) {
-    return await writeFailedRunReport(store, request, startedAt, runFailure.error);
+    const failed = await writeFailedRunReport(store, request, startedAt, runFailure.error, bundleSidecars);
+    return { ...failed, details: [...failed.details, ...recordingDetails] };
+  }
+  if (setupNotStarted !== null) {
+    const setup = await writeSetupNotStartedReport(
+      store,
+      request,
+      startedAt,
+      setupNotStarted.startup,
+      setupNotStarted.findings,
+      bundleSidecars,
+    );
+    return { ...setup, details: [...setup.details, ...recordingDetails] };
   }
 
   const products: AuditRunProducts = {
@@ -310,16 +443,24 @@ export async function runAudit(
     uniqueIssues,
     createIsolatedDriver,
     captureIssue,
-    Date.now,
+    () => performance.now(),
     request.signal,
+    request.screenshots !== false,
+    request.targetRedaction,
+    request.fixtureProfileSelection === true,
+    request.mode === "deep"
+      ? MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE
+      : MAX_ISSUES_WITH_FRESH_EVIDENCE,
   );
   const evidenceGenerationMs = Math.max(0, performance.now() - evidenceStartedAt);
   const inventory = navigationInventory(navigation, web);
   const ledgerValue = asJson({
     schemaVersion: 1,
-    target: request.target,
+    target: publicTargetLocation(request),
     mode: request.mode,
     selectedPacks: [...packs],
+    navigationRestorationMode: packs.has("navigation") ? navigationRestorationMode : null,
+    fixtureProfileSelectionEnabled: request.fixtureProfileSelection === true,
     startupPreparation: navigationStartup === null ? null : {
       status: navigationStartup.status,
       policy: navigationStartup.policy.kind,
@@ -356,7 +497,13 @@ export async function runAudit(
     },
     web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
   });
-  const globalArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, asJson(inventory));
+  // navigationInventory constructs JSON-safe primitives/arrays with explicit nulls;
+  // streaming these directly avoids serialising and parsing the full graph twice.
+  const auxiliaryArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, inventory as unknown as JsonValue);
+  const navigationGraphArtifacts = navigation === null
+    ? []
+    : await writeNavigationGraphArtifacts(store, navigation, navigationFindings);
+  const globalArtifacts = [...auxiliaryArtifacts, ...navigationGraphArtifacts];
   const evidenceFailed = captured.some((entry) => entry.failed);
   const coverage = packCoverage(products, packs);
   const runPartial = request.signal?.aborted === true
@@ -374,9 +521,9 @@ export async function runAudit(
       durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
     },
     target: {
-      name: new URL(request.target).hostname,
+      name: request.targetName ?? new URL(request.target).hostname,
       platform: "web",
-      location: request.target,
+      location: publicTargetLocation(request),
       environment: {
         browser: "chromium",
         viewport: "1280x720",
@@ -385,7 +532,9 @@ export async function runAudit(
           [JOURNEY_HASH_ENVIRONMENT_KEY]: journey.sha256,
           [JOURNEY_NAME_ENVIRONMENT_KEY]: journey.name,
         }),
-        ...(targetRequiresReplayOverride(request.target)
+        ...(request.packagedDemo === true
+          ? { [PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY]: PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO }
+          : request.targetRedaction === "origin" || targetRequiresReplayOverride(request.target)
           ? { [REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]: REPLAY_TARGET_OVERRIDE_REQUIRED }
           : {}),
       },
@@ -419,7 +568,11 @@ export async function runAudit(
           + (navigation?.budgets.maxDurationMs ?? 0)
           + (streaming?.budgets.maxDurationMs ?? settingsRouteDiscovery?.budgets.maxDurationMs ?? 0)
           + (web?.budgets.maxDurationMs ?? 0),
-        maxRepetitiveItems: request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
+        // The source-checkout scan command disables repetition compression.
+        // Do not report the profile's compression allowance as an active cap.
+        maxRepetitiveItems: request.disableRepetitionCompression === true
+          ? null
+          : request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
         exhausted: exhaustedBudgets(products, packs),
       },
     },
@@ -430,18 +583,46 @@ export async function runAudit(
   const bundle = await writeReportBundle(
     store,
     report,
-    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+    {
+      ...bundleSidecars,
+      ...(request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } }),
+    },
   );
+  const correlationDetails: string[] = [];
+  if (request.sourceRoot !== undefined) {
+    try {
+      await writeSourceCorrelationArtifacts({
+        store,
+        sourceRoot: request.sourceRoot,
+        issues: report.issues,
+        excludeRoots: [store.outputRoot],
+      });
+      correlationDetails.push(
+        `Source correlation JSON: ${join(dirname(bundle.reportJson.absolutePath), SOURCE_CORRELATION_JSON_PATH)}`,
+        `Source correlation: ${join(dirname(bundle.reportJson.absolutePath), SOURCE_CORRELATION_MARKDOWN_PATH)}`,
+      );
+    } catch {
+      correlationDetails.push("Source correlation unavailable; the configured source root could not be scanned safely.");
+    }
+  }
   const evidenceFailureCount = captured.filter((entry) => entry.failed).length;
   return {
     status: report.run.status,
     issueCount: report.issues.length,
     highestSeverity: highestSeverity(report.issues),
+    highestVerifiedSeverity: highestVerifiedSeverity(report.issues),
     reportPath: bundle.reportJson.absolutePath,
     details: [
       `Packs ${String(coverage.filter((entry) => entry.status === "completed").length)}/${String(coverage.length)} completed`,
+      ...(navigation === null ? [] : [`Navigation restoration: ${navigationRestorationMode}${navigationRestorationMode === "root-only" ? "" : " (experimental opt-in)"}`]),
       `Actions ${String(report.coverage.actionsSent)}/${String(report.coverage.budget.maxActions ?? 0)}`,
       `States ${String(report.coverage.focusStatesDiscovered)}; issues ${String(report.issues.length)}; evidence failures ${String(evidenceFailureCount)}`,
+      ...(navigation === null ? [] : [
+        `Navigation graph JSON: ${join(dirname(bundle.reportJson.absolutePath), NAVIGATION_GRAPH_JSON_PATH)}`,
+        `Navigation graph: ${join(dirname(bundle.reportJson.absolutePath), NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
+      ]),
+      ...correlationDetails,
+      ...recordingDetails,
       ...(runPartial ? partialRunDetails(products, packs, evidenceFailureCount) : []),
     ],
   };

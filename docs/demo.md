@@ -1,74 +1,141 @@
 # Demo and exact reproduction
 
-The demo shows evidence, not a staged success message. The current source
-checkout reproduces the verified Northstar streaming gate. The short storyboard
-below can be captured for release communications, but the executable gate and
-generated bundle are the verification source of truth.
+`tvdoctor demo` is the fastest way to see the current v0.1 product path without
+supplying an application URL or authoring a navigation script. It runs the
+packaged Northstar navigation-only fixture through the same quick navigation
+engine used by normal web scans, writes a regular report bundle, then replays the
+known deterministic failure.
 
-## Verified source sequence
+## Run the packaged demo
 
-Install and run the controlled real-Chromium gate:
+Install the matched Chromium runtime, then run:
+
+```sh
+tvdoctor setup
+tvdoctor demo
+```
+
+The proven packaged run completes **6 actions, 1 state, 1 issue**. TVDoctor finds
+the seeded Home `More info` `remote.reachability` failure and the stored replay
+classifies it as **REPRODUCED**.
+
+This is **controlled seeded evidence, not a measure of production accuracy**.
+Northstar is deliberately broken so the command has a stable first-success
+contract. The result verifies packaging, browser launch, bounded navigation,
+evidence/report generation, replay correlation, and deterministic replay against
+that fixture. It does not establish production recall, precision, compatibility,
+or release readiness for arbitrary TV applications.
+
+For an instant evidence view, open the checked-in [sample report](sample-report.md).
+
+## What the demo proves
+
+The controlled failure is intentionally small and obvious:
+
+| Field | Demo contract |
+| --- | --- |
+| Fixture | Packaged Northstar, navigation-only |
+| Screen | Home |
+| Rule | `remote.reachability` |
+| Starting focus | `hero-watch` |
+| Remote action | `RIGHT` |
+| Expected target | visible `More info` / `hero-more-info` |
+| Observed target | focus remains on `hero-watch` |
+| Audit result | 6 actions, 1 state, 1 issue |
+| Replay result | `REPRODUCED` |
+
+The demo serves the packaged static fixture on a loopback-only ephemeral port
+for the audit. Replay is then verified against a freshly served copy of the same
+packaged fixture, so the saved report does not depend on the original ephemeral
+port remaining alive. Both loopback servers are shut down automatically. It does
+not require Vite or a second terminal.
+
+Typical proof includes:
+
+```text
+Packs 1/1 completed
+Actions 6/300
+States 1; issues 1; evidence failures 0
+Seeded More info D-pad failure VERIFIED
+Replay classification REPRODUCED
+Demo VERIFIED: the seeded D-pad failure was found with deterministic evidence.
+Replay: REPRODUCED
+Replay command: tvdoctor replay TVDOCTOR-NAV-... --report ".../report.json"
+```
+
+That saved replay command remains usable after `tvdoctor demo` exits: TVDoctor
+recognises the controlled packaged-demo marker in the report and serves a fresh
+local fixture for replay without restoring the redacted ephemeral URL.
+
+## Windows release bundle
+
+After extracting the Windows bundle:
+
+```powershell
+.\install.ps1
+tvdoctor setup
+tvdoctor doctor
+tvdoctor demo
+```
+
+`tvdoctor setup` explicitly installs and verifies the Chromium build matched to
+this TVDoctor version. The demo and normal web scans can recover by installing a
+missing runtime automatically, but explicit setup is preferable for a predictable
+first run or CI preflight.
+
+## Source checkout
+
+From the repository root:
 
 ```sh
 npm ci
-npx playwright install chromium
-npm run test:streaming-integration
+npm run build
+npm run tvdoctor -- setup
+npm run tvdoctor -- doctor
+npm run tvdoctor -- demo
 ```
 
-The gate performs semantic discovery through Home, Details, Player controls,
-Settings, Captions, Caption Appearance, and nested Back navigation. It generates
-and validates:
+The source build stages the fixture into the CLI package. The demo therefore
+exercises the same packaged-asset boundary used by installed-package smoke tests.
 
-```text
-artifacts/milestone-6-gate/report.html
-artifacts/milestone-6-gate/report.md
-artifacts/milestone-6-gate/report.json
-artifacts/milestone-6-gate/ai-report.md
-artifacts/milestone-6-gate/evidence/
-artifacts/milestone-6-gate/replays/
-```
+## Future npm usage
 
-The checked-in fixture contract deliberately contains more defects than this
-pack owns. The verified streaming gate reports exactly its four in-scope issues;
-it is not a claim that one pack audits the entire application.
-
-## Replay the Caption Text Colour failure
-
-After the gate finishes, start the fixture in one terminal:
+The `tvdoctor` package is not published to npm yet. After a future publication,
+the intended equivalent will be:
 
 ```sh
-npm run fixture:dev
+npx tvdoctor setup
+npx tvdoctor demo
 ```
 
-In another terminal, copy the `remote.reachability` issue ID from the generated
-report and run:
+Until then, use the Windows bundle or source checkout rather than assuming the
+registry command exists.
+
+## Exit semantics
+
+`tvdoctor demo` exits `0` only when the controlled audit completes, the expected
+seeded issue is present with its correlated replay, and replay returns
+`REPRODUCED`. A partial/inconclusive demo exits `3`; invalid usage exits `2`; an
+execution or contract-verification failure exits `4`; missing required local
+runtime support can exit `1`.
+
+That demo-specific success rule is intentionally different from a standalone
+`tvdoctor replay ISSUE_ID`: for a real target, a standalone replay that returns
+`REPRODUCED` exits `1` because the defect is still present.
+
+## Move from demo to your app
+
+Once the demo works, point the navigation-first scan at your own running web app:
 
 ```sh
-npm run tvdoctor -- replay ISSUE_ID --report artifacts/milestone-6-gate/report.json --target http://127.0.0.1:5173
+tvdoctor scan https://your-tv-app.example --mode quick
 ```
 
-For the verified 22 August 2026 fixture, the semantic issue ID was
-`TVDOCTOR-STREAM-D032BE618739189DCCA7FEEF9693F8F1`. Use the ID in your generated
-report if the fixture evidence changes.
+Web support is Experimental. Android TV support is also Experimental and has a
+different ADB/Observer prerequisite path. A clean result only describes completed
+observed coverage, so review [Current limitations](limitations.md) and
+[Benchmarking](BENCHMARKING.md) before using a run as release evidence.
 
-Replay restores a fresh target, executes the stored setup actions, checks the
-pre-action focus checkpoint, dispatches the final key, and classifies the
-observed transition. It does not rerun the complete audit.
-
-## Optional 20-second capture storyboard
-
-Any public capture is an edited explanation, not a claim that the full audit
-finishes in 20 seconds:
-
-| Time | Visible action |
-| --- | --- |
-| 0–3 s | Start the TVDoctor streaming audit against Northstar. |
-| 3–10 s | Accelerated remote focus moves Home → Details → Play → Settings → Captions → Appearance. |
-| 10–14 s | Down skips visible Text Colour; highlight the missing D-pad route. |
-| 14–18 s | Open the high-severity report with before/after and navigation evidence. |
-| 18–23 s | Run the stored replay and show `REPRODUCED`. |
-
-Before publishing a GIF or video, verify that it contains no machine username,
-absolute local path, secret, unrelated browser tab, or misleading runtime claim.
-Keep the fixture label visible so viewers do not mistake a seeded defect for a
-third-party application finding.
+If you capture the demo for documentation or a video, keep the Northstar/seeded
+fixture label visible and do not present the controlled result as third-party app
+accuracy evidence.

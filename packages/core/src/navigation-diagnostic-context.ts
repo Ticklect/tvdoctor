@@ -23,6 +23,20 @@ export interface LocalCoverage {
   readonly attempts: readonly ExplorationActionAttempt[];
 }
 
+/**
+ * Local action coverage cannot prove graph-wide reachability when the explorer
+ * stopped with work still pending or deliberately deferred states. Keep local
+ * observations usable as REVIEW evidence without treating them as exhaustive.
+ */
+export function frontierCoverageComplete(result: ExplorationResult): boolean {
+  return result.termination.complete === true
+    && result.termination.reason === "queue-exhausted"
+    && (result.termination.remainingFrontierEntries ?? 0) === 0
+    && (result.termination.remainingCandidateActions ?? 0) === 0
+    && result.statistics.pendingStates === 0
+    && (result.statistics.deferredStates ?? 0) === 0;
+}
+
 export interface DirectionalCandidate {
   readonly indexed: IndexedNode;
   readonly score: number;

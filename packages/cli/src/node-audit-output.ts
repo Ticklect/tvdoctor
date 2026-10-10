@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { Buffer } from "node:buffer";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type {
@@ -12,13 +10,14 @@ import type {
 } from "@tvdoctor/protocol";
 import {
   buildTVDoctorReportV1,
+  aggregateReportJsonChunks,
   createArtifactStore,
-  sanitiseEvidenceJson,
-  sanitiseUntrustedText,
+  highestVerifiedSeverity,
   stableJson,
   writeReportBundle,
   type ArtifactStore,
   type JsonValue,
+  type ReportBundleOptions,
 } from "@tvdoctor/reporters";
 import type {
   TestCommandRequest,
@@ -37,6 +36,43 @@ export function targetRequiresReplayOverride(target: string): boolean {
   return parsed.search.length > 0 || parsed.hash.length > 0;
 }
 
+export function publicTargetLocation(request: Pick<TestCommandRequest, "target" | "targetRedaction">): string {
+  if (request.targetRedaction !== "origin") return request.target;
+  return new URL(request.target).origin;
+}
+
+type FailedRunCode =
+  | "network-unreachable"
+  | "browser-runtime-unavailable"
+  | "filesystem-access"
+  | "browser-session-failed";
+
+function classifyFailedRun(error: unknown): { readonly code: FailedRunCode; readonly summary: string } {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/page\.goto|net::|ERR_(?:CONNECTION|NAME|TIMED)|ECONNREFUSED|ENOTFOUND/iu.test(raw)) {
+    return {
+      code: "network-unreachable",
+      summary: "The website could not be reached. Check the address and network connection.",
+    };
+  }
+  if (/executable.*doesn.t exist|browser.*(?:not found|missing)|playwright.*install/iu.test(raw)) {
+    return {
+      code: "browser-runtime-unavailable",
+      summary: "Chromium is unavailable for web testing.",
+    };
+  }
+  if (/EACCES|EPERM|ENOENT/iu.test(raw)) {
+    return {
+      code: "filesystem-access",
+      summary: "TVDoctor could not access a required file or folder.",
+    };
+  }
+  return {
+    code: "browser-session-failed",
+    summary: "TVDoctor could not complete this scan because the browser session failed.",
+  };
+}
+
 /** Exclusively reserve a new output leaf before constructing a browser. */
 export async function reserveAuditOutput(outputPath: string): Promise<ArtifactStore> {
   const absoluteOutput = resolve(outputPath);
@@ -50,18 +86,12 @@ export async function writeFailedRunReport(
   request: TestCommandRequest,
   startedAt: Date,
   error: unknown,
+  bundleOptions: Pick<ReportBundleOptions, "htmlSidecars"> = {},
 ): Promise<TestCommandResult> {
-  const reason = sanitiseUntrustedText(error instanceof Error ? error.message : String(error), 1_000);
-  const summary = /page\.goto|net::|ERR_(?:CONNECTION|NAME|TIMED)|ECONNREFUSED|ENOTFOUND/iu.test(reason)
-    ? "The website could not be reached. Check the address and network connection."
-    : /executable.*doesn.t exist|browser.*(?:not found|missing)|playwright.*install/iu.test(reason)
-      ? "Chromium is unavailable for web testing."
-      : /EACCES|EPERM|ENOENT/iu.test(reason)
-        ? "TVDoctor could not access a required file or folder."
-        : "TVDoctor could not complete this scan because the browser session failed.";
+  const failure = classifyFailedRun(error);
   await store.writeBundleFile(
     "failure-debug.json",
-    `${stableJson({ schemaVersion: 1, reason })}\n`,
+    `${stableJson({ schemaVersion: 1, code: failure.code, summary: failure.summary })}\n`,
   );
   const completedAt = new Date();
   const report = buildTVDoctorReportV1({
@@ -75,10 +105,10 @@ export async function writeFailedRunReport(
       durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
     },
     target: {
-      name: new URL(request.target).hostname,
+      name: request.targetName ?? new URL(request.target).hostname,
       platform: "web",
-      location: request.target,
-      environment: { browser: "chromium", failure: summary },
+      location: publicTargetLocation(request),
+      environment: { browser: "chromium", failure: failure.summary },
     },
     coverage: {
       screenStatesDiscovered: 0,
@@ -103,17 +133,21 @@ export async function writeFailedRunReport(
   const bundle = await writeReportBundle(
     store,
     report,
-    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+    {
+      ...bundleOptions,
+      ...(request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } }),
+    },
   );
   return {
     status: "failed",
     issueCount: 0,
     highestSeverity: null,
+    highestVerifiedSeverity: null,
     reportPath: bundle.reportJson.absolutePath,
     details: [
       "The scan could not complete.",
-      summary,
-      "Technical detail was retained in failure-debug.json.",
+      failure.summary,
+      "A bounded failure classification was retained in failure-debug.json.",
       `Report: ${bundle.reportHtml.absolutePath}`,
     ],
   };
@@ -125,6 +159,7 @@ export async function writeSetupNotStartedReport(
   startedAt: Date,
   startup: StartupPreparationResult,
   findings: readonly NavigationDiagnosticFinding[],
+  bundleOptions: Pick<ReportBundleOptions, "htmlSidecars"> = {},
 ): Promise<TestCommandResult> {
   const blocker = startup.blockers[0];
   const labels: Readonly<Record<string, string>> = {
@@ -149,9 +184,9 @@ export async function writeSetupNotStartedReport(
       durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
     },
     target: {
-      name: new URL(request.target).hostname,
+      name: request.targetName ?? new URL(request.target).hostname,
       platform: "web",
-      location: request.target,
+      location: publicTargetLocation(request),
       environment: { browser: "chromium", outcome: "scan-not-started" },
     },
     coverage: {
@@ -180,13 +215,17 @@ export async function writeSetupNotStartedReport(
   const bundle = await writeReportBundle(
     store,
     report,
-    request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } },
+    {
+      ...bundleOptions,
+      ...(request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } }),
+    },
   );
   const changedNothing = startup.status === "setup-blocker";
   return {
     status: startup.status === "setup-blocker" ? "partial" : "failed",
     issueCount: issues.length,
     highestSeverity: highestSeverity(issues),
+    highestVerifiedSeverity: highestVerifiedSeverity(issues),
     reportPath: bundle.reportJson.absolutePath,
     details: [
       `The scan was not started because TVDoctor found a ${label}.`,
@@ -203,10 +242,12 @@ export async function writeAuditAuxiliaryArtifacts(
   ledgerValue: JsonValue,
   inventoryValue: JsonValue,
 ): Promise<readonly ArtifactDescriptor[]> {
-  const ledgerText = stableJson(sanitiseEvidenceJson(ledgerValue));
-  await store.writeBundleFile("stage-ledger.json", ledgerText);
-  const inventoryText = stableJson(sanitiseEvidenceJson(inventoryValue));
-  await store.writeBundleFile("inventory.json", inventoryText);
+  const ledgerFile = await store.writeBundleFileStream(
+    "stage-ledger.json", aggregateReportJsonChunks(ledgerValue),
+  );
+  const inventoryFile = await store.writeBundleFileStream(
+    "inventory.json", aggregateReportJsonChunks(inventoryValue),
+  );
   return [
     {
       id: "run:stage-ledger",
@@ -214,8 +255,8 @@ export async function writeAuditAuxiliaryArtifacts(
       status: "available",
       path: "stage-ledger.json",
       mediaType: "application/json",
-      byteLength: Buffer.byteLength(ledgerText),
-      sha256: createHash("sha256").update(ledgerText).digest("hex"),
+      byteLength: ledgerFile.byteLength,
+      sha256: ledgerFile.sha256,
     },
     {
       id: "run:inventory",
@@ -223,8 +264,8 @@ export async function writeAuditAuxiliaryArtifacts(
       status: "available",
       path: "inventory.json",
       mediaType: "application/json",
-      byteLength: Buffer.byteLength(inventoryText),
-      sha256: createHash("sha256").update(inventoryText).digest("hex"),
+      byteLength: inventoryFile.byteLength,
+      sha256: inventoryFile.sha256,
     },
   ];
 }

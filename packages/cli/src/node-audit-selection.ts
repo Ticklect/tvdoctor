@@ -10,6 +10,7 @@ import {
   WEB_STAGE_BY_PACK,
   type AuditRunProducts,
 } from "./node-audit-contracts.js";
+import { navigationCoverageComplete } from "./node-audit-navigation.js";
 
 export function selectedPacks(request: TestCommandRequest): ReadonlySet<string> {
   return request.packs.includes("all")
@@ -88,7 +89,7 @@ export function packCoverage(products: AuditRunProducts, packs: ReadonlySet<stri
 }[] {
   const result: { pack: string; status: "completed" | "partial" | "skipped" }[] = [];
   if (packs.has("navigation")) {
-    result.push({ pack: "navigation", status: products.navigation?.termination.complete === true ? "completed" : "partial" });
+    result.push({ pack: "navigation", status: navigationCoverageComplete(products.navigation) ? "completed" : "partial" });
   }
   if (packs.has("streaming")) {
     result.push({ pack: "streaming", status: products.streaming?.status === "complete" ? "completed" : "partial" });
@@ -127,6 +128,9 @@ export function exhaustedBudgets(
     if (reason === "max-depth" || reason === "max-local-depth") exhausted.add("depth");
     if (reason === "max-duration") exhausted.add("duration");
   }
+  if (selectedPacks.has("navigation") && (products.navigation?.statistics?.deferredStates ?? 0) > 0) {
+    exhausted.add("repetitive-items");
+  }
   return [...exhausted];
 }
 
@@ -145,15 +149,26 @@ export function partialRunDetails(
       details.push(`Startup preparation did not reach a reproducible state (${startup.status}).`);
     }
   }
-  if (selectedPacks.has("navigation") && products.navigation?.termination.complete === false) {
-    if (products.navigation.termination.reason === "max-duration") {
-      details.push(`BOUNDED-INCOMPLETE: navigation reached its ${String(products.navigation.budgets.maxDurationMs / 1_000)}-second safety ceiling with ${String(products.navigation.termination.remainingFrontierEntries ?? 0)} frontier entries and about ${String(products.navigation.termination.remainingCandidateActions ?? 0)} candidate actions remaining.`);
-    } else if (products.navigation.termination.reason === "prepared-state-diverged") {
-      details.push("Startup preparation state could not be reproduced during replay reconstruction.");
-    } else if (products.navigation.termination.reason === "interrupted") {
-      details.push("The scan was interrupted; completed navigation coverage was retained.");
-    } else {
-      details.push(`Partial reason: navigation stopped at ${products.navigation.termination.reason}.`);
+  const navigation = selectedPacks.has("navigation") ? products.navigation : null;
+  if (navigation !== null && !navigationCoverageComplete(navigation)) {
+    const deferred = navigation.statistics?.deferredStates ?? 0;
+    if (deferred > 0) {
+      details.push(`BOUNDED-INCOMPLETE: navigation deferred ${String(deferred)} repetition-compressed focus state${deferred === 1 ? "" : "s"}; this coverage remains untested.`);
+    }
+    if (!navigation.termination.complete) {
+      if (navigation.termination.reason === "max-duration") {
+        details.push(`BOUNDED-INCOMPLETE: navigation reached its ${String(navigation.budgets.maxDurationMs / 1_000)}-second safety ceiling with ${String(navigation.termination.remainingFrontierEntries ?? 0)} frontier entries and about ${String(navigation.termination.remainingCandidateActions ?? 0)} candidate actions remaining.`);
+      } else if (navigation.termination.reason === "prepared-state-diverged") {
+        details.push("Startup preparation state could not be reproduced during replay reconstruction.");
+      } else if (navigation.termination.reason === "interrupted") {
+        details.push("The scan was interrupted; completed navigation coverage was retained.");
+      } else if (navigation.termination.reason === "queue-exhausted") {
+        // The known runnable queue is exhausted; policy-excluded or
+        // structurally unobserved controls still prevent a full-coverage claim.
+        details.push(`SAFE-FRONTIER-COMPLETE: known runnable navigation queue exhausted; full coverage remains unverified: ${navigation.termination.detail ?? "Some controls or attempted actions were unobservable."}`);
+      } else {
+        details.push(`Partial reason: navigation stopped at ${navigation.termination.reason}.`);
+      }
     }
   }
   if (selectedPacks.has("streaming") && products.streaming?.status !== "complete") {

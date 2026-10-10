@@ -14,6 +14,10 @@ export const NAVIGATION_DIAGNOSTIC_RULES = {
   overlayFocusLeak: "remote.overlay-focus-leak",
   backBehaviour: "remote.back-behaviour",
   unexpectedJump: "remote.unexpected-jump",
+  directionalAsymmetry: "remote.directional-asymmetry",
+  focusVisibility: "remote.focus-visibility",
+  focusEscape: "remote.focus-escape",
+  staleFocus: "remote.stale-focus",
 } as const;
 
 export type NavigationDiagnosticRule =

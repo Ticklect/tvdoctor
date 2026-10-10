@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "tvdoctor.real-app-benchmark-manifest/v1",
+  "name": "Real-app navigation observation",
+  "cases": [
+    {
+      "id": "react-tv-web-local",
+      "target": {
+        "platform": "web",
+        "name": "Example React TV web app",
+        "version": "local-build",
+        "url": "http://127.0.0.1:3000/"
+      },
+      "run": {
+        "mode": "quick",
+        "screenshots": true
+      },
+      "replay": {
+        "enabled": true,
+        "maxAttempts": 10
+      },
+      "notes": "Replace this target with an authorised app/build. Web benchmark reports redact the stored target to its origin by default."
+    },
+    {
+      "id": "android-tv-local",
+      "target": {
+        "platform": "android-tv",
+        "name": "Example Android TV app",
+        "version": "local-build",
+        "apkPath": "../artifacts/example-tv.apk",
+        "device": "emulator-5554"
+      },
+      "run": {
+        "mode": "quick",
+        "screenshots": true
+      },
+      "replay": {
+        "enabled": true,
+        "maxAttempts": 10
+      },
+      "notes": "Use an authorised emulator/device with TVDoctor Observer already enabled."
+    },
+    {
+      "id": "fire-tv-local",
+      "target": {
+        "platform": "fire-tv",
+        "name": "Example Fire TV app",
+        "version": "local-build",
+        "apkPath": "../artifacts/example-fire-tv.apk",
+        "device": "192.168.1.40:5555"
+      },
+      "run": {
+        "mode": "quick",
+        "screenshots": true
+      },
+      "replay": {
+        "enabled": true,
+        "maxAttempts": 10
+      },
+      "notes": "Use authorised physical Amazon hardware with TVDoctor Observer enabled. A benchmark observation is not a Fire TV compatibility claim; use the physical proof runner for that gate."
+    }
+  ]
+}

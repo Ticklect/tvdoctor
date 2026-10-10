@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findShortestVerifiedPath } from "../src/verified-path.js";
+import { findShortestVerifiedPath, IncrementalVerifiedPathIndex } from "../src/verified-path.js";
 import type { VerifiedStateEdge } from "../src/verified-path.js";
 
 describe("findShortestVerifiedPath", () => {
@@ -53,5 +53,26 @@ describe("findShortestVerifiedPath", () => {
   it("terminates cycles and returns null when no reusable path reaches the target", () => {
     const edges = [edge("A", "B", "RIGHT"), edge("B", "A", "LEFT")];
     expect(findShortestVerifiedPath(edges, "A", "Z", ["RIGHT", "LEFT"])).toBeNull();
+  });
+
+  it("preserves stable tie ordering even when edges arrive after earlier searches", () => {
+    const actionOrder = ["RIGHT", "UP"] as const;
+    const index = new IncrementalVerifiedPathIndex(actionOrder);
+    const edges = [
+      edge("A", "C", "RIGHT"), edge("C", "D", "UP"),
+      edge("A", "B", "RIGHT"), edge("B", "D", "UP"),
+      edge("A", "D", "SELECT", false),
+      edge("A", "D", "UP"),
+    ];
+    const observed: VerifiedStateEdge[] = [];
+    for (const candidate of edges) {
+      observed.push(candidate);
+      index.add(candidate);
+      for (const destination of ["A", "B", "C", "D", "Z"]) {
+        expect(index.find("A", destination)).toEqual(
+          findShortestVerifiedPath(observed, "A", destination, actionOrder),
+        );
+      }
+    }
   });
 });

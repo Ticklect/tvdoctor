@@ -1,26 +1,12 @@
-import type { DriverOperationOptions, RemoteKey, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
+import type { DriverOperationOptions, StateSnapshot, TVDoctorDriver } from "@tvdoctor/protocol";
 import { PreparedStateDivergenceError } from "./errors.js";
-import {
-  computeSnapshotFingerprint,
-  type ComputedSnapshotFingerprint,
-} from "./fingerprint.js";
-import type {
-  ExplorationActionAttempt,
-  ExplorationGraph,
-  FocusState,
-  FocusTransition,
-  ScreenState,
-  ScreenTransition,
-} from "./graph.js";
+import { computeSnapshotFingerprint, createExplorationCoverageRecorder, type ComputedSnapshotFingerprint } from "./fingerprint.js";
 import type {
   ExplorerOptions,
   ExplorationResult,
   ExplorationTermination,
 } from "./explorer-contracts.js";
-import {
-  createExplorerActionHooks,
-  executeExplorerAction,
-} from "./explorer-actions.js";
+import { createExplorerActionHooks, executeExplorerAction } from "./explorer-actions.js";
 import {
   annotateFrontierTermination,
   scheduleDestinationFrontier,
@@ -29,31 +15,27 @@ import {
   type QueueEntry,
 } from "./explorer-frontier.js";
 import { normaliseExplorerOptions } from "./explorer-options.js";
+import { createExplorerGraphRegistry } from "./explorer-graph-registry.js";
 import { createVerifiedLocalRestorer } from "./explorer-local-restoration.js";
 import { createExplorerPerformance } from "./explorer-performance.js";
-import {
-  OperationDeadlineExceeded,
-  runWithOperationDeadline,
-} from "./operation-deadline.js";
+import { OperationDeadlineExceeded, runWithOperationDeadline } from "./operation-deadline.js";
 import {
   createExplorerRestorer,
   DurationBudgetExceeded,
   incomplete,
 } from "./explorer-restoration.js";
-import { RestorationDiagnosticRecorder } from "./explorer-restoration-diagnostics.js";
+import {
+  MAX_RESTORATION_DIAGNOSTICS,
+  RestorationDiagnosticRecorder,
+} from "./explorer-restoration-diagnostics.js";
 import {
   explorerId as id,
   repetitionGroupKey,
   sequenceWith,
-  type InternalFocusState,
-  type MutableScreenState,
   type RegisteredState,
-  type RepetitionGroup,
 } from "./explorer-state.js";
 
-const COMPLETE_TERMINATION: ExplorationTermination = {
-  reason: "queue-exhausted",
-  complete: true };
+const COMPLETE_TERMINATION: ExplorationTermination = { reason: "queue-exhausted", complete: true };
 
 export async function explore(
   driver: TVDoctorDriver,
@@ -65,6 +47,7 @@ export async function explore(
     replayActions: rootReplayActions,
     frontierStrategy,
     restorationMode,
+    opportunisticFrontier,
     allowRootRestorationFallback,
     refreshVisibleSelfLoops,
     repetitionCompression,
@@ -98,22 +81,29 @@ export async function explore(
   let unsettledActions = 0;
   let frontierInsertionSequence = 0;
   let restorationCycleCount = (): number => 0;
+  const coverage = createExplorationCoverageRecorder();
   const { phaseTimings, durationSince, measureSynchronous, measuredDriver } = createExplorerPerformance(
     driver,
     monotonicNow,
   );
-  const fingerprintSnapshot = (snapshot: StateSnapshot): ComputedSnapshotFingerprint => (
-    measureSynchronous("semanticNormalizationMs", () => computeSnapshotFingerprint(snapshot))
-  );
-  const screenStates: MutableScreenState[] = [];
-  const focusStates: InternalFocusState[] = [];
-  const screenTransitions: ScreenTransition[] = [];
-  const focusTransitions: FocusTransition[] = [];
-  const attempts: ExplorationActionAttempt[] = [];
+  const fingerprintSnapshot = (snapshot: StateSnapshot): ComputedSnapshotFingerprint => {
+    coverage.observe(snapshot);
+    return measureSynchronous("semanticNormalizationMs", () => computeSnapshotFingerprint(snapshot));
+  };
   const restorationDiagnostics = new RestorationDiagnosticRecorder();
-  const screenByIdentity = new Map<string, MutableScreenState>();
-  const stateByIdentity = new Map<string, InternalFocusState>();
-  const repetitionGroups = new Map<string, RepetitionGroup>();
+  const graphRegistry = createExplorerGraphRegistry(
+    (operation) => measureSynchronous("graphBookkeepingMs", operation),
+  );
+  const {
+    screenStates,
+    focusStates,
+    screenTransitions,
+    focusTransitions,
+    attempts,
+    stateByIdentity,
+    repetitionGroups,
+    registerState,
+  } = graphRegistry;
   const compressedStateIdentities = new Set<string>();
   const deferredStateIdentities = new Set<string>();
 
@@ -144,33 +134,6 @@ export async function explore(
       throw error;
     }
   };
-  const graph = (): ExplorationGraph => ({
-    screens: {
-      states: screenStates.map((state): ScreenState => ({
-        id: state.id,
-        fingerprint: state.fingerprint,
-        firstSeenDepth: state.firstSeenDepth,
-        discoveredBy: [...state.discoveredBy],
-        representativeSnapshot: state.representativeSnapshot,
-        focusStateIds: [...state.focusStateIds],
-      })),
-      transitions: [...screenTransitions],
-    },
-    focus: {
-      states: focusStates.map((state): FocusState => ({
-        id: state.id,
-        screenStateId: state.screenStateId,
-        fingerprint: state.fingerprint.fingerprint.focus,
-        stateFingerprint: state.fingerprint.fingerprint.stateValue,
-        confidence: state.fingerprint.fingerprint.confidence,
-        firstSeenDepth: state.firstSeenDepth,
-        discoveredBy: [...state.discoveredBy],
-        representativeSnapshot: state.representativeSnapshot,
-      })),
-      transitions: [...focusTransitions],
-    },
-    actions: [...attempts],
-  });
   const finish = (termination: ExplorationTermination): ExplorationResult => {
     const totalPathDepth = focusStates.reduce((total, state) => total + state.firstSeenDepth, 0);
     const maximumPathDepth = focusStates.reduce(
@@ -178,8 +141,8 @@ export async function explore(
       0,
     );
     return {
-      graph: graph(),
-      termination,
+      graph: graphRegistry.snapshot(),
+      termination: coverage.decorateTermination(termination),
       budgets,
       actionOrder: [...actionOrder],
       statistics: {
@@ -268,9 +231,11 @@ export async function explore(
 
   const restoreAndCapture = async (signal: AbortSignal): Promise<StateSnapshot> => {
     const operationOptions = { signal };
-    if (restoreInitialSnapshot !== undefined) return await restoreInitialSnapshot(operationOptions);
-    await restoreInitialState?.(operationOptions);
-    return await measuredDriver.snapshot(operationOptions);
+    if (restoreInitialSnapshot === undefined) await restoreInitialState?.(operationOptions);
+    const snapshot = await (restoreInitialSnapshot?.(operationOptions)
+      ?? measuredDriver.snapshot(operationOptions));
+    coverage.observe(snapshot);
+    return snapshot;
   };
 
   const workBudgetTermination = (): ExplorationTermination | null => {
@@ -301,58 +266,6 @@ export async function explore(
   }
 
   const initialFingerprint = fingerprintSnapshot(initialSnapshot);
-  const registerState = (
-    snapshot: StateSnapshot,
-    fingerprint: ComputedSnapshotFingerprint,
-    sequence: readonly RemoteKey[],
-    repetitionGroup: string | null,
-  ): RegisteredState => measureSynchronous("graphBookkeepingMs", () => {
-    const existing = stateByIdentity.get(fingerprint.stateIdentity);
-    if (existing !== undefined) return { state: existing, isNew: false, newScreen: false };
-
-    let screen = screenByIdentity.get(fingerprint.screenIdentity);
-    const newScreen = screen === undefined;
-    if (screen === undefined) {
-      screen = {
-        id: id("screen", screenStates.length + 1),
-        identity: fingerprint.screenIdentity,
-        fingerprint: fingerprint.fingerprint.screen,
-        firstSeenDepth: sequence.length,
-        discoveredBy: [...sequence],
-        representativeSnapshot: snapshot,
-        focusStateIds: [],
-      };
-      screenByIdentity.set(screen.identity, screen);
-      screenStates.push(screen);
-    }
-
-    const state: InternalFocusState = {
-      id: id("focus", focusStates.length + 1),
-      screenStateId: screen.id,
-      identity: fingerprint.stateIdentity,
-      fingerprint,
-      firstSeenDepth: sequence.length,
-      discoveredBy: [...sequence],
-      representativeSnapshot: snapshot,
-      repetitionGroup,
-      frontierPriority: newScreen ? 0 : 1,
-      scheduled: false,
-    };
-    screen.focusStateIds.push(state.id);
-    stateByIdentity.set(state.identity, state);
-    focusStates.push(state);
-    if (repetitionGroup !== null) {
-      const group = repetitionGroups.get(repetitionGroup) ?? {
-        key: repetitionGroup,
-        representatives: [],
-        expandedRepresentatives: 0,
-      };
-      group.representatives.push(state);
-      repetitionGroups.set(repetitionGroup, group);
-    }
-    return { state, isNew: true, newScreen };
-  });
-
   const initialRepetitionGroup = measureSynchronous(
     "graphBookkeepingMs",
     () => repetitionGroupKey(initialSnapshot, initialFingerprint, repetitionCompression),
@@ -411,6 +324,7 @@ export async function explore(
     onDiagnostic: (diagnostic) => {
       restorationDiagnostics.record(diagnostic);
     },
+    shouldCollectDiagnosticDetails: () => restorationDiagnostics.attempts < MAX_RESTORATION_DIAGNOSTICS,
   });
   const localRestorer = createVerifiedLocalRestorer({
     enabled: restorationMode !== "root-only",
@@ -455,21 +369,31 @@ export async function explore(
 
   let termination: ExplorationTermination | null = null;
   let skippedRestoration: ExplorationTermination | null = null;
+  // Restorations that cannot be reproduced have been removed from the runnable
+  // frontier, but their untested actions still count as unresolved coverage.
+  const unrestorableFrontier: QueueEntry[] = [];
+  // The selected state is no longer in the frontier. Count its unfinished
+  // sibling actions when a safety ceiling interrupts expansion.
+  let activeRemainingActions = 0;
   exploration: while (frontier.length > 0) {
-    const selected = measureSynchronous("graphBookkeepingMs", () => takePreferredFrontierWithCount(
-      frontier,
-      frontierStrategy,
-      actionRank,
-      restorationMode === "root-only" ? null : localRestorer.liveIdentity(),
-    ));
-    pendingStates = selected.pendingStates;
-    const entry = selected.entry;
-    if (entry === undefined) break;
+    activeRemainingActions = 0;
+    // Check before popping: otherwise a ceiling reached between queued states
+    // silently discards whichever state would have been selected next.
     const budgetTermination = workBudgetTermination();
     if (budgetTermination !== null) {
       termination = budgetTermination;
       break;
     }
+    const selected = measureSynchronous("graphBookkeepingMs", () => takePreferredFrontierWithCount(
+      frontier,
+      frontierStrategy,
+      actionRank,
+      restorationMode === "root-only" || !opportunisticFrontier
+        ? null : localRestorer.liveIdentity(),
+    ));
+    pendingStates = selected.pendingStates;
+    const entry = selected.entry;
+    if (entry === undefined) break;
     if (entry.sequence.length >= budgets.maxDepth) {
       depthLimited = true;
       continue;
@@ -479,12 +403,16 @@ export async function explore(
     if (stateActionOrder === undefined) {
       const stateActions = await actionHooks.actionsForState(entry, signalAborted);
       if (stateActions.status === "stop") {
+        // The hook did not return a bounded action selection. The configured
+        // action list is the conservative upper bound for this popped state.
+        activeRemainingActions = actionOrder.length;
         termination = stateActions.termination;
         break;
       }
       stateActionOrder = stateActions.actions;
     }
     for (const [stateActionIndex, key] of stateActionOrder.entries()) {
+      activeRemainingActions = stateActionOrder.length - stateActionIndex;
       const beforeActionBudget = workBudgetTermination();
       if (beforeActionBudget !== null) {
         termination = beforeActionBudget;
@@ -492,12 +420,17 @@ export async function explore(
       }
 
       const restored = await restore(entry);
+      if (restored.status === "ok") coverage.observe(restored.snapshot);
       if (restored.status === "stop") {
         termination = restored.termination;
         break exploration;
       }
       if (restored.status === "skip") {
         skippedRestoration ??= restored.termination;
+        unrestorableFrontier.push({
+          ...entry,
+          remainingActions: stateActionOrder.slice(stateActionIndex),
+        });
         break;
       }
 
@@ -529,6 +462,8 @@ export async function explore(
         continue;
       }
       const actionObservation = actionExecution.observation;
+      coverage.observe(actionObservation.snapshot);
+      coverage.recordAction(key, actionObservation.actionResult.outcome);
       const observedHookTermination = await actionHooks.onActionObserved(
         entry, key, restored.snapshot, actionObservation.snapshot, signalAborted,
       );
@@ -580,6 +515,9 @@ export async function explore(
           observedFingerprint: observedFingerprint.fingerprint,
         });
         phaseTimings.graphBookkeepingMs += durationSince(bookkeepingStartedAt);
+        // The action was observed and retained as an attempt, even though its
+        // newly discovered destination exceeded the state ceiling.
+        activeRemainingActions -= 1;
         termination = incomplete("max-states");
         break exploration;
       }
@@ -607,7 +545,6 @@ export async function explore(
         afterSnapshot: actionObservation.snapshot,
         observedFingerprint: observedFingerprint.fingerprint,
       });
-
       if (entry.state.screenStateId === destination.state.screenStateId) {
         focusTransitions.push({
           id: id("focus-transition", focusTransitions.length + 1),
@@ -663,12 +600,14 @@ export async function explore(
       const continuation = scheduleFrontierContinuation({
         frontier, entry, stateActionOrder, stateActionIndex,
         insertionOrder: frontierInsertionSequence,
-        restorationEnabled: restorationMode !== "root-only",
+        restorationEnabled: restorationMode !== "root-only" && opportunisticFrontier,
         replayable, expandable, observedIdentity: observedFingerprint.stateIdentity,
       });
       frontierInsertionSequence = continuation.insertionOrder;
       maximumQueueSize = Math.max(maximumQueueSize, continuation.queueSize);
       pendingStates = continuation.queueSize;
+      activeRemainingActions = continuation.yieldToLiveDestination
+        ? 0 : continuation.remainingActions.length;
       phaseTimings.graphBookkeepingMs += durationSince(bookkeepingStartedAt);
       publishProgress();
       const refreshTermination = await localRestorer.observeAfterAction(
@@ -677,6 +616,7 @@ export async function explore(
         entry,
         expandable,
         continuation.remainingActions.length > 0 || frontier.length > 0,
+        actionObservation.actionResult.outcome,
       );
       if (refreshTermination !== null) { termination = refreshTermination; break exploration; }
 
@@ -686,6 +626,7 @@ export async function explore(
       }
       if (continuation.yieldToLiveDestination) continue exploration;
     }
+    activeRemainingActions = 0;
   }
 
   if (termination === null) {
@@ -698,6 +639,10 @@ export async function explore(
         )
         : COMPLETE_TERMINATION);
   }
-  termination = annotateFrontierTermination(termination, frontier, budgets.maxDepth, actionOrder.length);
+  termination = annotateFrontierTermination(
+    termination, [...frontier, ...unrestorableFrontier],
+    budgets.maxDepth, actionOrder.length, activeRemainingActions,
+  );
+  pendingStates = termination.remainingFrontierEntries ?? frontier.length;
   return finish(termination);
 }

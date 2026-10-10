@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "tvdoctor.real-app-benchmark-review/v1",
+  "caseId": "REPLACE_WITH_MANIFEST_CASE_ID",
+  "findings": [
+    {
+      "issueId": "REPLACE_WITH_REPORT_ISSUE_ID",
+      "classification": "confirmed"
+    }
+  ]
+}

@@ -27,7 +27,13 @@ import type { TestCommandRequest } from "./cli.js";
 
 export const REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY = "replayTargetOverride";
 export const REPLAY_TARGET_OVERRIDE_REQUIRED = "required";
+export const PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY = "packagedReplayTarget";
+export const PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO = "northstar-navigation-demo/v1";
 export const MAX_ISSUES_WITH_FRESH_EVIDENCE = 32;
+/** Deep scans retain the same global 120-second capture deadline, but may
+ * verify more distinct issues than quick/standard scans. This hard cap still
+ * bounds both captured artifacts and browser replay work. */
+export const MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE = 128;
 export const MAX_EVIDENCE_CAPTURE_DURATION_MS = 120_000;
 export const EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS = 20_000;
 
@@ -90,7 +96,7 @@ export const WEB_BUDGETS: Readonly<Record<ExplorationProfile, WebPackBudgets>> =
     maxStates: 320,
     maxLocalDepth: 18,
     maxLocalStates: 96,
-    maxDurationMs: 360_000,
+    maxDurationMs: 600_000,
     maxFocusProbes: 48,
     maxSettingsSurfaces: 24,
     maxLogs: 1_024,
@@ -141,7 +147,11 @@ export interface NavigationInventory {
 
 export type WebStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 
+export interface NodeAuditDriverOptions {
+  readonly recordVideoDirectory?: string;
+}
+
 export interface NodeAuditDependencies {
-  readonly createDriver?: () => PlaywrightWebDriver;
+  readonly createDriver?: (options?: NodeAuditDriverOptions) => PlaywrightWebDriver;
   readonly createSessionDriver?: (storageState: WebStorageState) => PlaywrightWebDriver;
 }

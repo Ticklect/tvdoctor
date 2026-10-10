@@ -25,7 +25,11 @@ export interface AdbCommandExecutor {
   execute(arguments_: readonly string[], options?: AdbCommandOptions): Promise<AdbCommandResult>;
 }
 
+export type AndroidTvPlatform = "android-tv" | "fire-tv";
+
 export interface AndroidTvDriverOptions {
+  /** Android-derived TV platform identity for reports/restoration diagnostics. */
+  readonly platform?: AndroidTvPlatform;
   /** `adb` executable path. Falls back to ANDROID_SDK_ROOT/ANDROID_HOME, then PATH. */
   readonly adbPath?: string;
   /** Explicit device serial. Omit only when exactly one online device exists. */
@@ -122,7 +126,7 @@ export interface AndroidHierarchyMetadata {
 
 /** Compact lifecycle/observer evidence carried for restoration diagnostics. */
 export interface AndroidRestorationContext {
-  readonly platform: "android-tv";
+  readonly platform: AndroidTvPlatform;
   readonly applicationId: string | null;
   readonly processId: number | null;
   readonly processGeneration: number | null;

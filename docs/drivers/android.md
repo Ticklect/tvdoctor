@@ -1,6 +1,9 @@
-# Android TV testing
+# Android TV and Fire TV testing
 
-Android TV app testing is experimental. The normal product entry point remains:
+Android TV app testing is experimental. Fire TV now reuses the same ADB +
+TVDoctor Observer transport and is identified separately in reports/replay when
+Amazon device metadata is observed, but Fire TV remains **unvalidated** until a
+named physical-device proof is recorded. The normal product entry point remains:
 
 ```powershell
 tvdoctor start
@@ -21,7 +24,9 @@ exploration, evidence, and cleanup.
 The automated release gate verifies a disposable Android TV API 36 x86_64
 emulator. API 23 is the observer's minimum SDK, not a claim that every vendor
 device between API 23 and API 36 has been validated. Physical Android TV and
-Google TV compatibility remains an explicit experimental limitation. Use the
+Google TV compatibility remains an explicit experimental limitation. The Fire TV
+transport path shares the Android mechanics but has no release-gate hardware
+proof yet. Use the
 [physical-device proof runner](../physical-device-proof.md) for reproducible
 hardware qualification; it rejects emulator serials and accepts only complete
 bounded scans.
@@ -186,7 +191,8 @@ Android TV API 36 x86_64 emulator and validates a completed report, the seeded
 deterministic HIGH finding, and its correlated replay.
 
 Android reports contain canonical findings, screenshots, hashes, partial-run
-semantics, portable replays, `android-action-performance.json`, and an
+semantics, portable replays, the flagship `navigation-graph.json` and
+`navigation-graph.md` artifacts, `android-action-performance.json`, and an
 `android-exploration.json` record containing the exact termination reason,
 bounded detail, budgets, action order, and statistics. They also include
 `android-coverage-ledger.json`, which records when the state-aware policy could
@@ -233,6 +239,10 @@ service process alive for the next run.
 
 - support remains experimental and emulator evidence does not prove every
   physical/vendor device;
+- Fire TV uses the Android-derived ADB/observer transport and is reported as
+  `fire-tv` when Amazon device identity is observed, but this is an implementation
+  path rather than a compatibility claim until named Fire TV hardware completes
+  the physical proof gate;
 - accessibility trees reflect what the tested app exposes to Android;
 - protected/secure surfaces may block screenshots or accessibility content;
 - TVDoctor records transitions out of the tested package but does not expand

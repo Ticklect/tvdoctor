@@ -1,4 +1,5 @@
 export * from "./artifact-store.js";
+export * from "./aggregate-json-stream.js";
 export * from "./bundle.js";
 export * from "./evidence.js";
 export * from "./render-ai.js";
@@ -8,6 +9,7 @@ export * from "./render-markdown.js";
 export * from "./report-builder.js";
 export {
   escapeHtml,
+  isSensitiveEnvironmentKey,
   markdownDataBlock,
   sanitiseTargetLocation,
   sanitiseUntrustedText,

@@ -291,8 +291,8 @@ function createPointerProbe(
           observedEffect: "The isolated pointer dispatch produced a distinct semantic UI state.",
           detail: "A fresh Chromium context replayed the remote surface route and activated the uniquely corroborated stable target.",
         };
-      } catch (error) {
-        return { status: "error", detail: `Isolated pointer proof failed: ${error instanceof Error ? error.message : String(error)}` };
+      } catch {
+        return { status: "error", detail: "Isolated pointer proof failed safely." };
       } finally {
         await isolated.close();
       }
@@ -355,8 +355,8 @@ function createFocusProbe(
           screenshotDifferenceRatio: changedPixelRatio(unfocusedPng, focusedPng),
           detail: "A fresh Chromium context captured equal target crops and computed styles before and after exact remote focus.",
         };
-      } catch (error) {
-        return { status: "error", detail: `Isolated focus proof failed: ${error instanceof Error ? error.message : String(error)}` };
+      } catch {
+        return { status: "error", detail: "Isolated focus proof failed safely." };
       } finally {
         await isolated.close();
       }
@@ -435,8 +435,8 @@ export function createStreamingAuditPointerProbe(
             after: semanticDigest(after),
           },
         };
-      } catch (error) {
-        return { status: "error", detail: `Isolated streaming pointer proof failed: ${error instanceof Error ? error.message : String(error)}` };
+      } catch {
+        return { status: "error", detail: "Isolated streaming pointer proof failed safely." };
       } finally {
         await isolated.close();
       }

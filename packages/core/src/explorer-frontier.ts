@@ -105,19 +105,29 @@ export function annotateFrontierTermination(
   frontier: readonly QueueEntry[],
   maxDepth: number,
   defaultActionCount: number,
+  activeRemainingActions = 0,
 ): ExplorationTermination {
   const safetyLimited = termination.reason === "max-actions"
     || termination.reason === "max-states"
     || termination.reason === "max-depth"
     || termination.reason === "max-duration";
-  if (!safetyLimited || frontier.length === 0) return termination;
+  const unfinishedRestoration = termination.reason === "restoration-unavailable";
+  const interrupted = termination.reason === "interrupted";
+  const activeEntryCount = activeRemainingActions > 0 ? 1 : 0;
+  if ((!safetyLimited && !unfinishedRestoration && !interrupted)
+    || (frontier.length === 0 && activeEntryCount === 0)) return termination;
+  const remainingEntries = frontier.length + activeEntryCount;
   return {
     ...termination,
-    remainingFrontierEntries: frontier.length,
+    remainingFrontierEntries: remainingEntries,
     remainingCandidateActions: remainingFrontierCandidateActions(
       frontier, maxDepth, defaultActionCount,
-    ),
-    detail: `Bounded-incomplete: ${String(frontier.length)} frontier entries remain after ${termination.reason}.`,
+    ) + activeRemainingActions,
+    // A restoration rejection contains the concrete reason why its branch
+    // cannot be replayed; do not replace that explanation with a queue count.
+    detail: safetyLimited
+      ? `Bounded-incomplete: ${String(remainingEntries)} frontier entries remain after ${termination.reason}.`
+      : termination.detail ?? `Incomplete: ${String(remainingEntries)} frontier entries remain after ${termination.reason}.`,
   };
 }
 
