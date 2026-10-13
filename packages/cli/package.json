@@ -57,7 +57,7 @@
     "@tvdoctor/pack-web": "0.1.0",
     "@tvdoctor/protocol": "0.1.0",
     "@tvdoctor/reporters": "0.1.0",
-    "playwright": "1.63.0"
+    "playwright": "1.64.0"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.0.0 <25"
