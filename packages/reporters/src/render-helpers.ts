@@ -19,6 +19,34 @@ export function issueCounts(report: TVDoctorReportV1): Readonly<Record<string, n
   ]));
 }
 
+const DIRECTIONAL_KEYS: ReadonlySet<string> = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
+
+export function navigationIssues(report: TVDoctorReportV1): readonly TVDoctorIssue[] {
+  return report.issues.filter((issue) => issue.pack === "navigation" || issue.transition !== null);
+}
+
+export function directionalNavigationIssues(report: TVDoctorReportV1): readonly TVDoctorIssue[] {
+  return navigationIssues(report).filter((issue) => (
+    issue.transition !== null && DIRECTIONAL_KEYS.has(issue.transition.action)
+  ));
+}
+
+export function currentRunReferenceLabel(
+  issue: TVDoctorIssue,
+  subject: "behavior" | "target",
+): string {
+  if (issue.confidence === "heuristic") {
+    return `Candidate ${subject} (heuristic; not a confirmed product expectation)`;
+  }
+  if (issue.confidence === "inference") {
+    return `Candidate ${subject} (inferred; not a confirmed product expectation)`;
+  }
+  if (issue.confidence === "unobservable") {
+    return `Reference ${subject} (unverified)`;
+  }
+  return `Reference ${subject}`;
+}
+
 export function formatDuration(durationMs: number): string {
   if (durationMs < 1_000) return `${String(durationMs)} ms`;
   const seconds = durationMs / 1_000;
@@ -107,19 +135,95 @@ export function availableArtifactPath(
   return artifact?.status === "available" ? artifact.path : null;
 }
 
+export function availableRunArtifactPath(
+  report: TVDoctorReportV1,
+  id: string,
+): string | null {
+  const artifact = report.artifacts.find((candidate) => candidate.id === id);
+  return artifact?.status === "available" ? artifact.path : null;
+}
+
+/**
+ * Conservative product impact copy derived only from evidence class/rule.
+ * It intentionally avoids guessing application intent, accessibility support,
+ * or physical-device behaviour that the run did not establish.
+ */
+export function findingImpactStatement(issue: TVDoctorIssue): string {
+  if (issue.rule === "remote.startup-blocker" || issue.confidence === "unobservable") {
+    return "This check did not produce enough observable evidence, so absence of a stronger finding must not be treated as a pass.";
+  }
+  if (issue.confidence === "heuristic" || issue.confidence === "inference") {
+    return "This observed pattern can indicate inconsistent remote navigation, but the report does not establish the product's intended focus behaviour; review it against the intended navigation model.";
+  }
+  if (issue.pack === "navigation" || issue.transition !== null) {
+    return "The recorded remote-navigation path did not match the report's evidence-backed reference behaviour, which can make the tested control path unreliable for D-pad use within the observed coverage.";
+  }
+  return "The recorded observation differs from the report's evidence-backed reference behaviour and should be reviewed before relying on this tested path.";
+}
+
+export function reproductionTimeline(issue: TVDoctorIssue): readonly string[] {
+  if (issue.reproduction.status !== "available") {
+    return [`Reproduction unavailable: ${issue.reproduction.reason}`];
+  }
+  const inputs = issue.reproduction.originalSequence.map((step) => (
+    step.repeat === 1 ? step.key : `${step.key} × ${String(step.repeat)}`
+  ));
+  const assertion = issue.transition === null
+    ? []
+    : [`Assertion: ${issue.transition.fromElement ?? "unobserved"} + ${issue.transition.action} → expected ${issue.transition.expectedElement ?? "unobserved"}; observed ${issue.transition.observedElement ?? "unobserved"}.`];
+  return [
+    `Reset: ${issue.reproduction.resetStrategy}`,
+    ...inputs.map((input) => `Input: ${input}`),
+    ...assertion,
+  ];
+}
+
 export function artifactHref(path: string): string {
   return path.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
-export type FindingActionability = "FIX NOW" | "REVIEW" | "SETUP / INFO";
+export type FindingActionability = "VERIFIED" | "REVIEW" | "UNTESTED";
+
+export type NavigationCoverageStatus = "available" | "partial" | "unavailable";
 
 export function findingActionability(issue: TVDoctorIssue): FindingActionability {
-  if (issue.severity === "info" || issue.rule === "remote.startup-blocker") return "SETUP / INFO";
+  if (issue.severity === "info" || issue.rule === "remote.startup-blocker" || issue.confidence === "unobservable") {
+    return "UNTESTED";
+  }
   if (issue.confidence === "deterministic"
-    && (issue.severity === "critical" || issue.severity === "high" || issue.severity === "medium")) {
-    return "FIX NOW";
+    && issue.evidence.some((evidence) => evidence.kind === "deterministic-failure")
+    && issue.reproduction.status === "available"
+    && issue.reproduction.confidence === "deterministic") {
+    return "VERIFIED";
   }
   return "REVIEW";
+}
+
+export function actionabilityCounts(
+  report: TVDoctorReportV1,
+): Readonly<Record<FindingActionability, number>> {
+  return {
+    VERIFIED: report.issues.filter((issue) => findingActionability(issue) === "VERIFIED").length,
+    REVIEW: report.issues.filter((issue) => findingActionability(issue) === "REVIEW").length,
+    UNTESTED: report.issues.filter((issue) => findingActionability(issue) === "UNTESTED").length,
+  };
+}
+
+export function navigationCoverageStatus(report: TVDoctorReportV1): NavigationCoverageStatus {
+  const navigationPack = report.coverage.packs.find((pack) => pack.pack === "navigation");
+  if (navigationPack === undefined || report.coverage.transitionsTested === 0) return "unavailable";
+  return navigationPack.status === "completed" ? "available" : "partial";
+}
+
+export function navigationCoverageStatement(report: TVDoctorReportV1): string {
+  switch (navigationCoverageStatus(report)) {
+    case "available":
+      return `Navigation coverage available: ${String(report.coverage.transitionsTested)} remote transitions tested.`;
+    case "partial":
+      return `Navigation coverage partial: ${String(report.coverage.transitionsTested)} remote transitions tested before the run stopped.`;
+    case "unavailable":
+      return "Navigation coverage unavailable: no remote transitions were tested. This run cannot certify D-pad navigation.";
+  }
 }
 
 export interface IssuePatternSummary {

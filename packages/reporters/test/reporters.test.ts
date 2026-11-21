@@ -8,9 +8,10 @@ import {
   renderReportHtml,
   renderReportJson,
   renderReportMarkdown,
+  isSensitiveEnvironmentKey,
   sanitiseUntrustedText,
 } from "../src/index.js";
-import { artifactsForIssue } from "../src/render-helpers.js";
+import { artifactsForIssue, findingActionability } from "../src/render-helpers.js";
 import { ISSUE_ID, sampleIssue, sampleReplay, sampleReportInput } from "./sample.js";
 
 function sha256(value: string): string {
@@ -34,14 +35,19 @@ describe("canonical report construction and rendering", () => {
     const passing = renderJunitReport(report, "critical");
     const failing = renderJunitReport(report, "high");
     expect(passing).toContain('tests="1" failures="0" errors="0"');
-    expect(passing).toContain("<system-out>HIGH: Focus moved to &lt;body&gt; &amp; stopped.</system-out>");
+    expect(passing).toContain("<system-out>HIGH · DETERMINISTIC: Focus moved to &lt;body&gt; &amp; stopped.</system-out>");
     expect(failing).toContain('tests="1" failures="1" errors="0"');
     expect(failing).toContain("Broken &lt;focus&gt; &amp; controls for TV");
     expect(renderJunitReport(report, "high")).toBe(failing);
 
     const summary = renderCiSummary(report, "high");
     expect(summary).toContain("# TVDoctor CI: FAILED");
-    expect(summary).toContain("Policy: fail on **high**");
+    expect(summary).toContain("Policy: fail on **VERIFIED high**");
+    expect(summary).toContain("Navigation findings: **1 finding**");
+    expect(summary).toContain("**1 directional transition finding**");
+    expect(summary).toContain("Confidence: deterministic 1 · heuristic 0 · inference 0 · unobservable 0");
+    expect(summary).toContain("**VERIFIED · HIGH · DETERMINISTIC**");
+    expect(summary).toContain("**DOWN** caption-font-size → caption-background-colour (reference target: caption-text-colour)");
     expect(summary).toContain(`\`${issue.id}\``);
     expect(summary).toContain("Broken \\<focus\\> & controls for TV");
   });
@@ -57,6 +63,37 @@ describe("canonical report construction and rendering", () => {
     });
     expect(renderJunitReport(report, "never")).toContain('tests="2" failures="0" errors="1"');
     expect(renderCiSummary(report, "never")).toContain("# TVDoctor CI: INCONCLUSIVE");
+  });
+
+  it("does not fail the CI gate for high-severity REVIEW or UNTESTED observations", () => {
+    const input = sampleReportInput();
+    const reference = input.issues[0];
+    if (reference === undefined) throw new Error("Expected sample issue.");
+    const review = {
+      ...reference,
+      confidence: "heuristic" as const,
+      reproduction: { status: "unavailable" as const, reason: "No stable replay." },
+      evidence: [],
+    };
+    const untested = { ...sampleIssue("TVDOCTOR-NAV-11111111111111111111111111111111", "critical"),
+      reproduction: { status: "unavailable" as const, reason: "No stable replay." },
+      evidence: [],
+    };
+    const report = buildTVDoctorReportV1({
+      ...input,
+      issues: [review, untested],
+      replays: [],
+      artifacts: [],
+    });
+    expect(renderCiSummary(report, "any")).toContain("# TVDoctor CI: PASSED");
+    expect(renderCiSummary(report, "high")).toContain("**REVIEW · HIGH · HEURISTIC**");
+    expect(renderJunitReport(report, "any")).toContain('failures="0" errors="0"');
+    const withVerified = buildTVDoctorReportV1({
+      ...input,
+      issues: [reference],
+    });
+    expect(renderCiSummary(withVerified, "high")).toContain("# TVDoctor CI: FAILED");
+    expect(renderJunitReport(withVerified, "high")).toContain('failures="1" errors="0"');
   });
 
   it("normalises unordered inputs into one deterministic V1 model", () => {
@@ -105,6 +142,8 @@ describe("canonical report construction and rendering", () => {
     });
 
     expect(renderReportJson(first)).toBe(renderReportJson(second));
+    expect(renderCiSummary(first, "high")).toBe(renderCiSummary(second, "high"));
+    expect(renderJunitReport(first, "high")).toBe(renderJunitReport(second, "high"));
     expect(first.issues.map((issue) => issue.severity)).toEqual(["critical", "high"]);
     expect(first.coverage.capabilitiesObserved).toEqual(["logs", "remote-input", "screenshot", "ui-tree"]);
     expect(first.coverage.budget.exhausted).toEqual(["actions", "duration"]);
@@ -218,9 +257,9 @@ describe("canonical report construction and rendering", () => {
       ai: sha256(renderAiCoderReport(report)),
     }).toEqual({
       json: "e9d77eeebb61760b7a9d42eb291586189295bfd07201cddbf79e357696aca2b1",
-      html: "9c275cf2bbda1b9776be9829404296d241bc68dfd1f4ff97a444d8935469f1be",
-      markdown: "96cef62e78b0a2adcd1a9133c0ced8d3de9b4379e05522a508f860b379d11df7",
-      ai: "4fed90657910e9a6de4562a4f246966c6af576802e3fb15b171df0cee02783a1",
+      html: "9173b2940d9367dfb6baf6a9fb681ebff1f895409deee9f1bf7383232a6e1237",
+      markdown: "fbc47cbe8b2ba65ddd68f25c47c4a737fd1a69d1e78cfbd6bd316a999051e3a6",
+      ai: "ebaa69fbf1acbf28c0a10cae58c4b0db4d6f1ce39fae1fe932cea9958ab68282",
     });
   });
 
@@ -230,11 +269,38 @@ describe("canonical report construction and rendering", () => {
       ...input.issues[0] as ReturnType<typeof sampleIssue>,
       confidence: "heuristic" as const,
     };
-    const heuristicAi = renderAiCoderReport(buildTVDoctorReportV1({ ...input, issues: [heuristic] }));
+    const heuristicReport = buildTVDoctorReportV1({ ...input, issues: [heuristic] });
+    const heuristicAi = renderAiCoderReport(heuristicReport);
+    const heuristicCi = renderCiSummary(heuristicReport, "high");
+    const heuristicHtml = renderReportHtml(heuristicReport);
+    const heuristicMarkdown = renderReportMarkdown(heuristicReport);
     expect(heuristicAi).toContain(`# TVDoctor Review Task — ${ISSUE_ID}`);
     expect(heuristicAi).toContain("HEURISTIC WARNING — review only");
     expect(heuristicAi).not.toContain(`# TVDoctor Fix Task — ${ISSUE_ID}`);
     expect(heuristicAi).not.toContain(`    tvdoctor replay ${ISSUE_ID}`);
+    expect(heuristicCi).toContain("Confidence: deterministic 0 · heuristic 1 · inference 0 · unobservable 0");
+    expect(heuristicCi).toContain("**REVIEW · HIGH · HEURISTIC**");
+    expect(heuristicCi).toContain("candidate target (heuristic; not a confirmed product expectation): caption-text-colour");
+    expect(heuristicHtml).toContain("Candidate behavior (heuristic; not a confirmed product expectation)");
+    expect(heuristicHtml).toContain("candidate target (heuristic; not a confirmed product expectation): caption-text-colour");
+    expect(heuristicMarkdown).toContain("#### Expected");
+    expect(heuristicMarkdown).toContain("_Candidate behavior (heuristic; not a confirmed product expectation)_");
+    expect(heuristicMarkdown).toContain("candidate target (heuristic; not a confirmed product expectation): caption-text-colour");
+
+    const inferred = {
+      ...input.issues[0] as ReturnType<typeof sampleIssue>,
+      confidence: "inference" as const,
+    };
+    const inferredReport = buildTVDoctorReportV1({ ...input, issues: [inferred] });
+    const inferredCi = renderCiSummary(inferredReport, "high");
+    const inferredHtml = renderReportHtml(inferredReport);
+    const inferredMarkdown = renderReportMarkdown(inferredReport);
+    expect(inferredCi).toContain("candidate target (inferred; not a confirmed product expectation): caption-text-colour");
+    expect(inferredHtml).toContain("Candidate behavior (inferred; not a confirmed product expectation)");
+    expect(inferredHtml).toContain("candidate target (inferred; not a confirmed product expectation): caption-text-colour");
+    expect(inferredMarkdown).toContain("#### Expected");
+    expect(inferredMarkdown).toContain("_Candidate behavior (inferred; not a confirmed product expectation)_");
+    expect(inferredMarkdown).toContain("candidate target (inferred; not a confirmed product expectation): caption-text-colour");
 
     if (input.issues[0]?.reproduction.status !== "available") throw new Error("Expected sample replay.");
     const bestEffort = {
@@ -268,6 +334,77 @@ describe("canonical report construction and rendering", () => {
     ]) {
       expect(output).toContain("Focus identity could not be observed after reset.");
       expect(output).not.toContain(`tvdoctor replay ${ISSUE_ID}`);
+    }
+  });
+
+  it("uses one actionability vocabulary and requires a portable replay for verified findings", () => {
+    const input = sampleReportInput();
+    const verified = buildTVDoctorReportV1(input);
+    const noReplayIssue = {
+      ...input.issues[0] as ReturnType<typeof sampleIssue>,
+      reproduction: { status: "unavailable" as const, reason: "No portable replay was recorded." },
+    };
+    const review = buildTVDoctorReportV1({
+      ...input,
+      issues: [noReplayIssue],
+      artifacts: (input.artifacts ?? []).filter((artifact) => artifact.kind !== "replay"),
+      replays: [],
+    });
+    const untested = buildTVDoctorReportV1({
+      ...input,
+      issues: [{
+        ...noReplayIssue,
+        rule: "remote.startup-blocker",
+        severity: "info" as const,
+      }],
+      artifacts: (input.artifacts ?? []).filter((artifact) => artifact.kind !== "replay"),
+      replays: [],
+    });
+
+    const verifiedIssue = verified.issues[0];
+    const reviewIssue = review.issues[0];
+    const untestedIssue = untested.issues[0];
+    if (verifiedIssue === undefined || reviewIssue === undefined || untestedIssue === undefined) {
+      throw new Error("sample reports must contain one issue");
+    }
+    expect(findingActionability(verifiedIssue)).toBe("VERIFIED");
+    expect(findingActionability(reviewIssue)).toBe("REVIEW");
+    expect(findingActionability(untestedIssue)).toBe("UNTESTED");
+
+    const outputs = [
+      renderReportHtml(review),
+      renderReportMarkdown(review),
+      renderAiCoderReport(review),
+      renderCiSummary(review, "high"),
+    ];
+    for (const output of outputs) {
+      expect(output).toContain("REVIEW");
+      expect(output).not.toContain("FIX NOW");
+    }
+  });
+
+  it("does not describe zero navigation coverage as a clean navigation result", () => {
+    const input = sampleReportInput();
+    const report = buildTVDoctorReportV1({
+      ...input,
+      issues: [],
+      artifacts: [],
+      replays: [],
+      coverage: {
+        ...input.coverage,
+        screenStatesDiscovered: 0,
+        transitionsTested: 0,
+        packs: [{ pack: "search", status: "completed" }],
+      },
+    });
+    for (const output of [
+      renderReportHtml(report),
+      renderReportMarkdown(report),
+      renderAiCoderReport(report),
+      renderCiSummary(report, "never"),
+    ]) {
+      expect(output).toContain("Navigation coverage unavailable");
+      expect(output).not.toContain("No navigation transition findings were reported for the observed coverage.");
     }
   });
 
@@ -424,6 +561,50 @@ describe("canonical report construction and rendering", () => {
     expect(safe).not.toMatch(/attacker|user:pass|SECRET|fragment|\]8;;|\[31m/u);
   });
 
+  it("redacts database credentials, PATs, private/access keys, and credential-style environment values", () => {
+    const hostile = [
+      "DATABASE_URL=postgres://dbuser:DB_PASSWORD@db.example.test/private?sslmode=require",
+      "dsn=postgres://dbuser:DB_PASSWORD@db.example.test/private?sslmode=require",
+      "cache=redis://CACHE_USER:CACHE_PASSWORD@cache.example.test/0",
+      "mongo=mongodb+srv://mongo:MONGO_PASSWORD@cluster.example.test/app",
+      "github_pat=PAT_CANARY",
+      "private_key=PRIVATE_KEY_CANARY",
+      "aws_access_key_id=ACCESS_KEY_CANARY",
+      "credentials=CREDENTIAL_CANARY",
+    ].join("\n");
+    const safe = sanitiseUntrustedText(hostile);
+
+    for (const secret of [
+      "DB_PASSWORD",
+      "CACHE_USER",
+      "CACHE_PASSWORD",
+      "mongo:MONGO_PASSWORD",
+      "PAT_CANARY",
+      "PRIVATE_KEY_CANARY",
+      "ACCESS_KEY_CANARY",
+      "CREDENTIAL_CANARY",
+      "sslmode=require",
+    ]) {
+      expect(safe).not.toContain(secret);
+    }
+    expect(safe).toContain("DATABASE_URL=[REDACTED]");
+    expect(safe).toContain("dsn=postgres://db.example.test/private");
+    expect(safe).toContain("redis://cache.example.test/0");
+    expect(safe).toContain("mongodb+srv://cluster.example.test/app");
+
+    for (const key of [
+      "DATABASE_URL",
+      "GITHUB_PAT",
+      "SSH_PRIVATE_KEY",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "CLIENT_CREDENTIALS",
+    ]) {
+      expect(isSensitiveEnvironmentKey(key)).toBe(true);
+    }
+    expect(isSensitiveEnvironmentKey("PUBLIC_API_ORIGIN")).toBe(false);
+  });
+
   it("rejects cross-issue, wrong-slot, and orphaned artifact descriptors", () => {
     const input = sampleReportInput();
     const first = {
@@ -545,20 +726,44 @@ describe("canonical report construction and rendering", () => {
     const report = buildTVDoctorReportV1(sampleReportInput());
     const html = renderReportHtml(report);
 
-    expect(html).toContain("1 issue needs fixing");
-    expect(html.indexOf("1 issue needs fixing")).toBeLessThan(html.indexOf("FIX NOW"));
-    expect(html.indexOf("FIX NOW")).toBeLessThan(html.indexOf("Scan details"));
+    expect(html).toContain("1 verified issue needs fixing");
+    expect(html.indexOf("1 verified issue needs fixing")).toBeLessThan(html.indexOf("VERIFIED"));
+    expect(html.indexOf("Remote navigation findings")).toBeLessThan(html.indexOf("VERIFIED"));
+    expect(html).toContain("1</strong>directional transition findings");
+    expect(html.indexOf("VERIFIED")).toBeLessThan(html.indexOf("Scan details"));
     expect(html).toContain('<details class="technical-details">');
     expect(html).toContain('<details class="scan-details">');
     expect(html).toContain('<details class="artifact-inventory">');
     expect(html).toContain("Supporting exports and machine data remain in this bundle");
   });
 
+  it("puts navigation coverage and transition findings near the top of human reports", () => {
+    const report = buildTVDoctorReportV1(sampleReportInput());
+    const html = renderReportHtml(report);
+    const markdown = renderReportMarkdown(report);
+
+    expect(html).toContain("Remote navigation findings");
+    expect(html).toContain("Observed navigation findings");
+    expect(html).not.toContain("navigation regressions");
+    expect(html).toContain("caption-font-size → caption-background-colour (reference target: caption-text-colour)");
+    expect(html).toContain("<h4>Expected</h4>");
+    expect(html).toContain('<p class="meta">Reference behavior</p>');
+    expect(markdown).toContain("## Remote navigation findings");
+    expect(markdown).toContain("### Observed navigation findings");
+    expect(markdown).not.toContain("navigation regressions");
+    expect(markdown).toContain("- Navigation findings: **1**");
+    expect(markdown).toContain("- Directional transition findings: **1**");
+    expect(markdown).toContain("caption-font-size -> caption-background-colour (reference target: caption-text-colour)");
+    expect(markdown).toContain("#### Expected");
+    expect(markdown).toContain("_Reference behavior_");
+    expect(markdown.indexOf("## Remote navigation findings")).toBeLessThan(markdown.indexOf("## VERIFIED"));
+  });
+
   it("separates automated proof from physical-TV checks and gives one next action", () => {
     const report = buildTVDoctorReportV1(sampleReportInput());
     const html = renderReportHtml(report);
 
-    expect(html).toContain("What this scan proved");
+    expect(html).toContain("Recorded automated coverage");
     expect(html).toContain("Completed automated checks: navigation");
     expect(html).not.toContain("Completed automated checks: navigation, streaming");
     expect(html).toContain("Still verify on real TV hardware");
@@ -568,8 +773,8 @@ describe("canonical report construction and rendering", () => {
     expect(html).toContain("autoplay and playback interruptions");
     expect(html.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
     expect(html).toContain(`href="#${ISSUE_ID}"`);
-    expect(html).toContain("Fix the first deterministic finding");
-    expect(html.indexOf("What this scan proved")).toBeLessThan(html.indexOf("FIX NOW"));
+    expect(html).toContain("Fix the first verified finding");
+    expect(html.indexOf("Recorded automated coverage")).toBeLessThan(html.indexOf("VERIFIED"));
   });
 
   it("changes the single next action for partial and clean reports without changing report data", () => {
@@ -608,7 +813,7 @@ describe("canonical report construction and rendering", () => {
     });
     const reviewOnly = buildTVDoctorReportV1({
       ...input,
-      issues: [sampleIssue(ISSUE_ID, "low")],
+      issues: [{ ...sampleIssue(ISSUE_ID, "low"), confidence: "heuristic" as const }],
     });
 
     const failedHtml = renderReportHtml(failed);
@@ -618,6 +823,31 @@ describe("canonical report construction and rendering", () => {
     expect(reviewHtml.match(/<h2>Next action<\/h2>/gu)).toHaveLength(1);
     expect(reviewHtml).toContain("Review the first finding:");
     expect(reviewHtml).toContain("Caption Text Colour is remote-unreachable");
+  });
+
+  it("does not promote deterministic observations to VERIFIED without deterministic-failure evidence", () => {
+    const input = sampleReportInput();
+    const issue = input.issues[0];
+    if (issue === undefined) throw new Error("Expected sample issue.");
+    const evidenceOnly = buildTVDoctorReportV1({
+      ...input,
+      issues: [{
+        ...issue,
+        evidence: [{
+          kind: "verified-fact" as const,
+          summary: "The target and observed focus identities were recorded.",
+          source: "snapshot-0042",
+          artifact: null,
+        }],
+      }],
+    });
+
+    const html = renderReportHtml(evidenceOnly);
+    const markdown = renderReportMarkdown(evidenceOnly);
+    expect(html).not.toContain("<h2>VERIFIED</h2>");
+    expect(html).toContain("<h2>REVIEW</h2>");
+    expect(markdown).not.toContain("## VERIFIED");
+    expect(markdown).toContain("## REVIEW");
   });
 
   it("requires an explicit original target in every replay-capable renderer after route redaction", () => {
@@ -676,5 +906,40 @@ describe("canonical report construction and rendering", () => {
     ]) {
       expect(ai, heading).toContain(`## ${heading}`);
     }
+  });
+
+  it("renders each finding with expected, observed, impact, reproduction timeline, and supporting links", () => {
+    const input = sampleReportInput();
+    const report = buildTVDoctorReportV1({
+      ...input,
+      artifacts: [
+        ...(input.artifacts ?? []),
+        {
+          id: "run:navigation-graph-markdown",
+          kind: "report" as const,
+          status: "available" as const,
+          path: "navigation-graph.md",
+          mediaType: "text/markdown",
+          byteLength: 42,
+          sha256: "c".repeat(64),
+        },
+      ],
+    });
+    const html = renderReportHtml(report);
+    const markdown = renderReportMarkdown(report);
+
+    for (const heading of ["Expected", "Observed", "Why this matters", "Reproduce"]) {
+      expect(html).toContain(`<h4>${heading}</h4>`);
+      expect(markdown).toContain(`#### ${heading}`);
+    }
+    expect(html).toContain("Reproduction timeline");
+    expect(markdown).toContain("Reproduction timeline:");
+    expect(html).toContain("RIGHT × 2");
+    expect(html).toContain("Assertion:");
+    expect(markdown).toContain("Assertion:");
+    expect(html).toContain('href="replays/TVDOCTOR-NAV-0123456789ABCDEF0123456789ABCDEF.yaml"');
+    expect(html).toContain('href="navigation-graph.md"');
+    expect(markdown).toContain("[Navigation graph](navigation-graph.md)");
+    expect(markdown).toContain("[Replay artifact](replays/TVDOCTOR-NAV-0123456789ABCDEF0123456789ABCDEF.yaml)");
   });
 });

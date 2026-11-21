@@ -110,6 +110,8 @@ export interface LatencyRegression {
 export interface BaselineComparisonChanges {
   readonly newIssues: readonly BaselineIssueObservation[];
   readonly resolvedIssues: readonly BaselineIssueObservation[];
+  /** Findings present in both baseline and current run, keyed by rule + issue id. */
+  readonly unchangedIssues: readonly BaselineIssueObservation[];
   readonly screensAdded: readonly BaselineScreenObservation[];
   readonly screensRemoved: readonly BaselineScreenObservation[];
   readonly focusAdded: readonly BaselineFocusObservation[];

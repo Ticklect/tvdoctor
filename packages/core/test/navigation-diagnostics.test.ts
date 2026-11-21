@@ -9,8 +9,10 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  createNavigationFocusGraph,
   diagnoseNavigation,
   NAVIGATION_DIAGNOSTIC_RULES,
+  NAVIGATION_FOCUS_GRAPH_VERSION,
   NAVIGATION_UI_TREE_LIMITS,
   type ExplorationActionAttempt,
   type ExplorationResult,
@@ -360,6 +362,61 @@ describe("navigation diagnostics", () => {
     expect(diagnoseNavigation(lost).findings.find((finding) => (
       finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.lostFocus
     ))?.issue.id).toBe("TVDOCTOR-NAV-2937C7512311150D64592F97793458C1");
+    const graph = createNavigationFocusGraph(lost);
+    expect(graph.schemaVersion).toBe(NAVIGATION_FOCUS_GRAPH_VERSION);
+    expect(graph.coverage).toBe("complete");
+    expect(graph.configuredActions).toEqual(["RIGHT"]);
+    expect(graph.focusTargets.find((focus) => focus.key === "state-focus-none")?.observation).toEqual({
+      status: "missing",
+      element: null,
+      reason: null,
+      evidenceClassification: "verified-fact",
+    });
+    expect(graph.transitions).toEqual([
+      expect.objectContaining({
+        fromFocusTargetKey: "state-focus-source",
+        action: "RIGHT",
+        toFocusTargetKey: "state-focus-none",
+        reproductionPath: ["RIGHT"],
+        evidenceClassification: "verified-fact",
+      }),
+    ]);
+    expect(graph.problems).toEqual([
+      expect.objectContaining({
+        kind: "missing-focus",
+        evidenceClassification: "deterministic",
+        evidenceKinds: ["deterministic-failure"],
+        reproductionPath: ["RIGHT"],
+      }),
+    ]);
+
+    const incompleteExploration: ExplorationResult = {
+      ...lost,
+      termination: { reason: "max-states", complete: false, remainingFrontierEntries: 2 },
+      statistics: { ...lost.statistics, pendingStates: 2, deferredStates: 1 },
+    };
+    const directlyObservedLoss = diagnoseNavigation(incompleteExploration).deterministicFindings.find((finding) => (
+      finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.lostFocus
+    ));
+    expect(directlyObservedLoss?.issue.evidence[0]?.kind).toBe("deterministic-failure");
+    expect(directlyObservedLoss?.issue.reproduction.status).toBe("available");
+
+    const reordered: ExplorationResult = {
+      ...lost,
+      graph: {
+        screens: {
+          states: [...lost.graph.screens.states].reverse(),
+          transitions: [...lost.graph.screens.transitions].reverse(),
+        },
+        focus: {
+          states: [...lost.graph.focus.states].reverse(),
+          transitions: [...lost.graph.focus.transitions].reverse(),
+        },
+        actions: [...lost.graph.actions].reverse(),
+      },
+    };
+    expect(createNavigationFocusGraph(reordered)).toEqual(graph);
+    expect(JSON.parse(JSON.stringify(graph))).toEqual(graph);
 
     const unavailableState: TestState = {
       id: "focus-unknown",
@@ -373,9 +430,17 @@ describe("navigation diagnostics", () => {
       [{ from: "focus-source", to: "focus-unknown", key: "RIGHT" }],
     );
     expect(rules(unavailable)).not.toContain(NAVIGATION_DIAGNOSTIC_RULES.lostFocus);
+    const unobservableGraph = createNavigationFocusGraph(unavailable);
+    expect(unobservableGraph.focusTargets.find((focus) => (
+      focus.key === "state-focus-unknown"
+    ))?.observation).toMatchObject({
+      status: "unavailable",
+      evidenceClassification: "unobservable",
+    });
+    expect(unobservableGraph.transitions[0]?.evidenceClassification).toBe("unobservable");
   });
 
-  it("reports only a self-loop with a demonstrably reachable aligned focusable candidate", () => {
+  it("reports a REVIEW self-loop when the adjacent expected target comes from geometry", () => {
     const tree = [node("row", "group", null, {
       children: [control("source", 0, 0, { focused: true }), control("next", 120, 0)],
     })];
@@ -386,10 +451,23 @@ describe("navigation diagnostics", () => {
     const result = makeResult(states, ["RIGHT"], [{ from: "focus-source", to: "focus-source", key: "RIGHT" }]);
     const finding = diagnoseNavigation(result).findings.find((item) => item.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.selfLoop);
     expect(finding?.issue.id).toBe("TVDOCTOR-NAV-2D6796445C199E680CD655BA5CB1EFF4");
+    expect(finding?.classification).toBe("heuristic");
+    expect(finding?.issue.confidence).toBe("heuristic");
+    expect(finding?.issue.reproduction.status === "available" && finding.issue.reproduction.confidence).toBe("best-effort");
+    expect(diagnoseNavigation(result).deterministicFindings).toHaveLength(0);
+    expect(diagnoseNavigation(result).heuristicFindings).toHaveLength(1);
     expect(finding?.target.expectedElement?.stableId).toBe("next");
     expect(finding?.issue.evidence.map((evidence) => evidence.kind)).toEqual([
-      "deterministic-failure",
+      "heuristic-warning",
       "inference",
+    ]);
+    expect(createNavigationFocusGraph(result).problems).toEqual([
+      expect.objectContaining({
+        kind: "self-loop",
+        evidenceClassification: "heuristic",
+        evidenceKinds: ["heuristic-warning", "inference"],
+        reproductionPath: ["RIGHT"],
+      }),
     ]);
 
     const unreachableCandidate = makeResult(
@@ -400,7 +478,7 @@ describe("navigation diagnostics", () => {
     expect(rules(unreachableCandidate)).not.toContain(NAVIGATION_DIAGNOSTIC_RULES.selfLoop);
   });
 
-  it("reports a stable adjacent remote-unreachable sibling and ignores an ungrouped pointer-only control", () => {
+  it("reports REVIEW for an aligned remote-unreached sibling and ignores an ungrouped pointer-only control", () => {
     const tree = [node("root", "main", null, {
       children: [
         node("actions", "group", null, {
@@ -430,6 +508,10 @@ describe("navigation diagnostics", () => {
     ));
     expect(unreachable.map((finding) => finding.target.element?.stableId)).toEqual(["more-info"]);
     expect(unreachable[0]?.issue.id).toBe("TVDOCTOR-NAV-E21405ED4313F3F1C582666F75FAF1DD");
+    expect(unreachable[0]?.classification).toBe("heuristic");
+    expect(unreachable[0]?.issue.evidence.map((entry) => entry.kind)).toEqual(["heuristic-warning", "inference"]);
+    expect(diagnoseNavigation(result).deterministicFindings).toHaveLength(0);
+    expect(diagnoseNavigation(result).heuristicFindings).toHaveLength(1);
     expect(unreachable[0]?.source.locallyComplete).toBe(true);
     expect(unreachable[0]?.source).toMatchObject({
       kind: "action-attempt",
@@ -448,6 +530,18 @@ describe("navigation diagnostics", () => {
       status: "available",
       originalSequence: [{ key: "RIGHT", repeat: 2 }],
     });
+    expect(createNavigationFocusGraph(result).problems).toEqual([
+      expect.objectContaining({
+        kind: "unreachable-target",
+        evidenceClassification: "heuristic",
+        evidenceKinds: ["heuristic-warning", "inference"],
+        locallyComplete: true,
+        reproductionPath: ["RIGHT", "RIGHT"],
+        target: expect.objectContaining({
+          element: expect.objectContaining({ stableId: "more-info" }),
+        }),
+      }),
+    ]);
   });
 
   it("accepts a visible enabled focused roving control even when sequential focusability is false", () => {
@@ -469,7 +563,7 @@ describe("navigation diagnostics", () => {
       completeActions([state.id], ALL_KEYS),
     );
 
-    expect(diagnoseNavigation(result).deterministicFindings).toEqual([
+    expect(diagnoseNavigation(result).heuristicFindings).toEqual([
       expect.objectContaining({
         issue: expect.objectContaining({ rule: NAVIGATION_DIAGNOSTIC_RULES.unreachable }),
         target: expect.objectContaining({
@@ -507,7 +601,7 @@ describe("navigation diagnostics", () => {
         : action
     ));
     const result = makeResult([font, background], ALL_KEYS, actions);
-    const unreachable = diagnoseNavigation(result).deterministicFindings.filter((finding) => (
+    const unreachable = diagnoseNavigation(result).heuristicFindings.filter((finding) => (
       finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.unreachable
     ));
 
@@ -528,6 +622,46 @@ describe("navigation diagnostics", () => {
         { key: "DOWN", repeat: 2 },
       ]);
       expect(reproduction.originalSequence).not.toHaveLength(0);
+    }
+  });
+
+  it("retains observed local skipped-control evidence as REVIEW when the global frontier is deferred or truncated", () => {
+    const tree = [node("row", "group", null, {
+      children: [
+        control("watch", 0, 0, { focused: true }),
+        control("more-info", 120, 0, { focusable: false }),
+      ],
+    })];
+    const state: TestState = {
+      id: "focus-watch",
+      screenId: "screen-home",
+      discoveredBy: [],
+      snapshot: snapshot("home", target("watch", 0, 0), tree),
+    };
+    const locallyExpanded = makeResult([state], ALL_KEYS, completeActions([state.id], ALL_KEYS));
+
+    for (const [label, termination, pendingStates, deferredStates] of [
+      ["deferred", { reason: "queue-exhausted", complete: true }, 0, 2],
+      ["truncated", { reason: "max-states", complete: false, remainingFrontierEntries: 3 }, 3, 0],
+    ] as const) {
+      const partial: ExplorationResult = {
+        ...locallyExpanded,
+        termination,
+        statistics: { ...locallyExpanded.statistics, pendingStates, deferredStates },
+      };
+      const findings = diagnoseNavigation(partial);
+      const warning = findings.heuristicFindings.find((finding) => (
+        finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.unreachable
+      ));
+      expect(warning, label).toBeDefined();
+      expect(warning?.source.locallyComplete, label).toBe(true);
+      expect(warning?.issue.confidence, label).toBe("heuristic");
+      expect(warning?.issue.evidence.map((item) => item.kind), label).toEqual(["heuristic-warning", "inference"]);
+      expect(warning?.issue.evidence[0]?.summary, label).toContain("global exploration was deferred or incomplete");
+      expect(warning?.target.expectedElement?.stableId, label).toBe("more-info");
+      expect(warning?.target.observedElement?.stableId, label).toBe("watch");
+      expect(warning?.source.actionSequence, label).toEqual(["RIGHT"]);
+      expect(findings.deterministicFindings, label).toHaveLength(0);
     }
   });
 
@@ -617,6 +751,31 @@ describe("navigation diagnostics", () => {
     expect(diagnoseNavigation(complete).findings.find((finding) => (
       finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.focusTrap
     ))?.issue.id).toBe("TVDOCTOR-NAV-1DA9753F61DD7E9BBB46391D86C5192F");
+    const graph = createNavigationFocusGraph(complete);
+    expect(graph.transitions.map((transition) => transition.action).sort()).toEqual([
+      "BACK",
+      "DOWN",
+      "LEFT",
+      "RIGHT",
+      "SELECT",
+      "SELECT",
+      "UP",
+    ]);
+    expect(graph.transitions).toContainEqual(expect.objectContaining({
+      fromScreenKey: "fingerprint-screen-home",
+      action: "SELECT",
+      toScreenKey: "fingerprint-screen-profile",
+      reproductionPath: ["SELECT"],
+    }));
+    expect(graph.problems).toEqual([
+      expect.objectContaining({
+        kind: "focus-trap",
+        evidenceClassification: "deterministic",
+        evidenceKinds: ["deterministic-failure"],
+        locallyComplete: true,
+        reproductionPath: ["SELECT", "BACK"],
+      }),
+    ]);
 
     const withoutSelect = ALL_KEYS.filter((key) => key !== "SELECT");
     const incomplete = makeResult(
@@ -725,6 +884,21 @@ describe("navigation diagnostics", () => {
     expect(diagnoseNavigation(opened).findings.find((finding) => (
       finding.issue.rule === NAVIGATION_DIAGNOSTIC_RULES.overlayFocusLeak
     ))?.issue.id).toBe("TVDOCTOR-NAV-40FE24C422FB43D8EA647382CCDC80B4");
+    const graph = createNavigationFocusGraph(opened);
+    expect(graph.transitions).toEqual([
+      expect.objectContaining({
+        action: "SELECT",
+        reproductionPath: ["SELECT"],
+      }),
+    ]);
+    expect(graph.problems).toEqual([
+      expect.objectContaining({
+        kind: "overlay-focus-leak",
+        evidenceClassification: "deterministic",
+        evidenceKinds: ["deterministic-failure"],
+        reproductionPath: ["SELECT"],
+      }),
+    ]);
 
     const preExistingStates: TestState[] = [
       { id: "focus-opener", screenId: "screen-home", discoveredBy: [], snapshot: after },
@@ -778,6 +952,7 @@ describe("navigation diagnostics", () => {
     expect(finding?.issue.reproduction).toMatchObject({
       status: "unavailable",
     });
+    expect(createNavigationFocusGraph(consent).problems).toEqual([]);
 
     const genericTree = [
       node("settings-dialog", "dialog", { x: 100, y: 100, width: 500, height: 400 }, {
@@ -819,6 +994,16 @@ describe("navigation diagnostics", () => {
       status: "available",
       originalSequence: [{ key: "SELECT", repeat: 1 }, { key: "BACK", repeat: 1 }],
     });
+    const graph = createNavigationFocusGraph(result);
+    expect(graph.transitions.map((transition) => transition.action).sort()).toEqual(["BACK", "SELECT"]);
+    expect(graph.problems).toEqual([
+      expect.objectContaining({
+        kind: "broken-back",
+        evidenceClassification: "deterministic",
+        evidenceKinds: ["deterministic-failure"],
+        reproductionPath: ["SELECT", "BACK"],
+      }),
+    ]);
 
     const notDiscovery = makeResult(
       [states[0] as TestState, { ...(states[1] as TestState), discoveredBy: ["RIGHT", "SELECT"] }, states[2] as TestState],
@@ -856,6 +1041,14 @@ describe("navigation diagnostics", () => {
     expect(diagnostics.heuristicFindings[0]?.issue.id).toBe("TVDOCTOR-NAV-CFCFD82B8C9C10F7A8274E7D0D5BD8DB");
     expect(diagnostics.heuristicFindings[0]?.target.expectedElement?.stableId).toBe("adjacent");
     expect(diagnoseNavigation(result)).toEqual(diagnostics);
+    expect(createNavigationFocusGraph(result, diagnostics).problems).toEqual([
+      expect.objectContaining({
+        kind: "unexpected-jump",
+        evidenceClassification: "heuristic",
+        evidenceKinds: ["heuristic-warning"],
+        reproductionPath: ["RIGHT"],
+      }),
+    ]);
   });
 
   it("reports a verified off-axis jump but not a destination absent from the pre-action tree", () => {

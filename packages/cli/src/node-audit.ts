@@ -9,7 +9,10 @@ import { runAudit } from "./node-audit-runner.js";
 export {
   EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
   MAX_EVIDENCE_CAPTURE_DURATION_MS,
+  MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
   MAX_ISSUES_WITH_FRESH_EVIDENCE,
+  PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY,
+  PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO,
   REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
   REPLAY_TARGET_OVERRIDE_REQUIRED,
   type AuditRunProducts,
@@ -37,8 +40,11 @@ export {
 export function createNodeAuditOperation(
   dependencies: NodeAuditDependencies = {},
 ): (request: TestCommandRequest) => Promise<TestCommandResult> {
-  const createDriver = dependencies.createDriver ?? (() => new PlaywrightWebDriver({
+  const createDriver = dependencies.createDriver ?? ((options) => new PlaywrightWebDriver({
     browserLaunchOptions: { handleSIGINT: false },
+    ...(options?.recordVideoDirectory === undefined
+      ? {}
+      : { recordVideoDirectory: options.recordVideoDirectory }),
     settle: { ambientChurnEscape: true },
   }));
   const createSessionDriver = dependencies.createSessionDriver ?? ((storageState) => new PlaywrightWebDriver({

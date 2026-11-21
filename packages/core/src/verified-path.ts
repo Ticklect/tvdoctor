@@ -7,6 +7,49 @@ export interface VerifiedStateEdge {
   readonly expandable: boolean;
 }
 
+/**
+ * Verified local edges are discovered monotonically. Maintain outgoing edges
+ * in the exact order used by the original shortest-path search, so repeated
+ * queries do not rebuild and sort the entire discovered graph.
+ *
+ * This index owns only search metadata. It never bypasses live observations,
+ * replay checkpoints, destination verification or restoration budgets.
+ */
+export class IncrementalVerifiedPathIndex {
+  readonly #outgoing = new Map<string, VerifiedStateEdge[]>();
+  readonly #actionRank: ReadonlyMap<RemoteKey, number>;
+
+  constructor(actionOrder: readonly RemoteKey[]) {
+    this.#actionRank = new Map(actionOrder.map((key, index) => [key, index]));
+  }
+
+  add(edge: VerifiedStateEdge): void {
+    if (!edge.expandable) return;
+    const list = this.#outgoing.get(edge.fromIdentity);
+    if (list === undefined) {
+      this.#outgoing.set(edge.fromIdentity, [edge]);
+      return;
+    }
+    // Insert after equal elements, matching Array.sort's stable tie ordering.
+    let lower = 0;
+    let upper = list.length;
+    while (lower < upper) {
+      const middle = (lower + upper) >>> 1;
+      const candidate = list[middle];
+      if (candidate !== undefined && compareEdges(candidate, edge, this.#actionRank) <= 0) {
+        lower = middle + 1;
+      } else {
+        upper = middle;
+      }
+    }
+    list.splice(lower, 0, edge);
+  }
+
+  find(fromIdentity: string, toIdentity: string): readonly VerifiedStateEdge[] | null {
+    return findPathInSortedAdjacency(this.#outgoing, fromIdentity, toIdentity);
+  }
+}
+
 function compareEdges(
   left: VerifiedStateEdge,
   right: VerifiedStateEdge,
@@ -47,6 +90,15 @@ export function findShortestVerifiedPath(
   }
   for (const list of outgoing.values()) list.sort((left, right) => compareEdges(left, right, actionRank));
 
+  return findPathInSortedAdjacency(outgoing, fromIdentity, toIdentity);
+}
+
+function findPathInSortedAdjacency(
+  outgoing: ReadonlyMap<string, readonly VerifiedStateEdge[]>,
+  fromIdentity: string,
+  toIdentity: string,
+): readonly VerifiedStateEdge[] | null {
+  if (fromIdentity === toIdentity) return [];
   const queue = [fromIdentity];
   const visited = new Set([fromIdentity]);
   const predecessor = new Map<string, VerifiedStateEdge>();

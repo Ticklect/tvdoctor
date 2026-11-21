@@ -104,6 +104,69 @@ class ContinuationDriver implements TVDoctorDriver {
 }
 
 describe("explorer resumable expansion", () => {
+  it("keeps the priority frontier ahead of a live destination by default", async () => {
+    const driver = new ContinuationDriver(
+      ["A", "B", "C"],
+      {
+        A: { RIGHT: "B", DOWN: "C", UP: "A", LEFT: "A" },
+        B: { RIGHT: "B", DOWN: "B", UP: "B", LEFT: "A" },
+        C: { RIGHT: "C", DOWN: "C", UP: "C", LEFT: "A" },
+        D: {},
+      },
+    );
+    const result = await explore(driver, {
+      actions: ["RIGHT", "DOWN", "UP", "LEFT"],
+      restorationMode: "verified-local",
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 40, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+    expect(result.termination.complete).toBe(true);
+    const presses = driver.eventLog.filter((entry) => entry.startsWith("press:"));
+    expect(presses.indexOf("press:A:DOWN")).toBeLessThan(presses.indexOf("press:B:RIGHT"));
+    expect(result.graph.focus.states).toHaveLength(3);
+  });
+
+  it("rechecks a cached live state before sending input after an asynchronous screen change", async () => {
+    let state: StateName = "A";
+    let firstTransition = true;
+    const presses: string[] = [];
+    const driver: TVDoctorDriver = {
+      async capabilities() {
+        return new Set<Capability>(["remote-input", "ui-tree"]);
+      },
+      async reset() {
+        state = "A";
+      },
+      async snapshot() {
+        const observed = state;
+        if (state === "B" && firstTransition) {
+          firstTransition = false;
+          queueMicrotask(() => { state = "C"; });
+        }
+        return snapshot(observed, ["A", "B", "C"]);
+      },
+      async press(key) {
+        presses.push(state + ":" + key);
+        if (state === "A" && key === "RIGHT") state = "B";
+        return { key, outcome: "applied", timing: { inputSentAtMs: presses.length } };
+      },
+    };
+    const result = await explore(driver, {
+      actions: ["RIGHT", "DOWN", "UP"],
+      restorationMode: "verified-local",
+      opportunisticFrontier: true,
+      refreshVisibleSelfLoops: false,
+      budgets: { maxActions: 50, maxStates: 10, maxDepth: 2, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+    expect(result.termination.complete).toBe(true);
+    expect(presses.some((entry) => entry.startsWith("C:"))).toBe(false);
+    expect(result.statistics.restorationFallbacks).toBeGreaterThan(0);
+    expect(result.restorationDiagnostics?.some((entry) => entry.strategy === "verified-live-state"
+      && entry.status === "failed" && entry.subtype === "navigation-diverged")).toBe(true);
+  });
+
   it("reports zero restoration cycles when exploration exits before the restorer is created", async () => {
     const driver: TVDoctorDriver = {
       async capabilities() {
@@ -138,6 +201,7 @@ describe("explorer resumable expansion", () => {
     const result = await explore(driver, {
       actions: ["RIGHT", "DOWN", "UP", "LEFT"],
       restorationMode: "verified-local",
+      opportunisticFrontier: true,
       refreshVisibleSelfLoops: false,
       actionsForState: (context) => {
         actionSelectionCalls.set(
@@ -180,6 +244,7 @@ describe("explorer resumable expansion", () => {
     const result = await explore(driver, {
       actions: ["RIGHT", "UP", "LEFT"],
       restorationMode: "verified-local",
+      opportunisticFrontier: true,
       refreshVisibleSelfLoops: false,
       budgets: { maxActions: 30, maxStates: 10, maxDepth: 4, maxDurationMs: 14 },
       monotonicNow: () => clock.now,

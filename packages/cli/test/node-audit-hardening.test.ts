@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -13,9 +13,12 @@ import {
 import {
   buildTVDoctorReportV1,
   createArtifactStore,
+  renderReportHtml,
   writeReportBundle,
 } from "@tvdoctor/reporters";
 import {
+  MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
+  MAX_EVIDENCE_CAPTURE_DURATION_MS,
   MAX_ISSUES_WITH_FRESH_EVIDENCE,
   captureIssue,
   captureIssuesWithinBudget,
@@ -182,6 +185,13 @@ describe("Node audit release hardening", () => {
       expect(result.details.join(" ")).toContain("The scan could not complete.");
       expect(JSON.stringify(result)).not.toContain("SECRET_CANARY");
       expect(await readFile(join(root, "bundle", "report.json"), "utf8")).not.toContain("SECRET_CANARY");
+      const debug = await readFile(join(root, "bundle", "failure-debug.json"), "utf8");
+      expect(debug).not.toContain("SECRET_CANARY");
+      expect(JSON.parse(debug)).toMatchObject({
+        schemaVersion: 1,
+        code: "network-unreachable",
+        summary: "The website could not be reached. Check the address and network connection.",
+      });
       expect(await readFile(join(root, "bundle", "report.html"), "utf8")).toContain("Scan could not complete");
       expect(closed).toHaveBeenCalledOnce();
     } finally {
@@ -247,11 +257,15 @@ describe("Node audit release hardening", () => {
       expect(result.details.slice(0, 3)).toEqual([
         "The scan could not complete.",
         "TVDoctor could not complete this scan because the browser session failed.",
-        "Technical detail was retained in failure-debug.json.",
+        "A bounded failure classification was retained in failure-debug.json.",
       ]);
       expect(result.details[3]).toMatch(/^Report: /u);
-      expect(await readFile(join(root, "bundle", "failure-debug.json"), "utf8"))
-        .toContain("stage initialization failed");
+      expect(JSON.parse(await readFile(join(root, "bundle", "failure-debug.json"), "utf8")))
+        .toEqual({
+          code: "browser-session-failed",
+          schemaVersion: 1,
+          summary: "TVDoctor could not complete this scan because the browser session failed.",
+        });
       expect(closed).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -356,9 +370,56 @@ describe("Node audit release hardening", () => {
         message: "Invalid URL",
         code: "ERR_INVALID_URL",
       });
-      expect(await readFile(join(root, "bundle", "failure-debug.json"), "utf8"))
-        .toContain("stage failure before invalid report target");
+      expect(JSON.parse(await readFile(join(root, "bundle", "failure-debug.json"), "utf8")))
+        .toEqual({
+          code: "browser-session-failed",
+          schemaVersion: 1,
+          summary: "TVDoctor could not complete this scan because the browser session failed.",
+        });
       expect(closed).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never persists raw Windows or Unix paths, shell commands, or tokens in failed-run diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-private-failure-diagnostics-"));
+    try {
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => {
+            throw new Error(
+              "spawn C:\\Users\\alice\\AppData\\Local\\secret-tool.exe --token TOP_SECRET ENOENT cwd=/home/alice/private",
+            );
+          },
+          close: async () => undefined,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+      });
+
+      expect(result.status).toBe("failed");
+      const debug = await readFile(join(root, "bundle", "failure-debug.json"), "utf8");
+      for (const privateFragment of [
+        "C:\\Users\\alice",
+        "/home/alice/private",
+        "secret-tool.exe",
+        "--token",
+        "TOP_SECRET",
+      ]) {
+        expect(debug).not.toContain(privateFragment);
+      }
+      expect(JSON.parse(debug)).toEqual({
+        code: "filesystem-access",
+        schemaVersion: 1,
+        summary: "TVDoctor could not access a required file or folder.",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -558,7 +619,9 @@ describe("Node audit release hardening", () => {
         () => ({
           async launch(app: AppReference) {
             launches.push(app);
-            throw new Error("Authorization: Bearer CAPTURE_SECRET");
+            throw new Error(
+              "spawn C:\\Users\\alice\\capture.exe cwd=/home/alice/private\nAuthorization: Bearer CAPTURE_SECRET",
+            );
           },
           close: closed,
         } as unknown as PlaywrightWebDriver),
@@ -568,6 +631,9 @@ describe("Node audit release hardening", () => {
       expect(result.replay).toBeNull();
       expect(result.issue.reproduction).toMatchObject({ status: "unavailable" });
       expect(JSON.stringify(result)).not.toContain("CAPTURE_SECRET");
+      expect(JSON.stringify(result)).not.toContain("C:\\Users\\alice");
+      expect(JSON.stringify(result)).not.toContain("/home/alice/private");
+      expect(JSON.stringify(result)).not.toContain("capture.exe");
       expect(result.artifacts).toHaveLength(8);
       expect(result.artifacts.find((entry) => entry.id.endsWith(":replay"))?.status)
         .toBe("unavailable");
@@ -607,6 +673,383 @@ describe("Node audit release hardening", () => {
       expect(results[MAX_ISSUES_WITH_FRESH_EVIDENCE]?.issue.reproduction.status)
         .toBe("unavailable");
       expect(MAX_ISSUES_WITH_FRESH_EVIDENCE * 8 + 2).toBeLessThan(10_000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("captures all 52 Deep issues when within the unchanged time limit, but keeps a hard issue cap", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-deep-evidence-budget-"));
+    try {
+      const store = await createArtifactStore(root);
+      const allIssues = Array.from({ length: 140 }, (_, index) => issue(
+        `TVDOCTOR-NAV-DEEP${String(index).padStart(24, "0")}`,
+      ));
+      const capturedIds: string[] = [];
+      const capture = vi.fn(async (
+        _store,
+        _target,
+        _products,
+        sourceIssue: TVDoctorIssue,
+      ) => {
+        capturedIds.push(sourceIssue.id);
+        return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+      });
+      const run = (issues: readonly TVDoctorIssue[], limit: number) => captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("Injected capturer should not open a driver."); },
+        capture,
+        () => 0,
+        undefined,
+        false,
+        undefined,
+        false,
+        limit,
+      );
+
+      const normal = await run(allIssues.slice(0, 52), MAX_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(normal.filter((entry) => !entry.failed)).toHaveLength(MAX_ISSUES_WITH_FRESH_EVIDENCE);
+      capture.mockClear();
+      capturedIds.length = 0;
+
+      const deep = await run(allIssues.slice(0, 52), MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(deep).toHaveLength(52);
+      expect(deep.every((entry) => !entry.failed)).toBe(true);
+      expect(capture).toHaveBeenCalledTimes(52);
+      expect(capturedIds).toEqual(allIssues.slice(0, 52).map((entry) => entry.id));
+
+      const capped = await run(allIssues, MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(capped.filter((entry) => !entry.failed)).toHaveLength(MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(capped.filter((entry) => entry.failed)).toHaveLength(allIssues.length - MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(capped[MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE]?.issue.reproduction).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("per-run limit of 128"),
+      });
+      await expect(run(allIssues, MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE + 1))
+        .rejects.toThrow(/positive bounded integer/u);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not extend the shared evidence deadline when Deep raises the issue ceiling", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-deep-evidence-time-"));
+    try {
+      const store = await createArtifactStore(root);
+      const issues = Array.from({ length: 52 }, (_, index) => issue(
+        `TVDOCTOR-NAV-DEEPTIME${String(index).padStart(24, "0")}`,
+      ));
+      let elapsedMs = 0;
+      const capture = vi.fn(async (_store, _target, _products, sourceIssue: TVDoctorIssue) => {
+        elapsedMs = MAX_EVIDENCE_CAPTURE_DURATION_MS;
+        return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+      });
+      const results = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("No real browser is needed for a deadline test."); },
+        capture,
+        () => elapsedMs,
+        undefined,
+        false,
+        undefined,
+        false,
+        MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
+      );
+      expect(capture).toHaveBeenCalledOnce();
+      expect(results.filter((result) => !result.failed)).toHaveLength(1);
+      expect(results.filter((result) => result.failed)).toHaveLength(51);
+      expect(results[1]?.issue.reproduction).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("120000 ms run budget"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the remaining global budget into a real fresh capture near the deadline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-deep-near-deadline-"));
+    try {
+      const store = await createArtifactStore(root);
+      const launch = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      const close = vi.fn(async () => undefined);
+      const driver = { launch, close } as unknown as PlaywrightWebDriver;
+      let calls = 0;
+      const results = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        [issue("TVDOCTOR-NAV-NEAR-DEADLINE0000001")],
+        () => driver,
+        undefined,
+        () => calls++ === 0 ? 0 : MAX_EVIDENCE_CAPTURE_DURATION_MS - 1,
+        undefined,
+        false,
+        undefined,
+        false,
+        MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE,
+      );
+      expect(launch).toHaveBeenCalledOnce();
+      expect(results).toHaveLength(1);
+      expect(results[0]?.failed).toBe(true);
+      expect(results[0]?.issue.reproduction).toMatchObject({ status: "unavailable" });
+      expect(close).toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("captures late critical replayable issues before low-value findings without reordering the report", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-evidence-triage-"));
+    try {
+      const store = await createArtifactStore(root);
+      const low = Array.from({ length: MAX_ISSUES_WITH_FRESH_EVIDENCE + 8 }, (_, index) => ({
+        ...issue(`TVDOCTOR-NAV-TRIAGE${String(index).padStart(24, "0")}`),
+        severity: "info" as const,
+        confidence: "heuristic" as const,
+        reproduction: { status: "unavailable" as const, reason: "No deterministic reproduction." },
+      }));
+      const criticalReplay = { ...issue("TVDOCTOR-STREAMING-CRITICAL-REPLAY"), severity: "critical" as const, pack: "streaming" };
+      const criticalHeuristic = {
+        ...issue("TVDOCTOR-WEB-CRITICAL-HEURISTIC"),
+        severity: "critical" as const,
+        confidence: "heuristic" as const,
+        pack: "accessibility",
+        reproduction: { status: "unavailable" as const, reason: "Heuristic finding." },
+      };
+      const highReplay = { ...issue("TVDOCTOR-WEB-HIGH-REPLAY"), severity: "high" as const, pack: "crashes" };
+      const issues: TVDoctorIssue[] = [...low, criticalHeuristic, highReplay, criticalReplay];
+      const selected: string[] = [];
+      const capturer = vi.fn(async (
+        _store,
+        _target,
+        _products,
+        sourceIssue: TVDoctorIssue,
+      ) => {
+        selected.push(sourceIssue.id);
+        return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+      });
+
+      const results = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("An injected capturer must not construct a driver."); },
+        capturer,
+      );
+
+      expect(selected.slice(0, 3)).toEqual([criticalReplay.id, criticalHeuristic.id, highReplay.id]);
+      expect(selected).toHaveLength(MAX_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(results.map((entry) => entry.issue.id)).toEqual(issues.map((entry) => entry.id));
+      expect(results[issues.indexOf(criticalReplay)]?.failed).toBe(false);
+      expect(results[issues.indexOf(criticalHeuristic)]?.failed).toBe(false);
+      expect(results[issues.indexOf(highReplay)]?.failed).toBe(false);
+      expect(results[0]?.failed).toBe(false);
+      expect(results[MAX_ISSUES_WITH_FRESH_EVIDENCE - 3]?.failed).toBe(true);
+      expect(results[MAX_ISSUES_WITH_FRESH_EVIDENCE - 3]?.issue.reproduction).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("per-run limit"),
+      });
+      expect(results.filter((entry) => entry.failed)).toHaveLength(issues.length - MAX_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(low[MAX_ISSUES_WITH_FRESH_EVIDENCE - 3]?.reproduction.reason).toBe("No deterministic reproduction.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates equal-priority evidence captures across packs and keeps within-pack order", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-evidence-fair-packs-"));
+    try {
+      const store = await createArtifactStore(root);
+      const navigation = Array.from({ length: MAX_ISSUES_WITH_FRESH_EVIDENCE + 3 }, (_, index) => ({
+        ...issue(`TVDOCTOR-NAV-FAIR${String(index).padStart(24, "0")}`),
+        severity: "critical" as const,
+      }));
+      const streaming = [
+        { ...issue("TVDOCTOR-STREAMING-FAIR-0001"), severity: "critical" as const, pack: "streaming" },
+        { ...issue("TVDOCTOR-STREAMING-FAIR-0002"), severity: "critical" as const, pack: "streaming" },
+      ];
+      const web = { ...issue("TVDOCTOR-WEB-FAIR-0001"), severity: "critical" as const, pack: "crashes" };
+      const issues: TVDoctorIssue[] = [...navigation, ...streaming, web];
+      const captureOrder: string[] = [];
+      const results = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("Unexpected real driver construction."); },
+        async (_store, _target, _products, sourceIssue) => {
+          captureOrder.push(sourceIssue.id);
+          return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+        },
+      );
+
+      expect(captureOrder.slice(0, 6)).toEqual([
+        navigation[0]?.id,
+        streaming[0]?.id,
+        web.id,
+        navigation[1]?.id,
+        streaming[1]?.id,
+        navigation[2]?.id,
+      ]);
+      expect(results.map((entry) => entry.issue.id)).toEqual(issues.map((entry) => entry.id));
+      expect(results.filter((entry) => !entry.failed)).toHaveLength(MAX_ISSUES_WITH_FRESH_EVIDENCE);
+      expect(results.at(-1)?.failed).toBe(false);
+      expect(results[31]?.failed).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps deadline and interruption failures explicit after priority scheduling", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-evidence-priority-stop-"));
+    try {
+      const store = await createArtifactStore(root);
+      const low = { ...issue("TVDOCTOR-NAV-STOP-LOW"), severity: "low" as const };
+      const critical = { ...issue("TVDOCTOR-NAV-STOP-CRITICAL"), severity: "critical" as const };
+      const issues = [low, critical];
+      let elapsedMs = 0;
+      const capturedBeforeDeadline: string[] = [];
+      const deadlineResults = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("Unexpected driver construction."); },
+        async (_store, _target, _products, sourceIssue) => {
+          capturedBeforeDeadline.push(sourceIssue.id);
+          elapsedMs = 120_000;
+          return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+        },
+        () => elapsedMs,
+      );
+
+      expect(capturedBeforeDeadline).toEqual([critical.id]);
+      expect(deadlineResults.map((entry) => entry.issue.id)).toEqual(issues.map((entry) => entry.id));
+      expect(deadlineResults[0]).toMatchObject({ failed: true, replay: null });
+      expect(deadlineResults[0]?.issue.reproduction).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("run budget was reached"),
+      });
+      expect(deadlineResults[1]?.failed).toBe(false);
+
+      const controller = new AbortController();
+      const interruptedResults = await captureIssuesWithinBudget(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issues,
+        () => { throw new Error("Unexpected driver construction."); },
+        async (_store, _target, _products, sourceIssue) => {
+          controller.abort();
+          return { issue: sourceIssue, artifacts: [], replay: null, failed: false };
+        },
+        () => 0,
+        controller.signal,
+      );
+
+      expect(interruptedResults.map((entry) => entry.issue.id)).toEqual(issues.map((entry) => entry.id));
+      expect(interruptedResults[0]?.issue.reproduction).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("interrupted"),
+      });
+      expect(interruptedResults[0]?.failed).toBe(true);
+      expect(interruptedResults[1]?.failed).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps opt-in video outside report/v1 artifacts while linking the trusted sidecar", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-video-sidecar-"));
+    try {
+      let recordedPath: string | null = null;
+      const operation = createNodeAuditOperation({
+        createDriver: (options?: { readonly recordVideoDirectory?: string }) => {
+          const recordingDirectory = options?.recordVideoDirectory;
+          return ({
+            launch: async () => undefined,
+            capabilities: async () => new Set(["remote-input", "ui-tree"]),
+            close: async () => {
+              if (recordingDirectory === undefined) return;
+              await mkdir(recordingDirectory, { recursive: true });
+              recordedPath = join(recordingDirectory, "audit-session.webm");
+              await writeFile(recordedPath, Uint8Array.from([1, 2, 3, 4]));
+            },
+            getRecordedVideoPath: () => recordedPath,
+          } as unknown as PlaywrightWebDriver);
+        },
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        recordVideo: true,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(recordedPath).toBe(join(root, "bundle", "video", "audit-session.webm"));
+      expect(result.details.join("\n")).toContain("Video evidence:");
+      expect(result.details.join("\n")).toContain("may contain sensitive target content");
+
+      const reportText = await readFile(join(root, "bundle", "report.json"), "utf8");
+      const report = JSON.parse(reportText) as {
+        artifacts: readonly { readonly kind: string; readonly path?: string }[];
+      };
+      expect(report.artifacts.some((artifact) => artifact.path?.endsWith(".webm") === true)).toBe(false);
+      expect(report.artifacts.some((artifact) => artifact.kind === "video")).toBe(false);
+      expect(reportText).not.toContain("audit-session.webm");
+
+      const html = await readFile(join(root, "bundle", "report.html"), "utf8");
+      expect(html).toContain("video/audit-session.webm");
+      expect(html).toContain("may contain sensitive target content");
+
+      const regenerated = renderReportHtml(JSON.parse(reportText));
+      expect(regenerated).not.toContain("audit-session.webm");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps audit classification unchanged when requested video evidence is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-video-unavailable-"));
+    try {
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          close: async () => undefined,
+        } as unknown as PlaywrightWebDriver),
+      });
+
+      const result = await operation({
+        target: "https://example.test/app",
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        recordVideo: true,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.issueCount).toBe(0);
+      expect(result.details).toContain(
+        "Video evidence unavailable; audit classification does not depend on video recording.",
+      );
+      expect(await readFile(join(root, "bundle", "report.html"), "utf8"))
+        .not.toContain("Audit session video");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -736,8 +1179,19 @@ describe("Node audit release hardening", () => {
       expect(consentResolved).toBe(true);
       expect(consentPresses.filter((key) => key === "SELECT")).toHaveLength(1);
       expect(consentPresses.filter((key) => key === "TAB").length).toBeGreaterThanOrEqual(3);
-      expect(await readFile(join(root, "bundle", "report.json"), "utf8"))
-        .not.toContain("startup policy.actions must contain at least one remote key");
+      const reportText = await readFile(join(root, "bundle", "report.json"), "utf8");
+      expect(reportText).not.toContain("startup policy.actions must contain at least one remote key");
+      const report = JSON.parse(reportText) as { readonly artifacts: readonly { readonly id: string; readonly path?: string }[] };
+      expect(report.artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "run:navigation-graph-json", path: "navigation-graph.json" }),
+        expect.objectContaining({ id: "run:navigation-graph-markdown", path: "navigation-graph.md" }),
+      ]));
+      expect(await readFile(join(root, "bundle", "navigation-graph.json"), "utf8"))
+        .toContain("tvdoctor.navigation-focus-graph/v2");
+      expect(await readFile(join(root, "bundle", "navigation-graph.md"), "utf8"))
+        .toContain("# TVDoctor Navigation Graph");
+      expect(result.details.join("\n")).toContain("navigation-graph.json");
+      expect(result.details.join("\n")).toContain("navigation-graph.md");
       expect(closed).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -886,6 +1340,97 @@ describe("Node audit release hardening", () => {
     }
   });
 
+  it("keeps semantic issue evidence but never calls or persists screenshots when disabled", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-no-screenshots-"));
+    try {
+      const store = await createArtifactStore(root);
+      let phase = 0;
+      const screenshot = vi.fn(async () => Uint8Array.from([1, 2, 3]));
+      const driver = {
+        launch: async () => { phase = 0; },
+        async press(key: ActionResult["key"]): Promise<ActionResult> {
+          phase = 1;
+          return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+        },
+        async snapshot() {
+          return snapshot(phase === 0 ? "source-target" : "observed-target");
+        },
+        getPage() { return { screenshot }; },
+        async getLogs() { return []; },
+        async close() { return undefined; },
+      } as unknown as PlaywrightWebDriver;
+
+      const result = await captureIssue(
+        store,
+        "https://example.test/app",
+        PRODUCTS,
+        issue(),
+        () => driver,
+        undefined,
+        false,
+      );
+
+      expect(result.failed).toBe(false);
+      expect(screenshot).not.toHaveBeenCalled();
+      expect(result.artifacts.find((entry) => entry.id.endsWith(":before-screenshot")))
+        .toMatchObject({ status: "unavailable", reason: expect.stringContaining("--no-screenshots") });
+      expect(result.artifacts.find((entry) => entry.id.endsWith(":after-screenshot")))
+        .toMatchObject({ status: "unavailable", reason: expect.stringContaining("--no-screenshots") });
+      expect((await allFiles(root)).some((path) => path.endsWith(".png"))).toBe(false);
+      expect(result.artifacts.find((entry) => entry.id.endsWith(":transition"))?.status).toBe("available");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts snapshot route identity from issue evidence in strict origin mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-origin-evidence-"));
+    try {
+      const store = await createArtifactStore(root);
+      let phase = 0;
+      const privateTarget = "https://example.test/private/route?session=ROUTE_SECRET#fragment";
+      const driver = {
+        launch: async () => { phase = 0; },
+        async press(key: ActionResult["key"]): Promise<ActionResult> {
+          phase = 1;
+          return { key, outcome: "applied", timing: { inputSentAtMs: 1 } };
+        },
+        async snapshot() {
+          return {
+            ...snapshot(phase === 0 ? "source-target" : "observed-target"),
+            location: availableObservation(privateTarget),
+          };
+        },
+        getPage() { return { screenshot: async () => Uint8Array.from([1, 2, 3]) }; },
+        async getLogs() { return []; },
+        async close() { return undefined; },
+      } as unknown as PlaywrightWebDriver;
+
+      const result = await captureIssue(
+        store,
+        privateTarget,
+        PRODUCTS,
+        issue(),
+        () => driver,
+        undefined,
+        false,
+        "origin",
+      );
+
+      expect(result.failed).toBe(false);
+      const excerpt = await readFile(
+        join(root, "evidence", issue().id, "ui-excerpt.json"),
+        "utf8",
+      );
+      expect(excerpt).toContain("https://example.test");
+      expect(excerpt).not.toContain("/private/route");
+      expect(excerpt).not.toContain("ROUTE_SECRET");
+      expect(excerpt).not.toContain("#fragment");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects reused and non-directory output destinations before driver construction", async () => {
     const root = await mkdtemp(join(tmpdir(), "tvdoctor-output-preflight-"));
     try {
@@ -995,6 +1540,43 @@ describe("Node audit release hardening", () => {
       }
       expect(content).not.toMatch(/Bearer\s+(?!\[REDACTED\])/iu);
       expect(content).not.toMatch(/Basic\s+(?!\[REDACTED\])/iu);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stores origin-only target identity consistently and requires an explicit replay target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-origin-target-"));
+    try {
+      const operation = createNodeAuditOperation({
+        createDriver: () => ({
+          launch: async () => undefined,
+          capabilities: async () => new Set(["remote-input", "ui-tree"]),
+          close: async () => undefined,
+        } as unknown as PlaywrightWebDriver),
+      });
+      const target = "https://example.test/private/route?session=ROUTE_SECRET#fragment";
+      const result = await operation({
+        target,
+        packs: [],
+        mode: "quick",
+        outputPath: join(root, "bundle"),
+        searchQuery: "N",
+        targetRedaction: "origin",
+      });
+
+      expect(result.status).toBe("completed");
+      const report = JSON.parse(await readFile(join(root, "bundle", "report.json"), "utf8")) as {
+        target: { location: string; environment: Record<string, string> };
+      };
+      expect(report.target.location).toBe("https://example.test/");
+      expect(report.target.environment["replayTargetOverride"]).toBe("required");
+      for (const file of ["report.json", "exports/portable-summary.md", "report.html", "stage-ledger.json"]) {
+        const text = await readFile(join(root, "bundle", file), "utf8");
+        expect(text).not.toContain("/private/route");
+        expect(text).not.toContain("ROUTE_SECRET");
+        expect(text).not.toContain("#fragment");
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

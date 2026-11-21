@@ -396,7 +396,16 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
     return defect;
   });
   const expectedKeys = expected.map((defect) => `${defect.expectedRule}|${defect.target}`);
-  const observedKeys = findings.map((finding) => findingKey(finding));
+  // This is the historical M4 seed-precision gate. Phase 2 intentionally adds
+  // new diagnostic vocabularies (for example directional asymmetry), so keep
+  // the precision measurement scoped to the legacy M4 rule vocabulary rather
+  // than treating newly approved review signals as M4 false positives.
+  const milestone4Rules = new Set(expected.map((defect) => defect.expectedRule));
+  const milestone4Findings = findings.filter((finding) => milestone4Rules.has(finding.issue.rule));
+  const observedKeys = milestone4Findings.map((finding) => findingKey(finding));
+  const phase2AsymmetryFindings = findings.filter((finding) => (
+    finding.issue.rule === "remote.directional-asymmetry"
+  ));
   const observedCounts = counts(observedKeys);
   const detected = expected.filter((defect) => (
     (observedCounts.get(`${defect.expectedRule}|${defect.target}`) ?? 0) > 0
@@ -423,6 +432,12 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
       confidence: finding.issue.confidence,
       evidenceKinds: finding.issue.evidence.map((evidence) => evidence.kind),
       reproduction: finding.issue.reproduction,
+    })),
+    additionalPhase2Findings: phase2AsymmetryFindings.map((finding) => ({
+      issueId: finding.issue.id,
+      key: findingKey(finding),
+      classification: finding.classification,
+      confidence: finding.issue.confidence,
     })),
     capture: {
       home: {
@@ -463,10 +478,18 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
   });
   expect(home.statistics.physicalActions).toBeLessThanOrEqual(HOME_EXPLORATION_BUDGETS.maxActions);
   expect(home.statistics.elapsedMs).toBeLessThanOrEqual(HOME_EXPLORATION_BUDGETS.maxDurationMs);
-  expect(homeFindings.map((finding) => findingKey(finding)).sort()).toEqual([
+  expect(homeFindings
+    .filter((finding) => milestone4Rules.has(finding.issue.rule))
+    .map((finding) => findingKey(finding))
+    .sort()).toEqual([
     "remote.reachability|hero-more-info",
     "remote.unexpected-jump|home-card-3",
   ]);
+  expect(phase2AsymmetryFindings.length).toBeGreaterThan(0);
+  expect(phase2AsymmetryFindings.every((finding) => (
+    finding.classification === "heuristic"
+      && finding.issue.confidence === "heuristic"
+  ))).toBe(true);
   for (const targetedProbe of [profile, captions, back]) {
     expect(targetedProbe.termination).toEqual({ reason: "max-actions", complete: false });
   }
@@ -480,12 +503,12 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
 
   const homeReachability = requireFinding(findings, "remote.reachability|hero-more-info");
   expect(homeReachability).toMatchObject({
-    classification: "deterministic",
+    classification: "heuristic",
     issue: {
       rule: "remote.reachability",
       severity: "medium",
-      confidence: "deterministic",
-      expected: "RIGHT should reach hero-more-info.",
+      confidence: "heuristic",
+      expected: "RIGHT may be expected to reach hero-more-info; verify the app's intended navigation mapping.",
       observed: "RIGHT moved to hero-watch, skipping the candidate.",
       transition: {
         fromElement: "hero-watch",
@@ -493,13 +516,24 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
         expectedElement: "hero-more-info",
         observedElement: "hero-watch",
       },
-      evidence: [{ kind: "deterministic-failure", artifact: null }],
+      evidence: [
+        {
+          kind: "heuristic-warning",
+          summary: expect.stringContaining("visibly focused hero-watch instead of the geometrically aligned candidate hero-more-info"),
+          artifact: null,
+        },
+        {
+          kind: "inference",
+          summary: expect.stringContaining("do not prove its expected key mapping"),
+          artifact: null,
+        },
+      ],
       reproduction: {
         status: "available",
         resetStrategy: "reload",
         originalSequence: [{ key: "RIGHT", repeat: 2 }],
         minimizedSequence: null,
-        confidence: "deterministic",
+        confidence: "best-effort",
         artifact: null,
       },
     },
@@ -518,18 +552,31 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
 
   const captionReachability = requireFinding(findings, "remote.reachability|caption-text-colour");
   expect(captionReachability).toMatchObject({
-    classification: "deterministic",
+    classification: "heuristic",
     issue: {
       rule: "remote.reachability",
       severity: "medium",
-      confidence: "deterministic",
+      confidence: "heuristic",
+      expected: "DOWN may be expected to reach caption-text-colour; verify the app's intended navigation mapping.",
+      observed: "DOWN moved to caption-background-colour, skipping the candidate.",
       transition: {
         fromElement: "caption-font-size",
         action: "DOWN",
         expectedElement: "caption-text-colour",
         observedElement: "caption-background-colour",
       },
-      evidence: [{ kind: "deterministic-failure", artifact: null }],
+      evidence: [
+        {
+          kind: "heuristic-warning",
+          summary: expect.stringContaining("visibly focused caption-background-colour instead of the geometrically aligned candidate caption-text-colour"),
+          artifact: null,
+        },
+        {
+          kind: "inference",
+          summary: expect.stringContaining("do not prove its expected key mapping"),
+          artifact: null,
+        },
+      ],
       reproduction: {
         status: "available",
         resetStrategy: "reload",
@@ -543,7 +590,7 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
           { key: "DOWN", repeat: 1 },
         ],
         minimizedSequence: null,
-        confidence: "deterministic",
+        confidence: "best-effort",
         artifact: null,
       },
     },
@@ -685,8 +732,10 @@ test("navigation diagnostics measure the five M4 seeds from a production Home cr
   }
 
   for (const finding of findings) {
-    expect(finding.issue.evidence, findingKey(finding)).toHaveLength(1);
-    expect(finding.issue.evidence[0]?.source, findingKey(finding)).not.toBeNull();
+    expect(finding.issue.evidence.length, findingKey(finding)).toBeGreaterThanOrEqual(1);
+    for (const evidence of finding.issue.evidence) {
+      expect(evidence.source, findingKey(finding)).not.toBeNull();
+    }
     expect(finding.issue.reproduction.status, findingKey(finding)).toBe("available");
   }
 });

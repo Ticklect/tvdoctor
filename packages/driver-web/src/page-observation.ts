@@ -174,7 +174,18 @@ export async function capturePageObservation(
       };
     };
 
+    // A capture executes synchronously within one page.evaluate. Share layout
+    // queries across the UI tree, focused target and media observations.
     const measuredRectangles = new WeakMap<Element, DOMRect>();
+    const measuredStyles = new WeakMap<Element, CSSStyleDeclaration>();
+    const styleOnce = (element: Element): CSSStyleDeclaration => {
+      let styles = measuredStyles.get(element);
+      if (styles === undefined) {
+        styles = getComputedStyle(element);
+        measuredStyles.set(element, styles);
+      }
+      return styles;
+    };
     const measureOnce = (element: Element): DOMRect => {
       let rectangle = measuredRectangles.get(element);
       if (rectangle === undefined) {
@@ -185,7 +196,7 @@ export async function capturePageObservation(
     };
 
     const isVisible = (element: Element): boolean => {
-      const styles = getComputedStyle(element);
+      const styles = styleOnce(element);
       const rectangle = measuredRectangle(element);
       return styles.display !== "none"
         && styles.visibility !== "hidden"
@@ -514,7 +525,7 @@ export async function capturePageObservation(
     const pendingElements: PendingElement[] = [{ element: document.documentElement, output: uiTree, depth: 0 }];
 
     const domEnumerationStartedAtMs = performance.now();
-    const semanticAnalysisStartedAtMs = performance.now();
+    let semanticAnalysisMs = 0;
     while (pendingElements.length > 0) {
       if (scannedNodeCount >= limits.maxScannedNodeCount) {
         truncationReasons.add("scanned-nodes");
@@ -548,6 +559,7 @@ export async function capturePageObservation(
           break;
         }
         capturedNodeCount += 1;
+        const semanticStartedAtMs = performance.now();
         const focused = element === document.activeElement || element === deepActiveElement;
         // Roving-focus TV interfaces intentionally keep the active control at
         // tabindex=-1 and move focus programmatically with the D-pad. Preserve
@@ -579,6 +591,7 @@ export async function capturePageObservation(
         if (frameBoundary !== null) node.attributes["data-tv-frame"] = frameBoundary;
         pending.output.push(node);
         childOutput = node.children;
+        semanticAnalysisMs += performance.now() - semanticStartedAtMs;
       }
 
       const remainingScanCapacity = Math.max(
@@ -593,8 +606,11 @@ export async function capturePageObservation(
         }
       }
     }
-    const domEnumerationMs = performance.now() - domEnumerationStartedAtMs;
-    const semanticAnalysisMs = performance.now() - semanticAnalysisStartedAtMs;
+    // These counters must describe non-overlapping work. Previously both
+    // measured the same entire loop and appeared as two independent costs.
+    const domEnumerationMs = Math.max(
+      0, performance.now() - domEnumerationStartedAtMs - semanticAnalysisMs,
+    );
 
     let focus: FocusTarget | null = null;
     if (activeElement !== null) {

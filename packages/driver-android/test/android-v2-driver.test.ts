@@ -13,6 +13,7 @@ import {
   type AdbCommandResult,
   type AndroidObserverAsset,
   type AndroidObserverConnection,
+  type AndroidTvDriverOptions,
   type ObserverRequestPayload,
   type ObserverResponse,
 } from "../src/index.js";
@@ -87,11 +88,14 @@ class FakeExecutor implements AdbCommandExecutor {
   enabled = true;
   focusAfterLaunchAttempt = 1;
   focusedPackageOverride: string | null = null;
+  genericFocusedWindow = false;
   launchAttempts = 0;
   deviceState = "device";
   bootCompleted = "1";
   installedApk = OBSERVER_APK;
   appPid = "321";
+  manufacturer = "Google";
+  buildFingerprint = "google/tv/atv";
   mediaSessionResult: AdbCommandResult | null = null;
   screenshotResult: AdbCommandResult | null = null;
   focusedPackageAfterScreenshot: string | null = null;
@@ -134,20 +138,28 @@ class FakeExecutor implements AdbCommandExecutor {
     else if (joined.includes("settings get secure enabled_accessibility_services")) {
       stdout = this.enabled ? "org.tvdoctor.observer/.ObserverAccessibilityService" : "null";
     } else if (joined.includes("forward tcp:0")) stdout = "45678";
-    else if (joined.includes("ro.product.manufacturer")) stdout = "Google";
+    else if (joined.includes("ro.product.manufacturer")) stdout = this.manufacturer;
     else if (joined.includes("ro.product.model")) stdout = "sdk_google_atv64_x86_64";
     else if (joined.includes("ro.build.version.sdk")) stdout = "36";
     else if (joined.includes("ro.build.version.release")) stdout = "16";
-    else if (joined.includes("ro.build.fingerprint")) stdout = "google/tv/atv";
+    else if (joined.includes("ro.build.fingerprint")) stdout = this.buildFingerprint;
     else if (joined.includes("ro.build.characteristics")) stdout = "tv";
     else if (joined.includes("ro.product.cpu.abilist")) stdout = "x86_64";
     else if (joined.includes("wm size")) stdout = "Physical size: 1920x1080";
+    else if (joined.includes("wm density")) stdout = "Physical density: 213";
     else if (joined.includes("dumpsys window")) {
       const packageName = this.focusedPackageOverride
         ?? (this.launchAttempts >= this.focusAfterLaunchAttempt
           ? "org.example.tv"
           : "com.google.android.tvlauncher");
-      stdout = `mCurrentFocus=Window{1234567 u0 ${packageName}/${packageName}.MainActivity}`;
+      stdout = this.genericFocusedWindow
+        ? [
+            "mCurrentFocus=Window{1234567 u0 Info}",
+            `mFocusedApp=ActivityRecord{7654321 u0 ${packageName}/.MainActivity t12}`,
+            "Window #0 Window{1234567 u0 Info}:",
+            `  mOwnerUid=10092 showForAllUsers=false package=${packageName} appop=NONE`,
+          ].join("\n")
+        : `mCurrentFocus=Window{1234567 u0 ${packageName}/${packageName}.MainActivity}`;
     }
     else if (joined.includes("pidof -s org.example.tv")) stdout = this.appPid;
     else if (joined.includes("dumpsys package org.example.tv")) stdout = "versionName=1.2.3 versionCode=7";
@@ -405,8 +417,10 @@ function createDriver(
     sha256: OBSERVER_SHA256,
     certificateSha256: "d".repeat(64),
   },
+  options: Pick<AndroidTvDriverOptions, "platform"> = {},
 ): AndroidTvDriver {
   return new AndroidTvDriver({
+    ...options,
     serial: "emulator-5554",
     executor,
     tokenFactory: () => TOKEN,
@@ -451,6 +465,17 @@ describe("Android V2 observer-backed driver", () => {
 
     await expect(driver.press("RIGHT")).resolves.toMatchObject({ outcome: "failed" });
     expect(executor.calls.some((call) => call.join(" ").includes("input keyevent KEYCODE_DPAD_RIGHT"))).toBe(false);
+    await driver.close();
+  });
+
+  it("resolves a generic focused-window title from that window's owner package", async () => {
+    const executor = new FakeExecutor();
+    executor.genericFocusedWindow = true;
+    const driver = createDriver(executor, new FakeObserver());
+
+    await expect(driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" })).resolves.toBeUndefined();
+    await expect(driver.press("RIGHT")).resolves.toMatchObject({ outcome: "applied" });
+    expect(executor.calls.some((call) => call.join(" ").includes("input keyevent KEYCODE_DPAD_RIGHT"))).toBe(true);
     await driver.close();
   });
 
@@ -629,7 +654,12 @@ describe("Android V2 observer-backed driver", () => {
     const observer = new FakeObserver();
     const driver = createDriver(executor, observer);
     await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
-    expect((await driver.getDeviceMetadata()).isTelevision).toBe(true);
+    expect(await driver.getDeviceMetadata()).toMatchObject({
+      isTelevision: true,
+      displayWidth: 1920,
+      displayHeight: 1080,
+      displayDensityDpi: 213,
+    });
     const action = await driver.press("RIGHT");
     expect(action.outcome).toBe("applied");
     expect(action.postActionSnapshot?.focusedElement.status).toBe("available");
@@ -968,6 +998,32 @@ describe("Android V2 observer-backed driver", () => {
       windowId: 8,
     });
     expect(relaunched.restorationContext.windowGeneration).toBeGreaterThan(initialWindowGeneration);
+    await driver.close();
+  });
+
+  it("can identify Fire TV while reusing the Android observer transport", async () => {
+    const executor = new FakeExecutor();
+    const observer = new MutableWindowObserver();
+    const driver = createDriver(executor, observer, undefined, { platform: "fire-tv" });
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const snapshot = await driver.snapshot();
+    expect(snapshot.restorationContext.platform).toBe("fire-tv");
+
+    await driver.close();
+  });
+
+  it("auto-detects Fire TV from Amazon device metadata", async () => {
+    const executor = new FakeExecutor();
+    executor.manufacturer = "Amazon";
+    executor.buildFingerprint = "Amazon/sheldonp/sheldonp:9/PS7646/3550:user/amz-p,release-keys";
+    const observer = new MutableWindowObserver();
+    const driver = createDriver(executor, observer);
+    await driver.launch({ id: "org.example.tv", launchUri: ".MainActivity" });
+
+    const snapshot = await driver.snapshot();
+    expect(snapshot.restorationContext.platform).toBe("fire-tv");
+
     await driver.close();
   });
 

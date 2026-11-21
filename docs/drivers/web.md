@@ -4,6 +4,12 @@
 Playwright 1.62.1 to launch Chromium with a 1280×720 default viewport and maps
 the six remote actions to keyboard input.
 
+The normal v1 workflow does not require a hand-authored route. `tvdoctor test URL`
+uses this driver to explore the D-pad/focus graph automatically, then runs the
+navigation diagnostics over the discovered states and transitions. Use a custom
+journey only when a known setup step is required before the auditable TV surface
+appears.
+
 ## Current evidence
 
 The adapter has real-Chromium integration coverage for:

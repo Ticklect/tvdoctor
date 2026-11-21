@@ -81,6 +81,8 @@ interface ExplorerRestorationContext {
   readonly onSettlingObservation: (snapshotsObserved: number, settled: boolean) => void;
   readonly onReplayDuration: (durationMs: number) => void;
   readonly onDiagnostic: (diagnostic: PendingRestorationDiagnostic) => void;
+  /** A full history is unnecessary once the bounded diagnostic ledger is full. */
+  readonly shouldCollectDiagnosticDetails?: () => boolean;
 }
 
 export function createExplorerRestorer(
@@ -93,11 +95,14 @@ export function createExplorerRestorer(
   ): Promise<RestoreResult> => {
     let resetSnapshot: StateSnapshot;
     const attemptStartedAt = context.monotonicNow();
+    const collectDetails = context.shouldCollectDiagnosticDetails?.() ?? true;
     const history: ReturnType<typeof restorationStateDiagnostic>[] = [];
-    const before = beforeSnapshot === undefined
+    const before = !collectDetails || beforeSnapshot === undefined
       ? undefined
       : restorationStateDiagnostic(beforeSnapshot);
-    const destinationExpected = restorationStateDiagnostic(entry.state.representativeSnapshot);
+    const destinationExpected = collectDetails
+      ? restorationStateDiagnostic(entry.state.representativeSnapshot, entry.state.fingerprint)
+      : undefined;
     if (before !== undefined) history.push(before);
     const recordFailure = (
       subtype: RestorationFailureSubtype,
@@ -112,19 +117,24 @@ export function createExplorerRestorer(
         strategy: "root-replay",
         status: "failed",
         elapsedMs: context.durationSince(attemptStartedAt),
-        actionHistory: entry.sequence,
+        ...(collectDetails ? { actionHistory: entry.sequence } : {}),
         ...(before === undefined ? {} : { before }),
-        ...(afterSnapshot === undefined ? {} : {
+        ...(!collectDetails || afterSnapshot === undefined ? {} : {
           after: restorationStateDiagnostic(afterSnapshot),
         }),
-        expected: restorationStateDiagnostic(expectedSnapshot),
-        history,
+        ...(collectDetails ? {
+          expected: restorationStateDiagnostic(expectedSnapshot),
+          history,
+        } : {}),
         subtype,
         rejectionReason,
       });
     };
-    const recordSuccess = (snapshot: StateSnapshot): void => {
-      const after = restorationStateDiagnostic(snapshot);
+    const recordSuccess = (snapshot: StateSnapshot, fingerprint: ComputedSnapshotFingerprint): void => {
+      // The final replay checkpoint (or reset root for an empty sequence)
+      // already produced this complete diagnostic, including the UI tree.
+      const after = !collectDetails ? undefined : history[history.length - 1]
+        ?? restorationStateDiagnostic(snapshot, fingerprint);
       context.onDiagnostic({
         restorationCycleNumber,
         traversalDepth: entry.state.firstSeenDepth,
@@ -132,11 +142,10 @@ export function createExplorerRestorer(
         strategy: "root-replay",
         status: "success",
         elapsedMs: context.durationSince(attemptStartedAt),
-        actionHistory: entry.sequence,
+        ...(collectDetails ? { actionHistory: entry.sequence } : {}),
         ...(before === undefined ? {} : { before }),
-        after,
-        expected: destinationExpected,
-        history,
+        ...(after === undefined ? {} : { after }),
+        ...(destinationExpected === undefined ? {} : { expected: destinationExpected, history }),
       });
     };
     context.onRestorationStart(entry.sequence.length);
@@ -190,7 +199,7 @@ export function createExplorerRestorer(
       context.onResetDuration(context.durationSince(resetStartedAt));
     }
     const resetFingerprint = context.fingerprintSnapshot(resetSnapshot);
-    history.push(restorationStateDiagnostic(resetSnapshot, resetFingerprint));
+    if (collectDetails) history.push(restorationStateDiagnostic(resetSnapshot, resetFingerprint));
     if (resetFingerprint.stateIdentity !== context.initialFingerprint.stateIdentity) {
       recordFailure("navigation-diverged", "root-state-diverged", resetSnapshot, context.initialSnapshot);
       return {
@@ -204,6 +213,10 @@ export function createExplorerRestorer(
     }
 
     let currentSnapshot = resetSnapshot;
+    // Every replay checkpoint already computed this identity. Recomputing the
+    // final snapshot after the loop doubles normalization for one snapshot on
+    // every restoration, including empty root paths.
+    let currentFingerprint = resetFingerprint;
     const replayStartedAt = context.monotonicNow();
     try {
       for (const [index, key] of entry.sequence.entries()) {
@@ -263,7 +276,8 @@ export function createExplorerRestorer(
           }
           currentSnapshot = observation.snapshot;
           const observedFingerprint = context.fingerprintSnapshot(currentSnapshot);
-          history.push(restorationStateDiagnostic(currentSnapshot, observedFingerprint));
+          currentFingerprint = observedFingerprint;
+          if (collectDetails) history.push(restorationStateDiagnostic(currentSnapshot, observedFingerprint));
           if (observation.actionResult.key !== key || observation.actionResult.outcome !== "applied") {
             recordFailure("navigation-diverged", "replay-action-rejected", currentSnapshot);
             return {
@@ -340,19 +354,18 @@ export function createExplorerRestorer(
       context.onReplayDuration(context.durationSince(replayStartedAt));
     }
 
-    const restoredFingerprint = context.fingerprintSnapshot(currentSnapshot);
-    if (restoredFingerprint.stateIdentity !== entry.state.identity) {
+    if (currentFingerprint.stateIdentity !== entry.state.identity) {
       recordFailure("state-not-found", "destination-state-not-found", currentSnapshot);
       return {
         status: "stop",
         termination: incomplete(
           "replay-diverged",
-          `Replay completed at ${restoredFingerprint.fingerprint.stateValue}; expected ${entry.state.fingerprint.fingerprint.stateValue} for [${entry.sequence.join(", ")}]. ${snapshotDifference(entry.state.representativeSnapshot, currentSnapshot)}`,
+          `Replay completed at ${currentFingerprint.fingerprint.stateValue}; expected ${entry.state.fingerprint.fingerprint.stateValue} for [${entry.sequence.join(", ")}]. ${snapshotDifference(entry.state.representativeSnapshot, currentSnapshot)}`,
           { subtype: "state-not-found", rejectionReason: "destination-state-not-found" },
         ),
       };
     }
-    recordSuccess(currentSnapshot);
+    recordSuccess(currentSnapshot, currentFingerprint);
     return { status: "ok", snapshot: currentSnapshot };
   };
 }

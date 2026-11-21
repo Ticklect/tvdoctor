@@ -8,6 +8,9 @@ import {
   defaultTargetId,
   parseBaseline,
   renderBaselineJson,
+  renderComparisonJson,
+  renderComparisonMarkdown,
+  renderNavigationGraphMermaid,
   type BaselineObservationInventory,
 } from "../src/index.js";
 
@@ -139,6 +142,91 @@ describe("semantic baselines", () => {
     expect(rendered).toContain("[REDACTED]");
   });
 
+  it("redacts credential URIs and expanded secret names from persisted baselines", () => {
+    const hostileInventory = inventory({
+      screens: [
+        {
+          key: "home",
+          label: "dsn=postgres://dbuser:DB_PASSWORD@db.example.test/private?sslmode=require",
+        },
+        { key: "details", label: "github_pat=PAT_CANARY" },
+      ],
+      focusTargets: [
+        { key: "hero", screenKey: "home", role: "button", name: "private_key=PRIVATE_KEY_CANARY" },
+        { key: "back", screenKey: "details", role: "button", name: "aws_access_key_id=ACCESS_KEY_CANARY" },
+      ],
+      latencies: [{ key: "launch", operation: "credentials=CREDENTIAL_CANARY", measuredMs: 500 }],
+    });
+    const baseline = createBaseline(report("sensitive"), hostileInventory, {
+      createdAt: "2026-08-22T11:00:00.000Z",
+      targetId: "cache:redis://CACHE_USER:CACHE_PASSWORD@cache.example.test/0?token=QUERY_CANARY",
+    });
+    const rendered = renderBaselineJson(baseline);
+
+    for (const sentinel of [
+      "DB_PASSWORD",
+      "sslmode=require",
+      "PAT_CANARY",
+      "PRIVATE_KEY_CANARY",
+      "ACCESS_KEY_CANARY",
+      "CREDENTIAL_CANARY",
+      "CACHE_USER",
+      "CACHE_PASSWORD",
+      "QUERY_CANARY",
+    ]) {
+      expect(rendered).not.toContain(sentinel);
+    }
+    expect(rendered).toContain("postgres://db.example.test/private");
+    expect(rendered).toContain("redis://cache.example.test/0");
+    expect(rendered).toContain("[REDACTED]");
+  });
+
+  it("sanitises comparison JSON and Markdown at the renderer boundary", () => {
+    const baseline = createBaseline(report("baseline"), inventory(), {
+      createdAt: "2026-08-22T11:00:00.000Z",
+    });
+    const comparison = compareBaseline(baseline, report("current"), inventory());
+    const hostileComparison = {
+      ...comparison,
+      baselineRunId: "baseline-\u202egithub_pat=RUN_PAT_CANARY",
+      changes: {
+        ...comparison.changes,
+        screensAdded: [{
+          key: "search",
+          label: "\u001b[31m[click](https://user:pass@example.test/app?token=URL_CANARY#frag)\u001b[0m | private_key=MARKDOWN_PRIVATE_CANARY",
+        }],
+        focusAdded: [{
+          key: "query",
+          screenKey: "search",
+          role: "textbox",
+          name: "dsn=postgres://dbuser:DB_COMPARE_CANARY@db.example.test/private?sslmode=require",
+        }],
+      },
+    };
+    const json = renderComparisonJson(hostileComparison);
+    const markdown = renderComparisonMarkdown(hostileComparison);
+
+    for (const output of [json, markdown]) {
+      for (const sentinel of [
+        "RUN_PAT_CANARY",
+        "user:pass",
+        "URL_CANARY",
+        "frag",
+        "MARKDOWN_PRIVATE_CANARY",
+        "dbuser",
+        "DB_COMPARE_CANARY",
+        "sslmode=require",
+      ]) {
+        expect(output).not.toContain(sentinel);
+      }
+      expect(output).not.toContain("\u001b");
+      expect(output).not.toContain("\u202e");
+    }
+    expect(markdown).not.toContain("[click](https://");
+    expect(markdown).toContain("\\[click\\]");
+    expect(markdown).toContain("postgres://db.example.test/private");
+  });
+
   it("proves the clean -> one new HIGH -> restored lifecycle", () => {
     const baseline = createBaseline(report("clean"), inventory(), {
       createdAt: "2026-08-22T11:00:00.000Z",
@@ -147,6 +235,7 @@ describe("semantic baselines", () => {
     expect(regressed).toMatchObject({ status: "regressed", shouldFail: true, blockers: [] });
     expect(regressed.changes.newIssues).toEqual([expect.objectContaining({ id: "new-high", severity: "high" })]);
     expect(regressed.changes.resolvedIssues).toEqual([]);
+    expect(regressed.changes.unchangedIssues).toEqual([]);
 
     const regressionBaseline = createBaseline(report("regression-baseline", [issue("new-high")]), inventory(), {
       createdAt: "2026-08-22T11:01:00.000Z",
@@ -155,11 +244,13 @@ describe("semantic baselines", () => {
     expect(restored).toMatchObject({ status: "changed", shouldFail: false, blockers: [] });
     expect(restored.changes.newIssues).toEqual([]);
     expect(restored.changes.resolvedIssues).toEqual([expect.objectContaining({ id: "new-high" })]);
+    expect(restored.changes.unchangedIssues).toEqual([]);
 
     const cleanAgain = compareBaseline(baseline, report("clean-again"), inventory());
     expect(cleanAgain).toMatchObject({ status: "identical", shouldFail: false, blockers: [], changes: {
       newIssues: [],
       resolvedIssues: [],
+      unchangedIssues: [],
     } });
   });
 
@@ -247,6 +338,29 @@ describe("semantic baselines", () => {
     expect(() => parseTVDoctorReportV1(report("dupes", duplicated))).toThrow(/duplicate issue id/u);
   });
 
+  it("fails closed when sanitisation removes a current semantic identifier", () => {
+    const baseline = createBaseline(report("baseline"), inventory(), {
+      createdAt: "2026-08-22T11:00:00.000Z",
+    });
+    const comparison = compareBaseline(baseline, report("current", [issue("\u202e")]), inventory());
+
+    expect(comparison).toMatchObject({ status: "failed-closed", shouldFail: true });
+    expect(comparison.blockers.map((blocker) => blocker.code)).toContain("current-report-partial");
+  });
+
+  it("fails closed when redaction collapses distinct current issue identities", () => {
+    const baseline = createBaseline(report("baseline"), inventory(), {
+      createdAt: "2026-08-22T11:00:00.000Z",
+    });
+    const comparison = compareBaseline(baseline, report("current", [
+      issue("github_pat=PAT_ONE"),
+      issue("github_pat=PAT_TWO"),
+    ]), inventory());
+
+    expect(comparison).toMatchObject({ status: "failed-closed", shouldFail: true });
+    expect(comparison.blockers.map((blocker) => blocker.code)).toContain("current-report-partial");
+  });
+
   it("produces the same comparison result regardless of input issue ordering", () => {
     const baseline = createBaseline(
       report("baseline", [issue("known-a"), issue("known-b")]),
@@ -261,6 +375,44 @@ describe("semantic baselines", () => {
     expect(shuffled.changes.newIssues.map((entry) => entry.id)).toEqual(["new-c"]);
     expect(ordered.changes.resolvedIssues).toEqual([]);
     expect(shuffled.changes.resolvedIssues).toEqual([]);
+    expect(ordered.changes.unchangedIssues.map((entry) => entry.id)).toEqual(["known-a", "known-b"]);
+    expect(shuffled.changes.unchangedIssues.map((entry) => entry.id)).toEqual(["known-a", "known-b"]);
+  });
+
+  it("renders navigation-first comparison categories and an evidence-backed graph", () => {
+    const baseline = createBaseline(
+      report("baseline", [issue("known")]),
+      inventory(),
+      { createdAt: "2026-08-22T11:00:00Z" },
+    );
+    const current = inventory({
+      screens: [{ key: "home", label: "Home" }, { key: "details", label: "Details" }],
+      focusTargets: [
+        { key: "hero", screenKey: "home", role: "button", name: "Play" },
+        { key: "back", screenKey: "details", role: "button", name: "Back" },
+      ],
+      transitions: [{
+        key: "home/hero:SELECT",
+        fromScreenKey: "home",
+        fromFocusKey: "hero",
+        action: "DOWN",
+        toScreenKey: "details",
+        toFocusKey: "back",
+      }],
+    });
+    const comparison = compareBaseline(baseline, report("current", [issue("known"), issue("introduced")]), current);
+    const markdown = renderComparisonMarkdown(comparison);
+
+    expect(comparison.changes.unchangedIssues.map((entry) => entry.id)).toEqual(["known"]);
+    expect(markdown).toContain("| Introduced | 1 |");
+    expect(markdown).toContain("| Unchanged | 1 |");
+    expect(markdown).toContain("### Changed directional transitions");
+    expect(markdown).toContain("**SELECT** was `home/hero` → `details/back`; now **DOWN**");
+
+    const graph = renderNavigationGraphMermaid(baseline);
+    expect(graph).toContain("flowchart LR");
+    expect(graph).toContain('home · Play (button)');
+    expect(graph).toContain('-- "SELECT" -->');
   });
 
   it("models focus loss as a missing transition rather than an invalid empty key", () => {
@@ -282,5 +434,49 @@ describe("semantic baselines", () => {
     expect(comparison.status).toBe("failed-closed");
     expect(comparison.shouldFail).toBe(true);
     expect(comparison.blockers.length).toBeGreaterThan(0);
+  });
+
+  it("fails closed for phantom focus endpoints and nondeterministic source/action edges", () => {
+    const baselineReport = report("clean");
+    const phantomFocus = inventory({
+      transitions: [{
+        key: "home/hero:SELECT",
+        fromScreenKey: "home",
+        fromFocusKey: "hero",
+        action: "SELECT",
+        toScreenKey: "details",
+        toFocusKey: "missing-focus",
+      }],
+    });
+    expect(() => createBaseline(baselineReport, phantomFocus))
+      .toThrow(/unknown destination focus target/iu);
+
+    const semanticDuplicate = inventory({
+      transitions: [
+        {
+          key: "edge-a",
+          fromScreenKey: "home",
+          fromFocusKey: "hero",
+          action: "SELECT",
+          toScreenKey: "details",
+          toFocusKey: "back",
+        },
+        {
+          key: "edge-b",
+          fromScreenKey: "home",
+          fromFocusKey: "hero",
+          action: "SELECT",
+          toScreenKey: "home",
+          toFocusKey: "hero",
+        },
+      ],
+    });
+    expect(() => createBaseline(baselineReport, semanticDuplicate))
+      .toThrow(/transitions by source\/action contains duplicate identity/iu);
+
+    const baseline = createBaseline(baselineReport, inventory(), { createdAt: "2026-08-22T11:00:00Z" });
+    const comparison = compareBaseline(baseline, report("current"), phantomFocus);
+    expect(comparison).toMatchObject({ status: "failed-closed", shouldFail: true });
+    expect(comparison.blockers.map((blocker) => blocker.code)).toContain("current-inventory-partial");
   });
 });

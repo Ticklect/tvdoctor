@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="tvdoctor-hero-title tvdoctor-hero-description">
-  <title id="tvdoctor-hero-title">TVDoctor — remote-first QA for TV apps</title>
-  <desc id="tvdoctor-hero-description">A diagnostic pulse crosses a rounded television screen framed by focus brackets beside the TVDoctor wordmark.</desc>
+  <title id="tvdoctor-hero-title">TVDoctor — find broken TV remote navigation before users do</title>
+  <desc id="tvdoctor-hero-description">A diagnostic pulse crosses a rounded television screen framed by focus brackets beside the TVDoctor wordmark and its remote-navigation promise.</desc>
   <style>
     .surface { fill: #07111F; }
     .primary-text { fill: #F5FAFF; }
@@ -43,7 +43,7 @@
 
   <g font-family="Arial, Helvetica, sans-serif">
     <text x="520" y="151" class="primary-text" font-size="70" font-weight="800" letter-spacing="3">TV<tspan class="wordmark-accent">DOCTOR</tspan></text>
-    <text x="524" y="204" class="primary-text" font-size="28" font-weight="600" letter-spacing=".2">Remote-first QA for TV apps</text>
+    <text x="524" y="204" class="primary-text" font-size="26" font-weight="600" letter-spacing=".2">Find broken TV remote navigation before users do</text>
     <text x="524" y="252" class="secondary-text" font-size="20" font-weight="500" letter-spacing="2">Explore · Diagnose · Replay</text>
   </g>
 

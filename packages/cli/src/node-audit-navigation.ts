@@ -1,6 +1,5 @@
 import type {
   ExplorationResult,
-  NavigationDiagnosticFinding,
   StartupControlCandidate,
 } from "@tvdoctor/core";
 import type { PlaywrightWebDriver } from "@tvdoctor/driver-web";
@@ -13,6 +12,7 @@ import {
 } from "@tvdoctor/pack-web";
 import type {
   ActionResult,
+  DriverOperationOptions,
   RemoteKey,
   StateSnapshot,
   TVDoctorDriver,
@@ -20,14 +20,47 @@ import type {
 } from "@tvdoctor/protocol";
 import type { NavigationInventory } from "./node-audit-contracts.js";
 
-export function createSafeExplorationDriver(driver: PlaywrightWebDriver): TVDoctorDriver {
+export interface SafeExplorationOptions {
+  /** Permit harmless selection of the two known Northstar fixture profiles only. */
+  readonly fixtureProfileSelection?: boolean;
+}
+
+function isNorthstarFixtureProfile(snapshot: StateSnapshot, focused: NonNullable<ReturnType<typeof focusedWebEntry>>): boolean {
+  if (snapshot.location.status !== "available") return false;
+  let hostname: string;
+  try {
+    hostname = new URL(snapshot.location.value).hostname;
+  } catch {
+    return false;
+  }
+  if (hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "[::1]") return false;
+
+  const node = focused.node;
+  const id = node.stableId;
+  const label = normaliseWebSemanticText(node.name ?? node.text);
+  if ((id !== "profile-primary" || !/(?:^| )night owl$/u.test(label))
+    && (id !== "profile-kids" || !/(?:^| )little stars$/u.test(label))) return false;
+  if (node.role !== "button" || node.visible !== true || node.enabled !== true || node.focusable !== true) return false;
+  return focused.ancestors.some((ancestor) => (
+    ancestor.role === "dialog"
+    && ancestor.modal === true
+    && normaliseWebSemanticText(ancestor.name) === "choose a profile"
+  ));
+}
+
+export function createSafeExplorationDriver(
+  driver: PlaywrightWebDriver,
+  policy: SafeExplorationOptions = {},
+): TVDoctorDriver {
   return {
-    capabilities: async () => driver.capabilities(),
-    snapshot: async () => driver.snapshot(),
-    reset: async (strategy) => driver.reset(strategy),
-    press: async (key): Promise<ActionResult> => {
-      if (key !== "SELECT") return driver.press(key);
-      const snapshot = await driver.snapshot();
+    capabilities: async (options) => driver.capabilities(options),
+    snapshot: async (options) => driver.snapshot(options),
+    reset: async (strategy, options) => driver.reset(strategy, options),
+    press: async (key, options): Promise<ActionResult> => {
+      options?.signal?.throwIfAborted();
+      if (key !== "SELECT") return driver.press(key, options);
+      const snapshot = await driver.snapshot(options);
+      options?.signal?.throwIfAborted();
       const focused = focusedWebEntry(snapshot);
       const own = focused === null
         ? ""
@@ -37,7 +70,10 @@ export function createSafeExplorationDriver(driver: PlaywrightWebDriver): TVDoct
         && (own === "profile" || own === "profiles")
         && /\b(nav|navigation|primary|rail)\b/u.test(context)
         && !context.includes("dialog");
-      if (focused === null || (!isSafeWebControl(focused.node, context) && !safeProfileNavigation)) {
+      const fixtureProfile = policy.fixtureProfileSelection === true
+        && focused !== null
+        && isNorthstarFixtureProfile(snapshot, focused);
+      if (focused === null || (!isSafeWebControl(focused.node, context) && !safeProfileNavigation && !fixtureProfile)) {
         return {
           key,
           outcome: "unsupported",
@@ -45,7 +81,7 @@ export function createSafeExplorationDriver(driver: PlaywrightWebDriver): TVDoct
           message: "SELECT was withheld because the focused semantic target was absent, ambiguous, or unsafe.",
         };
       }
-      return driver.press(key);
+      return driver.press(key, options);
     },
   };
 }
@@ -68,6 +104,12 @@ function screenLabel(snapshot: StateSnapshot): string | null {
   return heading?.name ?? heading?.text ?? null;
 }
 
+/** Queue exhaustion is not full coverage when compression deferred focus states. */
+export function navigationCoverageComplete(navigation: ExplorationResult | null): boolean {
+  return navigation?.termination.complete === true
+    && (navigation.statistics?.deferredStates ?? 0) === 0;
+}
+
 export function navigationInventory(
   navigation: ExplorationResult | null,
   web: WebPackResult | null,
@@ -78,7 +120,7 @@ export function navigationInventory(
   const screenKeyById = new Map(navigation.graph.screens.states.map((screen) => [screen.id, screen.fingerprint.value]));
   const focusKeyById = new Map(navigation.graph.focus.states.map((focus) => [focus.id, focus.fingerprint.value]));
   return {
-    status: navigation.termination.complete ? "complete" : "partial",
+    status: navigationCoverageComplete(navigation) ? "complete" : "partial",
     screens: navigation.graph.screens.states.map((screen) => ({
       key: screen.fingerprint.value,
       label: screenLabel(screen.representativeSnapshot),
@@ -127,19 +169,6 @@ function performanceLatencies(web: WebPackResult | null): NavigationInventory["l
     operation: "Player Settings Select to stable surface",
     measuredMs: Math.max(0, end - action.timing.inputSentAtMs),
   }];
-}
-
-export function specialisedReachabilityScreen(finding: NavigationDiagnosticFinding, navigation: ExplorationResult): boolean {
-  if (finding.issue.rule !== "remote.reachability") return false;
-  const screen = navigation.graph.screens.states.find((candidate) => candidate.id === finding.source.screenStateId);
-  if (screen === undefined) return false;
-  const semanticText = flattenNodes(screen.representativeSnapshot)
-    .flatMap((node) => [node.name, node.text])
-    .filter((value): value is string => value !== null)
-    .join(" ")
-    .normalize("NFKC")
-    .toLowerCase();
-  return /\b(player|captions?|search results?|player settings)\b/u.test(semanticText);
 }
 
 export function preferredStartupControl(
@@ -204,9 +233,12 @@ export async function resolveStartupDecisionThroughFocus(
   decision: "reject" | "accept",
   blockerKind: string,
   initialSnapshot?: StateSnapshot,
+  operationOptions?: DriverOperationOptions,
 ): Promise<readonly RemoteKey[] | null> {
+  operationOptions?.signal?.throwIfAborted();
   if (blockerKind !== "consent-wall") return null;
-  let snapshot = initialSnapshot ?? await driver.snapshot();
+  let snapshot = initialSnapshot ?? await driver.snapshot(operationOptions);
+  operationOptions?.signal?.throwIfAborted();
   if (focusedMatchesStartupDecision(snapshot, decision)) return ["SELECT"];
 
   const initialIdentity = focusedStartupIdentity(snapshot);
@@ -215,10 +247,13 @@ export async function resolveStartupDecisionThroughFocus(
   const actions: RemoteKey[] = [];
 
   while (actions.length < MAX_STARTUP_DECISION_ACTIONS - 1) {
-    const result = await driver.press("TAB");
+    operationOptions?.signal?.throwIfAborted();
+    const result = await driver.press("TAB", operationOptions);
+    operationOptions?.signal?.throwIfAborted();
     if (result.key !== "TAB" || result.outcome !== "applied") return null;
     actions.push("TAB");
-    snapshot = result.postActionSnapshot ?? await driver.snapshot();
+    snapshot = result.postActionSnapshot ?? await driver.snapshot(operationOptions);
+    operationOptions?.signal?.throwIfAborted();
     if (focusedMatchesStartupDecision(snapshot, decision)) {
       return [...actions, "SELECT"];
     }

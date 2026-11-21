@@ -24,16 +24,21 @@ import type {
   WebsiteStartupDetection,
 } from "./cli.js";
 import {
+  PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY,
+  PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO,
   REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY,
   REPLAY_TARGET_OVERRIDE_REQUIRED,
   createNodeAuditOperation,
 } from "./node-audit.js";
 import {
+  androidBuildToolsPreflight,
+  androidObserverPreflight,
   androidPreflight,
   inspectApk,
   scanAndroidApk,
 } from "./android-product.js";
 import { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
+import { createNodeDemoOperation, withPackagedDemoFixture } from "./node-demo.js";
 import {
   executeJourney,
   JOURNEY_HASH_ENVIRONMENT_KEY,
@@ -183,15 +188,19 @@ export interface NodeReplayDependencies {
   readonly createDriver?: () => ReplayCliDriver;
   readonly createAuditDriver?: () => PlaywrightWebDriver;
   readonly createAndroidDriver?: (options: AndroidTvDriverOptions) => AndroidReplayCliDriver;
+  readonly withDemoFixtureServer?: <T>(run: (target: string) => Promise<T>) => Promise<T>;
 }
 
 async function replayIssue(
   request: ReplayCommandRequest,
   createDriver: () => ReplayCliDriver,
   createAndroidDriver: (options: AndroidTvDriverOptions) => AndroidReplayCliDriver,
+  withDemoFixtureServer: <T>(run: (target: string) => Promise<T>) => Promise<T>,
 ): Promise<ReplayCommandResult> {
   const report = await loadReport(request.reportPath);
-  if (report.target.platform !== "web" && report.target.platform !== "android-tv") {
+  if (report.target.platform !== "web"
+    && report.target.platform !== "android-tv"
+    && report.target.platform !== "fire-tv") {
     throw new TypeError(
       `The installed replay host cannot run platform ${terminalText(report.target.platform)}.`,
     );
@@ -236,6 +245,21 @@ async function replayIssue(
     throw new TypeError("The report does not declare a custom journey; --journey is not allowed.");
   }
   if (report.target.platform === "web"
+    && report.target.environment[PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY]
+      === PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO
+    && request.targetOverride === undefined) {
+    return await withDemoFixtureServer(async (target) => {
+      const demoTarget = new URL(target);
+      demoTarget.searchParams.set("tvdoctorDemo", "navigation");
+      return await replayIssue(
+        { ...request, targetOverride: demoTarget.href },
+        createDriver,
+        createAndroidDriver,
+        withDemoFixtureServer,
+      );
+    });
+  }
+  if (report.target.platform === "web"
     && report.target.environment[REPLAY_TARGET_OVERRIDE_ENVIRONMENT_KEY]
       === REPLAY_TARGET_OVERRIDE_REQUIRED
     && request.targetOverride === undefined) {
@@ -250,7 +274,7 @@ async function replayIssue(
   }
   let driver: ReplayCliDriver;
   let androidApk: Awaited<ReturnType<typeof inspectApk>> | null = null;
-  if (report.target.platform === "android-tv") {
+  if (report.target.platform === "android-tv" || report.target.platform === "fire-tv") {
     if (request.apkPath === undefined || request.deviceSerial === undefined) {
       throw new TypeError("Android replay requires --apk PATH and --device SERIAL.");
     }
@@ -262,6 +286,7 @@ async function replayIssue(
       throw new TypeError("The Android replay APK package does not match the report target.");
     }
     driver = createAndroidDriver({
+      platform: report.target.platform,
       serial: request.deviceSerial,
       ...(request.adbPath === undefined ? {} : { adbPath: request.adbPath }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
@@ -271,7 +296,7 @@ async function replayIssue(
   }
 
   try {
-    if (report.target.platform === "android-tv") {
+    if (report.target.platform === "android-tv" || report.target.platform === "fire-tv") {
       const androidDriver = driver as AndroidReplayCliDriver;
       if (androidApk === null || androidApk.packageName === null || request.apkPath === undefined) {
         throw new TypeError("Android replay preparation is incomplete.");
@@ -332,20 +357,26 @@ export function createNodeCliOperations(
     ?? (() => new PlaywrightWebDriver());
   const createAndroidDriver = dependencies.createAndroidDriver
     ?? ((options: AndroidTvDriverOptions) => new AndroidTvDriver(options));
-  return {
-    testTarget: createNodeAuditOperation({
+  const withDemoFixtureServer = dependencies.withDemoFixtureServer ?? withPackagedDemoFixture;
+  const testTarget = createNodeAuditOperation({
       ...(dependencies.createAuditDriver === undefined
         ? {}
         : { createDriver: dependencies.createAuditDriver }),
-    }),
+    });
+  const replay = async (request: ReplayCommandRequest): Promise<ReplayCommandResult> => (
+    await replayIssue(request, createDriver, createAndroidDriver, withDemoFixtureServer)
+  );
+  return {
+    testTarget,
     detectWebsiteStartup,
-    androidPreflight: () => androidPreflight(),
+    androidPreflight: (adbPath) => androidPreflight(adbPath),
+    androidBuildToolsPreflight,
+    androidObserverPreflight,
     inspectApk,
     scanAndroidApk,
     createBaseline: createBaselineFromFiles,
     compareBaseline: compareBaselineFromFiles,
-    async replayIssue(request) {
-      return await replayIssue(request, createDriver, createAndroidDriver);
-    },
+    replayIssue: replay,
+    runDemo: createNodeDemoOperation({ testTarget, replayIssue: replay }),
   };
 }

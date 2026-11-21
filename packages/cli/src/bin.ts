@@ -8,9 +8,12 @@ import { dirname, join } from "node:path";
 import { createNodeCliOperations } from "./node-replay.js";
 import { runCli, type CliContext } from "./index.js";
 import { ProcessStartTerminal } from "./interactive.js";
+import { systemReportActions } from "./start.js";
+import { githubWorkspaceSourceRoot } from "./source-correlation.js";
 
 const shutdownController = new AbortController();
 const require = createRequire(import.meta.url);
+const inferredSourceRoot = githubWorkspaceSourceRoot(process.env);
 
 async function installChromium(signal?: AbortSignal): Promise<void> {
   const playwrightEntry = require.resolve("playwright");
@@ -64,8 +67,10 @@ const context: CliContext = {
     },
   },
   operations: createNodeCliOperations(),
+  reportActions: systemReportActions,
   runtimeSetup: installChromium,
   startTerminal: new ProcessStartTerminal(),
+  ...(inferredSourceRoot === undefined ? {} : { sourceRoot: inferredSourceRoot }),
   signal: shutdownController.signal,
   terminalProgress: {
     isInteractive: Boolean(process.stdout.isTTY),

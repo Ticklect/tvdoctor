@@ -247,6 +247,36 @@ describe("Node replay operation", () => {
     expect(driver.launched?.launchUri).toBe("https://example.test/app?route=player#captions");
   });
 
+  it("replays a packaged demo report by serving a fresh local fixture without the original ephemeral URL", async () => {
+    const source = report();
+    const path = await writeReport({
+      ...source,
+      target: {
+        ...source.target,
+        location: "http://127.0.0.1:49152/",
+        environment: {
+          ...source.target.environment,
+          packagedReplayTarget: "northstar-navigation-demo/v1",
+        },
+      },
+    });
+    const driver = new FakeReplayDriver();
+    let fixtureStarts = 0;
+    const operation = createNodeCliOperations({
+      createDriver: () => driver,
+      withDemoFixtureServer: async (run) => {
+        fixtureStarts += 1;
+        return await run("http://127.0.0.1:43127/");
+      },
+    });
+
+    const result = await operation.replayIssue({ issueId: ISSUE_ID, reportPath: path });
+
+    expect(result.status).toBe("reproduced");
+    expect(fixtureStarts).toBe(1);
+    expect(driver.launched?.launchUri).toBe("http://127.0.0.1:43127/?tvdoctorDemo=navigation");
+  });
+
   it("loads a correlated V1 report, honors a safe target override, and reproduces", async () => {
     const path = await writeReport(report());
     const driver = new FakeReplayDriver();

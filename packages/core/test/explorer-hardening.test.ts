@@ -381,6 +381,24 @@ describe("M8 explorer hardening", () => {
     expect(observedActionCounts).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("explores distinct repeated controls in Deep mode instead of silently compressing them", async () => {
+    const deep = await explore(new CarouselDriver(8), {
+      profile: "deep",
+      actions: ["RIGHT"],
+      budgets: { maxActions: 100, maxStates: 20, maxDepth: 9, maxDurationMs: 10_000 },
+      monotonicNow: () => 0,
+    });
+    expect(deep.termination.complete).toBe(true);
+    expect(deep.statistics.compressedStates).toBe(0);
+    expect(deep.statistics.deferredStates).toBe(0);
+    expect(new Set(deep.graph.focus.states.map((state) =>
+      focusStableId(state.representativeSnapshot),
+    ))).toEqual(new Set([
+      "stress-card-1", "stress-card-2", "stress-card-3", "stress-card-4",
+      "stress-card-5", "stress-card-6", "stress-card-7", "stress-card-8",
+    ]));
+  });
+
   it("recovers a delivered inconclusive action when stable snapshots subsequently converge", async () => {
     const transient = carouselSnapshot(1, false, 4);
     const stable = carouselSnapshot(2, false, 4);

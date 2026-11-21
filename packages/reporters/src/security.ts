@@ -18,7 +18,7 @@ function redactUrl(candidate: string): string {
 }
 
 function redactUrls(text: string): string {
-  return text.replace(/https?:\/\/[^\s<>"']+/giu, (match) => {
+  return text.replace(/[A-Za-z][A-Za-z0-9+.-]{1,31}:\/\/[^\s<>"']+/gu, (match) => {
     const trailing = match.match(/[),.;!?\]}]+$/u)?.[0] ?? "";
     const candidate = trailing.length === 0 ? match : match.slice(0, -trailing.length);
     return `${redactUrl(candidate)}${trailing}`;
@@ -54,7 +54,7 @@ export function sanitiseUntrustedText(
     "Basic [REDACTED]",
   );
   const withoutNamedSecrets = withoutBasicCredentials.replace(
-    /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|authorization|cookie|password|passwd|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
+    /(["']?)([A-Za-z0-9_-]*(?:(?:api|access|refresh|auth)[-_ ]?(?:key|token)|access[-_ ]?key[-_ ]?id|secret[-_ ]?access[-_ ]?key|authorization|cookie|credentials?|database[-_ ]?url|github[-_ ]?pat|gitlab[-_ ]?pat|pat|password|passwd|private[-_ ]?key|secret|session(?:[-_ ]?(?:id|key|token))?|token)[A-Za-z0-9_-]*)\1(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu,
     (_match, quote: string, key: string, separator: string) => (
       `${quote}${key}${quote}${separator}${quote}[REDACTED]${quote}`
     ),
@@ -83,5 +83,5 @@ export function markdownDataBlock(text: string): string {
 }
 
 export function isSensitiveEnvironmentKey(key: string): boolean {
-  return /(?:api[-_ ]?key|authorization|cookie|password|secret|session|token)/iu.test(key);
+  return /(?:api[-_ ]?key|access[-_ ]?key(?:[-_ ]?id)?|authorization|cookie|credentials?|database[-_ ]?url|(?:github|gitlab)[-_ ]?pat|(?:^|[-_ ])pat(?:$|[-_ ])|password|private[-_ ]?key|secret|session|token)/iu.test(key);
 }

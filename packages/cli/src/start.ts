@@ -1,10 +1,16 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { basename, dirname, join } from "node:path";
-import type { CliContext, ReportActionHandlers, WebsiteStartupDetection } from "./cli.js";
-import { safeTarget } from "./cli.js";
+import {
+  ensureWebRuntime,
+  safeTarget,
+  type CliContext,
+  type ReportActionHandlers,
+  type WebsiteStartupDetection,
+} from "./cli.js";
 import { ProgressRenderer, type StartTerminal } from "./interactive.js";
 import { defaultOutputDirectory } from "./product-output.js";
+import { sanitizeTerminalText } from "./terminal.js";
 
 interface ApkCompatibilityLike {
   readonly compatible: boolean;
@@ -29,7 +35,10 @@ function evaluateApkCompatibility(apk: { minSdk: number | null; supportedAbis: r
 }
 
 function write(context: CliContext, line: string): void {
-  context.io.writeStdout(`${line}\n`);
+  context.io.writeStdout(`${sanitizeTerminalText(line, {
+    maximumLength: 12_000,
+    preserveNewlines: true,
+  })}\n`);
 }
 
 function friendlyBlocker(kind: string): string {
@@ -96,7 +105,7 @@ async function copyToClipboard(value: string): Promise<boolean> {
   return await completed;
 }
 
-const systemReportActions: ReportActionHandlers = {
+export const systemReportActions: ReportActionHandlers = {
   openReport: openWithSystem,
   showFolder: showInFolder,
   copyPath: copyToClipboard,
@@ -160,14 +169,7 @@ async function runWebsite(
     context.io.writeStderr("Web auditing is unavailable in this TVDoctor installation.\n");
     return 4;
   }
-  try {
-    await context.runtimeProbe?.();
-  } catch {
-    context.io.writeStderr(
-      "Chromium is required for web audits. Install it with: npx playwright install chromium\n",
-    );
-    return 1;
-  }
+  if (!await ensureWebRuntime(context)) return 1;
   for (;;) {
     const targetInput = await terminal.prompt("Enter website:", context.signal);
     if (targetInput === null) return 2;
@@ -176,9 +178,9 @@ async function runWebsite(
       write(context, "Please enter an absolute HTTP or HTTPS web address without credentials.");
       continue;
     }
-    const scanChoice = await terminal.select("Scan type", [
-      { label: "Quick Scan", detail: "Fast navigation and product smoke checks" },
-      { label: "Deep Scan", detail: "Completion-driven exploration with safety bounds" },
+    const scanChoice = await terminal.select("Navigation scan type", [
+      { label: "Quick navigation scan", detail: "Fast D-pad exploration with a clear verdict" },
+      { label: "Deep navigation scan", detail: "Completion-driven D-pad exploration with safety bounds" },
       { label: "Cancel" },
     ]);
     if (scanChoice === null || scanChoice === 2) continue;
@@ -194,13 +196,14 @@ async function runWebsite(
       startupDecision = decision ?? undefined;
     }
     const outputPath = defaultOutputDirectory({ target, mode });
-    write(context, `TVDoctor - ${mode === "quick" ? "Quick Scan" : "Deep Scan"}`);
+    write(context, `TVDoctor - ${mode === "quick" ? "Quick navigation scan" : "Deep navigation scan"}`);
     write(context, `Target: ${target}`);
     write(context, "Platform: Website");
+    write(context, "Scope: Remote navigation (use the CLI for advanced diagnostic packs)");
     write(context, "Starting the audit. Press Ctrl+C to stop safely.");
     const result = await context.operations.testTarget({
       target,
-      packs: ["all"],
+      packs: ["navigation"],
       mode,
       outputPath,
       searchQuery: "N",
@@ -253,7 +256,8 @@ async function runAndroid(
   if (readyDevices.length === 1) {
     const device = readyDevices[0];
     if (device === undefined) return 2;
-    write(context, `Found Android TV: ${device.manufacturer ?? "Android"} ${device.model ?? "device"}`);
+    const platformLabel = device.manufacturer?.trim().toLowerCase() === "amazon" ? "Fire TV" : "Android TV";
+    write(context, `Found ${platformLabel}: ${device.manufacturer ?? "Android"} ${device.model ?? "device"}`);
     write(context, `${device.serial}; API ${device.apiLevel?.toString() ?? "unknown"}; ${
       device.supportedAbis.join(", ") || "architecture unknown"
     }`);
@@ -301,7 +305,7 @@ async function runAndroid(
       if (scanChoice === 2) return await runAndroid(context, terminal);
       const outputPath = defaultOutputDirectory({
         target: apk.label ?? apk.packageName ?? basename(apkPath),
-        platform: "android-tv",
+        platform: device.manufacturer?.trim().toLowerCase() === "amazon" ? "fire-tv" : "android-tv",
         mode: scanChoice === 0 ? "quick" : "deep",
       });
       write(context, "Starting the Android scan. TVDoctor will stop the tested app afterward; the emulator and installed APK remain.");
@@ -310,6 +314,7 @@ async function runAndroid(
         ...(preflight.adbPath === null ? {} : { adbPath: preflight.adbPath }),
         serial: device.serial,
         apkPath,
+        platform: device.manufacturer?.trim().toLowerCase() === "amazon" ? "fire-tv" : "android-tv",
         mode: scanChoice === 0 ? "quick" : "deep",
         outputPath,
         ...(context.signal === undefined ? {} : { signal: context.signal }),

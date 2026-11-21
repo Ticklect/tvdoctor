@@ -1,8 +1,8 @@
 # Architecture
 
-TVDoctor separates platform control, deterministic exploration, semantic
-diagnosis, evidence production, and regression comparison. That separation is
-the main compatibility boundary for new drivers and packs.
+TVDoctor separates platform control, deterministic exploration, remote-navigation
+diagnosis, evidence production, replay, and optional baseline comparison. That
+separation is the main compatibility boundary for new drivers and packs.
 
 ```text
                          platform-owned probes
@@ -17,7 +17,8 @@ CLI or library caller ───────► TVDoctorDriver
                                   │
                  ┌────────────────┴────────────────┐
                  ▼                                 ▼
-        semantic diagnostic packs          exact replay engine
+      navigation diagnostics +             exact replay engine
+          secondary packs
                  │                                 │
                  └────────────────┬────────────────┘
                                   ▼
@@ -49,8 +50,10 @@ Every platform adapter implements the small `TVDoctorDriver` surface:
 - required `capabilities()`, `press()`, and `snapshot()` methods;
 - optional screenshot, reset, install, launch, and log operations;
 - explicit available/unavailable observations instead of guessed values;
-- bounded automatic navigation keys: Up, Down, Left, Right, Select, and Back;
-- explicit remote controls for Home and media playback/seek actions;
+- a bounded remote-input vocabulary with Up, Down, Left, Right, Select, and Back
+  as the core navigation set;
+- extended Home/media/TAB inputs exist for explicit control and platform-specific
+  policy; automatic eligibility is intentionally not uniform across platforms;
 - JSON-serialisable UI hierarchy, focus, names, roles, bounds, and state.
 
 Capabilities describe what a driver can observe or perform, not what the target
@@ -79,13 +82,18 @@ generated identifier pattern, role, interaction state, and layout provide a
 conservative equivalence signal. Compression, exact repeats, and deferred
 expansion remain visible in run statistics.
 
-## Semantic packs and observability
+## Navigation diagnostics and secondary packs
 
-Packs consume driver snapshots and remote outcomes. They do not learn private
-fixture routes. Browser-only facts—computed focus styling, viewport clipping,
-isolated pointer activation, or exact text entry—arrive through narrow hooks
-owned by the web host. Android or future platforms can decline those hooks and
-receive an honest unobservable/partial result.
+The primary v1 path explores the remote graph and runs fixture-independent
+navigation diagnostics over the resulting screens, focus states, and transitions.
+It does not learn private fixture routes or require a manually authored path.
+
+Secondary semantic packs consume the same driver observations and can add
+streaming, search, settings, accessibility, layout, performance, and crash
+coverage. Browser-only facts—computed focus styling, viewport clipping, isolated
+pointer activation, or exact text entry—arrive through narrow hooks owned by the
+web host. Android or future platforms can decline those hooks and receive an
+honest unobservable/partial result.
 
 Deterministic findings require deterministic evidence. Heuristics are labelled
 as such. Missing labels, logs, bounds, focus, or timing cannot become a pass.

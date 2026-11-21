@@ -1,5 +1,5 @@
-name: TVDoctor web audit
-description: Run TVDoctor against a web target and upload the report.
+name: TVDoctor navigation audit
+description: Run a bounded D-pad and focus-navigation audit with an explicit failure policy, JUnit, and a GitHub job summary.
 branding:
   icon: tv
   color: blue
@@ -8,14 +8,29 @@ inputs:
     description: Absolute HTTP(S) URL that the runner can reach.
     required: true
   fail-on:
-    description: "Finding threshold: any, critical, high, medium, low, info, or never."
-    required: true
+    description: "Finding threshold: any, critical, high, medium, low, info, or never. Defaults to high."
+    required: false
+    default: high
   mode:
     description: "Audit mode: quick or deep."
     default: quick
   pack:
-    description: One test pack, or all.
-    default: all
+    description: One test pack, or all. Navigation is the v1 flagship default.
+    default: navigation
+  baseline:
+    description: Optional path to a reviewed TVDoctor semantic baseline. When empty, .tvdoctor/baseline.json is used if present as a regular file.
+    default: ""
+  comment-on-pr:
+    description: Opt in to one bounded same-repository pull-request comment after the read-only audit.
+    default: "false"
+  github-token:
+    description: Narrowly scoped GitHub token used only by the optional PR-comment step.
+    required: false
+    default: ""
+  github-app-slug:
+    description: "For a custom GitHub App installation token, pass the trusted app-slug output from actions/create-github-app-token. Empty selects github-actions[bot] for GITHUB_TOKEN."
+    required: false
+    default: ""
 outputs:
   report:
     description: Path to the HTML report.
@@ -23,6 +38,18 @@ outputs:
   junit:
     description: Path to the JUnit XML export.
     value: ${{ steps.paths.outputs.junit }}
+  summary:
+    description: Path to the navigation-first CI Markdown summary.
+    value: ${{ steps.paths.outputs.summary }}
+  comparison:
+    description: Path to baseline-comparison.json when a baseline was selected.
+    value: ${{ steps.paths.outputs.comparison }}
+  navigation-graph:
+    description: Path to the reviewable navigation-graph.md artifact.
+    value: ${{ steps.paths.outputs.navigation_graph }}
+  baseline-source:
+    description: "Baseline selection used by the audit: input, committed, or none."
+    value: ${{ steps.audit.outputs.baseline_source }}
 runs:
   using: composite
   steps:
@@ -50,23 +77,112 @@ runs:
       run: |
         echo "report=${GITHUB_WORKSPACE}/tvdoctor-report/report.html" >> "$GITHUB_OUTPUT"
         echo "junit=${GITHUB_WORKSPACE}/tvdoctor-report/exports/junit.xml" >> "$GITHUB_OUTPUT"
+        echo "summary=${GITHUB_WORKSPACE}/tvdoctor-report/exports/ci-summary.md" >> "$GITHUB_OUTPUT"
+        echo "comparison=${GITHUB_WORKSPACE}/tvdoctor-report/baseline-comparison.json" >> "$GITHUB_OUTPUT"
+        echo "navigation_graph=${GITHUB_WORKSPACE}/tvdoctor-report/navigation-graph.md" >> "$GITHUB_OUTPUT"
+    - name: Validate optional write settings
+      shell: bash
+      env:
+        TVDOCTOR_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
+      run: |
+        if [[ "$TVDOCTOR_COMMENT_ON_PR" != "true" && "$TVDOCTOR_COMMENT_ON_PR" != "false" ]]; then
+          echo "comment-on-pr must be true or false." >&2
+          exit 2
+        fi
     - name: Run TVDoctor
+      id: audit
       shell: bash
       env:
         TVDOCTOR_TARGET: ${{ inputs.target }}
         TVDOCTOR_FAIL_ON: ${{ inputs.fail-on }}
         TVDOCTOR_MODE: ${{ inputs.mode }}
         TVDOCTOR_PACK: ${{ inputs.pack }}
-      run: >-
-        node "${GITHUB_ACTION_PATH}/packages/cli/dist/bin.js" ci "$TVDOCTOR_TARGET"
-        --fail-on "$TVDOCTOR_FAIL_ON" --mode "$TVDOCTOR_MODE" --pack "$TVDOCTOR_PACK"
-        --output "${GITHUB_WORKSPACE}/tvdoctor-report"
+        TVDOCTOR_BASELINE: ${{ inputs.baseline }}
+      run: |
+        args=(
+          ci "$TVDOCTOR_TARGET"
+          --fail-on "$TVDOCTOR_FAIL_ON"
+          --mode "$TVDOCTOR_MODE"
+          --pack "$TVDOCTOR_PACK"
+          --output "${GITHUB_WORKSPACE}/tvdoctor-report"
+        )
+        baseline_path="$TVDOCTOR_BASELINE"
+        baseline_source="none"
+        if [[ -n "$baseline_path" ]]; then
+          baseline_source="input"
+        else
+          reviewed_baseline="${GITHUB_WORKSPACE}/.tvdoctor/baseline.json"
+          if [[ -f "$reviewed_baseline" && ! -L "$reviewed_baseline" ]]; then
+            baseline_path="$reviewed_baseline"
+            baseline_source="committed"
+          fi
+        fi
+        echo "baseline_source=${baseline_source}" >> "$GITHUB_OUTPUT"
+        if [[ -n "$baseline_path" ]]; then
+          args+=(--baseline "$baseline_path")
+        fi
+        node "${GITHUB_ACTION_PATH}/packages/cli/dist/bin.js" "${args[@]}"
     - name: Add job summary
       if: ${{ always() }}
       shell: bash
+      env:
+        TVDOCTOR_BASELINE_SOURCE: ${{ steps.audit.outputs.baseline_source }}
       run: |
         summary="${GITHUB_WORKSPACE}/tvdoctor-report/exports/ci-summary.md"
         if [[ -f "$summary" ]]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+        case "$TVDOCTOR_BASELINE_SOURCE" in
+          input) baseline_label="explicit reviewed baseline input" ;;
+          committed) baseline_label="reviewed committed .tvdoctor/baseline.json" ;;
+          *) baseline_label="none" ;;
+        esac
+        printf '\n## Regression baseline\n\n- Source: **%s**\n' "$baseline_label" >> "$GITHUB_STEP_SUMMARY"
+        comparison="${GITHUB_WORKSPACE}/tvdoctor-report/baseline-comparison.md"
+        if [[ -f "$comparison" ]]; then
+          printf '\n## Baseline comparison\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat "$comparison" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        node <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const file = path.join(process.env.GITHUB_WORKSPACE ?? ".", "tvdoctor-report", "navigation-graph.json");
+        let graph = null;
+        try {
+          const stat = fs.statSync(file);
+          if (stat.isFile() && stat.size <= 1024 * 1024) graph = JSON.parse(fs.readFileSync(file, "utf8"));
+        } catch {}
+        const supported = graph?.schemaVersion === "tvdoctor.navigation-focus-graph/v1"
+          || graph?.schemaVersion === "tvdoctor.navigation-focus-graph/v2";
+        if (!supported || !Array.isArray(graph.screens) || !Array.isArray(graph.focusTargets)
+          || !Array.isArray(graph.transitions) || !Array.isArray(graph.problems)) {
+          process.stdout.write("\n## Navigation graph\n\nOverview unavailable. Review the workflow artifact if graph generation completed.\n");
+          process.exit(0);
+        }
+        const coverage = graph.coverage === "complete" || graph.coverage === "partial"
+          ? graph.coverage.toUpperCase()
+          : "UNKNOWN";
+        const lines = [
+          "",
+          "## Navigation graph",
+          "",
+          `- Coverage: **${coverage}**`,
+          `- Observed: **${String(graph.screens.length)} screens / ${String(graph.focusTargets.length)} focus targets / ${String(graph.transitions.length)} transitions**`,
+          `- Problem annotations: **${String(graph.problems.length)}**`,
+        ];
+        if (graph.schemaVersion === "tvdoctor.navigation-focus-graph/v2"
+          && Array.isArray(graph.coverageSummary?.locallyCompleteFocusTargetKeys)) {
+          lines.push(`- Locally complete focus targets: **${String(graph.coverageSummary.locallyCompleteFocusTargetKeys.length)} / ${String(graph.focusTargets.length)}**`);
+          const frontier = graph.coverageSummary?.frontier;
+          if ((frontier?.status === "complete" || frontier?.status === "deferred")
+            && Number.isSafeInteger(frontier?.remainingFrontierEntries)
+            && frontier.remainingFrontierEntries >= 0
+            && Number.isSafeInteger(frontier?.remainingCandidateActions)
+            && frontier.remainingCandidateActions >= 0) {
+            lines.push(`- Frontier: **${frontier.status.toUpperCase()}** · **${String(frontier.remainingFrontierEntries)} queued entries / ${String(frontier.remainingCandidateActions)} candidate actions**`);
+          }
+        }
+        lines.push("- Review: `navigation-graph.md` in the uploaded TVDoctor artifact.", "");
+        process.stdout.write(lines.join("\n"));
+        NODE
     - name: Upload report
       if: ${{ always() }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -75,3 +191,528 @@ runs:
         path: ${{ github.workspace }}/tvdoctor-report/
         if-no-files-found: warn
         retention-days: 14
+    - name: Comment on same-repository pull request
+      if: ${{ always() && inputs.comment-on-pr == 'true' }}
+      shell: bash
+      env:
+        TVDOCTOR_GITHUB_TOKEN: ${{ inputs.github-token }}
+        TVDOCTOR_GITHUB_APP_SLUG: ${{ inputs.github-app-slug }}
+        TVDOCTOR_ARTIFACT_NAME: tvdoctor-report-${{ github.run_id }}-${{ github.run_attempt }}
+        TVDOCTOR_BASELINE_SOURCE: ${{ steps.audit.outputs.baseline_source }}
+      run: |
+        node <<'NODE'
+        const fs = require("node:fs");
+        const path = require("node:path");
+
+        const MAX_COMMENT_CHARS = 2_400;
+        const COMMENT_MARKER = "<!-- tvdoctor:pr-regression-check:v1 -->";
+        const COMMENT_PAGE_SIZE = 100;
+        const MAX_COMMENT_PAGES = 5;
+        const DIRECTIONAL_ACTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
+        const REMOTE_KEYS = new Set([
+          "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "TAB", "HOME",
+          "PLAY_PAUSE", "PLAY", "PAUSE", "STOP", "NEXT", "PREVIOUS", "REWIND", "FAST_FORWARD",
+        ]);
+        const COMPARISON_STATUSES = new Set(["identical", "changed", "regressed", "failed-closed"]);
+        const ISSUE_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
+
+        function readBounded(file, maxBytes) {
+          try {
+            const stat = fs.statSync(file);
+            if (!stat.isFile() || stat.size > maxBytes) return null;
+            return fs.readFileSync(file, "utf8");
+          } catch {
+            return null;
+          }
+        }
+
+        function compactText(value, maxChars = 96) {
+          if (typeof value !== "string") return "";
+          return value
+            .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+            .replace(/\s+/gu, " ")
+            .trim()
+            .slice(0, maxChars);
+        }
+
+        function inlineCode(value, maxChars = 96) {
+          const safe = compactText(value, maxChars).replaceAll("`", "'").replaceAll("@", "＠");
+          return `\`${safe.length === 0 ? "unknown" : safe}\``;
+        }
+
+        function parseCiSummary(markdown) {
+          const source = markdown ?? "";
+          const verdict = source.match(/^# TVDoctor CI: (PASSED|FAILED|INCONCLUSIVE)\s*$/mu)?.[1] ?? "UNKNOWN";
+          const findingsText = source.match(/Findings:\s*\*\*(\d{1,9})\*\*/u)?.[1];
+          return {
+            verdict,
+            findings: findingsText === undefined ? null : Number(findingsText),
+          };
+        }
+
+        function issueDetail(issue) {
+          const rawId = typeof issue?.id === "string" ? issue.id : "";
+          const severityValue = typeof issue?.severity === "string" ? issue.severity.toLowerCase() : "";
+          return {
+            rawId,
+            id: inlineCode(rawId),
+            rule: inlineCode(issue?.rule),
+            severity: ISSUE_SEVERITIES.has(severityValue) ? severityValue.toUpperCase() : "UNKNOWN",
+            sequence: null,
+            replayCommand: null,
+            sourceMatches: [],
+          };
+        }
+
+        function parseRemoteSequence(value) {
+          if (!Array.isArray(value) || value.length === 0 || value.length > 24) return null;
+          const steps = [];
+          for (const step of value) {
+            const key = typeof step?.key === "string" ? step.key : "";
+            const repeat = step?.repeat;
+            if (!REMOTE_KEYS.has(key) || !Number.isSafeInteger(repeat) || repeat <= 0 || repeat > 100) return null;
+            steps.push({ key, repeat });
+          }
+          const text = steps.map((step) => step.repeat === 1 ? step.key : `${step.key} × ${String(step.repeat)}`).join(" → ");
+          return text.length <= 320 ? { steps, text } : null;
+        }
+
+        function sameRemoteSequence(left, right) {
+          return left.length === right.length && left.every((step, index) => {
+            const candidate = right[index];
+            return candidate !== undefined && step.key === candidate.key && step.repeat === candidate.repeat;
+          });
+        }
+
+        function parseReportEnrichment(text) {
+          const result = new Map();
+          if (text === null) return result;
+          try {
+            const report = JSON.parse(text);
+            if (report?.schemaVersion !== "tvdoctor.report/v1"
+              || !Array.isArray(report.issues)
+              || !Array.isArray(report.artifacts)
+              || !Array.isArray(report.replays)) {
+              return result;
+            }
+            for (const issue of report.issues) {
+              const issueId = typeof issue?.id === "string" ? issue.id : "";
+              if (issueId.length === 0 || issueId.length > 256 || result.has(issueId)) continue;
+              const reproduction = issue?.reproduction;
+              if (reproduction?.status !== "available") continue;
+              const sequence = parseRemoteSequence(reproduction.originalSequence);
+              if (sequence === null) continue;
+
+              let replayCommand = null;
+              if (/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(issueId)
+                && issue?.confidence === "deterministic"
+                && reproduction?.confidence === "deterministic") {
+                const correlatedReplays = report.replays.filter((replay) => {
+                  if (replay?.schemaVersion !== "tvdoctor.replay/v1" || replay?.issueId !== issueId) return false;
+                  const replaySequence = parseRemoteSequence(replay.steps);
+                  return replaySequence !== null && sameRemoteSequence(sequence.steps, replaySequence.steps);
+                });
+                if (correlatedReplays.length === 1) {
+                  replayCommand = `tvdoctor replay ${issueId} --report tvdoctor-report/report.json`;
+                }
+              }
+              result.set(issueId, { sequence: sequence.text, replayCommand });
+            }
+          } catch {
+            return new Map();
+          }
+          return result;
+        }
+
+        function safeSourcePath(value) {
+          const candidate = compactText(value, 180);
+          if (candidate.length === 0
+            || /^(?:[A-Za-z]:[\\/]|[\\/]|[A-Za-z][A-Za-z0-9+.-]*:)/u.test(candidate)
+            || candidate.split(/[\\/]/u).some((segment) => segment === "..")) {
+            return null;
+          }
+          return candidate;
+        }
+
+        function parseSourceCorrelation(text) {
+          const result = new Map();
+          if (text === null) return result;
+          try {
+            const correlation = JSON.parse(text);
+            if (correlation?.schemaVersion !== "tvdoctor.source-correlation/v1" || !Array.isArray(correlation.findings)) {
+              return result;
+            }
+            for (const finding of correlation.findings) {
+              const issueId = typeof finding?.issueId === "string" ? finding.issueId : "";
+              if (issueId.length === 0 || issueId.length > 256 || !Array.isArray(finding?.identifiers)) continue;
+              const matches = result.get(issueId) ?? [];
+              const seen = new Set(matches);
+              for (const identifier of finding.identifiers) {
+                if (!Array.isArray(identifier?.matches)) continue;
+                for (const match of identifier.matches) {
+                  const path = safeSourcePath(match?.path);
+                  const line = match?.line;
+                  if (path === null || !Number.isSafeInteger(line) || line <= 0 || line > 1_000_000_000) continue;
+                  const location = `${path}:${String(line)}`;
+                  if (seen.has(location)) continue;
+                  matches.push(location);
+                  seen.add(location);
+                  if (matches.length >= 2) break;
+                }
+                if (matches.length >= 2) break;
+              }
+              if (matches.length > 0) result.set(issueId, matches.slice(0, 2));
+            }
+          } catch {
+            return new Map();
+          }
+          return result;
+        }
+
+        function enrichIntroducedFindings(comparison, reportByIssue, sourcesByIssue) {
+          if (comparison === null || comparison.introducedDetails.length === 0) return comparison;
+          return {
+            ...comparison,
+            introducedDetails: comparison.introducedDetails.map((detail) => {
+              const reportDetail = reportByIssue.get(detail.rawId);
+              return {
+                ...detail,
+                sequence: reportDetail?.sequence ?? null,
+                replayCommand: reportDetail?.replayCommand ?? null,
+                sourceMatches: sourcesByIssue.get(detail.rawId) ?? [],
+              };
+            }),
+          };
+        }
+
+        function endpoint(screenKey, focusKey) {
+          const screen = compactText(screenKey, 48);
+          const focus = compactText(focusKey, 48);
+          return inlineCode(focus.length === 0 ? screen : `${screen}/${focus}`, 104);
+        }
+
+        function directionalDetail(change) {
+          const beforeAction = compactText(change?.before?.action, 16).toUpperCase();
+          const afterAction = compactText(change?.after?.action, 16).toUpperCase();
+          return {
+            key: inlineCode(change?.key),
+            beforeAction: inlineCode(beforeAction, 16),
+            afterAction: inlineCode(afterAction, 16),
+            beforeFrom: endpoint(change?.before?.fromScreenKey, change?.before?.fromFocusKey),
+            beforeTo: endpoint(change?.before?.toScreenKey, change?.before?.toFocusKey),
+            afterFrom: endpoint(change?.after?.fromScreenKey, change?.after?.fromFocusKey),
+            afterTo: endpoint(change?.after?.toScreenKey, change?.after?.toFocusKey),
+          };
+        }
+
+        function parseComparisonJson(text) {
+          if (text === null) return null;
+          try {
+            const comparison = JSON.parse(text);
+            if (comparison?.schemaVersion !== "tvdoctor.comparison/v1" || typeof comparison?.changes !== "object" || comparison.changes === null) {
+              return null;
+            }
+            const statusValue = typeof comparison.status === "string" ? comparison.status.toLowerCase() : "";
+            const newIssues = Array.isArray(comparison.changes.newIssues) ? comparison.changes.newIssues : [];
+            const resolvedIssues = Array.isArray(comparison.changes.resolvedIssues) ? comparison.changes.resolvedIssues : [];
+            const transitionsChanged = Array.isArray(comparison.changes.transitionsChanged) ? comparison.changes.transitionsChanged : [];
+            const directional = transitionsChanged.filter((change) => {
+              const before = typeof change?.before?.action === "string" ? change.before.action.toUpperCase() : "";
+              const after = typeof change?.after?.action === "string" ? change.after.action.toUpperCase() : "";
+              return DIRECTIONAL_ACTIONS.has(before) || DIRECTIONAL_ACTIONS.has(after);
+            });
+            const latencyRegressions = Array.isArray(comparison.changes.latencyRegressions) ? comparison.changes.latencyRegressions : [];
+            return {
+              status: COMPARISON_STATUSES.has(statusValue) ? statusValue.toUpperCase() : "UNKNOWN",
+              introduced: newIssues.length,
+              resolved: resolvedIssues.length,
+              directional: directional.length,
+              latency: latencyRegressions.length,
+              introducedDetails: newIssues.slice(0, 3).map(issueDetail),
+              resolvedDetails: resolvedIssues.slice(0, 3).map(issueDetail),
+              directionalDetails: directional.slice(0, 2).map(directionalDetail),
+            };
+          } catch {
+            return null;
+          }
+        }
+
+        function parseComparisonMarkdown(markdown) {
+          if (markdown === null) return null;
+          const status = markdown.match(/^- Status: \*\*(IDENTICAL|CHANGED|REGRESSED|FAILED-CLOSED)\*\*\s*$/mu)?.[1];
+          const introduced = markdown.match(/^\| Introduced \| (\d{1,9}) \|\s*$/mu)?.[1];
+          const resolved = markdown.match(/^\| Resolved \| (\d{1,9}) \|\s*$/mu)?.[1];
+          if (status === undefined && introduced === undefined && resolved === undefined) return null;
+          const directionalSection = markdown.match(/### Changed directional transitions\s*\n\n([\s\S]*?)(?=\n### |\n## |\s*$)/u)?.[1] ?? "";
+          const directional = (directionalSection.match(/^- /gmu) ?? []).length;
+          return {
+            status: status ?? "UNKNOWN",
+            introduced: introduced === undefined ? 0 : Number(introduced),
+            resolved: resolved === undefined ? 0 : Number(resolved),
+            directional,
+            latency: 0,
+            introducedDetails: [],
+            resolvedDetails: [],
+            directionalDetails: [],
+          };
+        }
+
+        function parseNavigationGraph(text) {
+          if (text === null) return null;
+          try {
+            const graph = JSON.parse(text);
+            if ((graph?.schemaVersion !== "tvdoctor.navigation-focus-graph/v1"
+                && graph?.schemaVersion !== "tvdoctor.navigation-focus-graph/v2")
+              || !Array.isArray(graph.screens)
+              || !Array.isArray(graph.focusTargets)
+              || !Array.isArray(graph.transitions)
+              || !Array.isArray(graph.problems)) {
+              return null;
+            }
+            const coverage = graph.coverage === "complete" || graph.coverage === "partial"
+              ? graph.coverage.toUpperCase()
+              : "UNKNOWN";
+            const result = {
+              coverage,
+              screens: graph.screens.length,
+              focusTargets: graph.focusTargets.length,
+              transitions: graph.transitions.length,
+              problems: graph.problems.length,
+              locallyComplete: null,
+              frontier: null,
+            };
+            if (graph.schemaVersion === "tvdoctor.navigation-focus-graph/v2"
+              && Array.isArray(graph.coverageSummary?.locallyCompleteFocusTargetKeys)) {
+              result.locallyComplete = graph.coverageSummary.locallyCompleteFocusTargetKeys.length;
+              const frontier = graph.coverageSummary?.frontier;
+              if ((frontier?.status === "complete" || frontier?.status === "deferred")
+                && Number.isSafeInteger(frontier?.remainingFrontierEntries)
+                && frontier.remainingFrontierEntries >= 0
+                && Number.isSafeInteger(frontier?.remainingCandidateActions)
+                && frontier.remainingCandidateActions >= 0) {
+                result.frontier = {
+                  status: frontier.status.toUpperCase(),
+                  entries: frontier.remainingFrontierEntries,
+                  actions: frontier.remainingCandidateActions,
+                };
+              }
+            }
+            return result;
+          } catch {
+            return null;
+          }
+        }
+
+        function baselineLabel(value) {
+          if (value === "committed") return "reviewed committed `.tvdoctor/baseline.json`";
+          if (value === "input") return "explicit reviewed baseline input";
+          return "none";
+        }
+
+        function nextAction(summary, comparison) {
+          if (comparison === null) {
+            return summary.verdict === "FAILED"
+              ? "Open the artifact and review the failing findings; no baseline comparison was produced."
+              : "No baseline comparison was produced. Add a reviewed baseline to make future PR comments regression-aware.";
+          }
+          if (comparison.status === "FAILED-CLOSED") {
+            return "Open the artifact and resolve the baseline-comparison blocker before relying on this result.";
+          }
+          if (comparison.introduced > 0 || comparison.directional > 0 || comparison.latency > 0 || comparison.status === "REGRESSED") {
+            return "Review the introduced findings and navigation changes in the artifact before merging.";
+          }
+          if (comparison.resolved > 0) {
+            return "Confirm the resolved findings are expected, then review the artifact before merging.";
+          }
+          return "No baseline regression was detected. Open the artifact for the full bounded evidence when needed.";
+        }
+
+        function buildComment(summary, comparison, graph, baselineSource, artifact) {
+          const findingCount = summary.findings === null ? "unknown" : String(summary.findings);
+          const overviewLines = [
+            `### TVDoctor regression check — ${summary.verdict}`,
+            "",
+            `- Current findings: **${findingCount}**`,
+            `- Baseline: ${baselineLabel(baselineSource)}`,
+            comparison === null
+              ? "- Baseline comparison: **not available**"
+              : `- Baseline comparison: **${comparison.status}** · **${String(comparison.introduced)} introduced** · **${String(comparison.resolved)} resolved** · **${String(comparison.directional)} directional changes**${comparison.latency > 0 ? ` · **${String(comparison.latency)} latency regressions**` : ""}`,
+            `- Artifact: ${inlineCode(artifact, 160)}`,
+          ];
+          if (graph !== null) {
+            const local = graph.locallyComplete === null
+              ? ""
+              : ` · **${String(graph.locallyComplete)}/${String(graph.focusTargets)} locally complete**`;
+            const frontier = graph.frontier === null
+              ? ""
+              : ` · frontier **${graph.frontier.status}** (${String(graph.frontier.entries)} queued / ${String(graph.frontier.actions)} actions)`;
+            overviewLines.push(`- Navigation graph: **${graph.coverage}** · **${String(graph.screens)} screens / ${String(graph.focusTargets)} focus targets / ${String(graph.transitions)} transitions** · **${String(graph.problems)} problem annotations**${local}${frontier}`);
+          }
+          const lines = [...overviewLines];
+
+          if (comparison?.introducedDetails.length > 0) {
+            lines.push("", "**Introduced findings**");
+            for (const issue of comparison.introducedDetails) {
+              lines.push(`- ${issue.id} · ${issue.rule} · **${issue.severity}**`);
+              if (issue.sequence !== null) lines.push(`  - Sequence: ${inlineCode(issue.sequence, 320)}`);
+              if (issue.replayCommand !== null) lines.push(`  - Replay: ${inlineCode(issue.replayCommand, 360)}`);
+              if (issue.sourceMatches.length > 0) {
+                lines.push(`  - Source: ${issue.sourceMatches.map((match) => inlineCode(match, 200)).join(", ")}`);
+              }
+            }
+          }
+          if (comparison?.resolvedDetails.length > 0) {
+            lines.push("", "**Resolved findings**");
+            for (const issue of comparison.resolvedDetails) {
+              lines.push(`- ${issue.id} · ${issue.rule} · **${issue.severity}**`);
+            }
+          }
+          if (comparison?.directionalDetails.length > 0) {
+            lines.push("", "**Directional changes**");
+            for (const change of comparison.directionalDetails) {
+              lines.push(`- ${change.key}: ${change.beforeAction} ${change.beforeFrom} → ${change.beforeTo}; now ${change.afterAction} ${change.afterFrom} → ${change.afterTo}`);
+            }
+          }
+
+          const action = nextAction(summary, comparison);
+          lines.push("", `**Next action:** ${action}`);
+          const body = [...lines, "", COMMENT_MARKER].join("\n");
+          if (body.length <= MAX_COMMENT_CHARS) return body;
+
+          const compactBody = [...overviewLines, "", `**Next action:** ${action}`, "", COMMENT_MARKER].join("\n");
+          if (compactBody.length > MAX_COMMENT_CHARS) {
+            throw new Error("The TVDoctor PR comment exceeded its safety bound.");
+          }
+          return compactBody;
+        }
+
+        async function writePrComment(apiBase, repository, number, body, token, appSlug) {
+          const headers = {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "User-Agent": "tvdoctor-action",
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const commentsEndpoint = `${apiBase}/repos/${repository}/issues/${number}/comments`;
+          // Installation tokens (including GITHUB_TOKEN) cannot use GET /user. For
+          // custom apps the trusted workflow must supply the token issuer's app slug.
+          if (appSlug !== "" && !/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/u.test(appSlug)) {
+            throw new Error("github-app-slug must be a valid GitHub App slug.");
+          }
+          const expectedBotLogin = appSlug === "" ? "github-actions[bot]" : `${appSlug}[bot]`;
+          const identityResponse = await fetch(`${apiBase}/user`, { method: "GET", headers });
+          let commentAuthor = expectedBotLogin;
+          if (identityResponse.ok) {
+            const identity = await identityResponse.json();
+            if (identity?.type !== "Bot" || typeof identity.login !== "string") {
+              throw new Error("PR comments require a bot token; refusing to edit comments from a human account.");
+            }
+            if (appSlug !== "" && identity.login.toLowerCase() !== expectedBotLogin.toLowerCase()) {
+              throw new Error("Authenticated GitHub bot identity does not match github-app-slug.");
+            }
+            commentAuthor = identity.login;
+          } else if (identityResponse.status !== 403) {
+            throw new Error(`GitHub token identity lookup failed with HTTP ${identityResponse.status}.`);
+          }
+          let existing = null;
+          let searchComplete = false;
+
+          for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
+            const response = await fetch(`${commentsEndpoint}?per_page=${COMMENT_PAGE_SIZE}&page=${page}`, {
+              method: "GET",
+              headers,
+            });
+            if (!response.ok) {
+              throw new Error(`GitHub PR comment lookup failed with HTTP ${response.status}.`);
+            }
+            const comments = await response.json();
+            if (!Array.isArray(comments) || comments.length > COMMENT_PAGE_SIZE) {
+              throw new Error("GitHub PR comment lookup returned an invalid page.");
+            }
+            for (const comment of comments) {
+              if (comment?.user?.type !== "Bot"
+                || typeof comment.user.login !== "string"
+                || comment.user.login.toLowerCase() !== commentAuthor.toLowerCase()
+                || typeof comment.body !== "string"
+                || !comment.body.endsWith(COMMENT_MARKER)
+                || !comment.body.startsWith("### TVDoctor regression check —")
+                || !Number.isSafeInteger(comment.id)
+                || comment.id <= 0) continue;
+              if (existing === null || comment.id > existing.id) existing = comment;
+            }
+            if (comments.length < COMMENT_PAGE_SIZE) {
+              searchComplete = true;
+              break;
+            }
+          }
+          if (!searchComplete) {
+            throw new Error(`PR comment lookup exceeded ${MAX_COMMENT_PAGES * COMMENT_PAGE_SIZE} comments; refusing a write that could duplicate a prior TVDoctor comment.`);
+          }
+
+          // GitHub has no atomic issue-comment upsert. Callers needing strict
+          // one-comment behavior across simultaneous runs must serialize by PR.
+          const update = existing !== null;
+          const endpoint = update
+            ? `${apiBase}/repos/${repository}/issues/comments/${existing.id}`
+            : commentsEndpoint;
+          const response = await fetch(endpoint, {
+            method: update ? "PATCH" : "POST",
+            headers,
+            body: JSON.stringify({ body }),
+          });
+          if (!response.ok) {
+            throw new Error(`GitHub PR comment ${update ? "update" : "creation"} failed with HTTP ${response.status}.`);
+          }
+        }
+
+        async function main() {
+        const token = process.env.TVDOCTOR_GITHUB_TOKEN ?? "";
+        if (token.length === 0) {
+          throw new Error("comment-on-pr requires github-token with pull-requests: write permission.");
+        }
+
+        const eventName = process.env.GITHUB_EVENT_NAME ?? "";
+        if (eventName === "pull_request_target") {
+          throw new Error("pull_request_target is not supported for TVDoctor PR commenting.");
+        }
+        if (eventName !== "pull_request") {
+          throw new Error("comment-on-pr is supported only for pull_request events.");
+        }
+
+        const workspace = path.resolve(process.env.GITHUB_WORKSPACE ?? ".");
+        const actionPath = path.resolve(process.env.GITHUB_ACTION_PATH ?? ".");
+        const relativeActionPath = path.relative(workspace, actionPath);
+        if (relativeActionPath === "" || (!relativeActionPath.startsWith("..") && !path.isAbsolute(relativeActionPath))) {
+          throw new Error("Refusing a write-capable token because the action is executing from the target repository checkout. Use a pinned action outside GITHUB_WORKSPACE or a trusted workflow_run commenter.");
+        }
+
+        const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+        const repository = process.env.GITHUB_REPOSITORY ?? "";
+        if (event?.pull_request?.head?.repo?.full_name !== repository) {
+          throw new Error("comment-on-pr supports same-repository pull requests only; fork PRs require a separate trusted workflow_run commenter.");
+        }
+        const number = event?.pull_request?.number;
+        if (!Number.isSafeInteger(number) || number <= 0) {
+          throw new Error("The pull-request number is unavailable.");
+        }
+
+        const reportDirectory = path.join(workspace, "tvdoctor-report");
+        const summary = parseCiSummary(readBounded(path.join(reportDirectory, "exports", "ci-summary.md"), 128 * 1024));
+        const comparisonBase = parseComparisonJson(readBounded(path.join(reportDirectory, "baseline-comparison.json"), 512 * 1024))
+          ?? parseComparisonMarkdown(readBounded(path.join(reportDirectory, "baseline-comparison.md"), 128 * 1024));
+        const reportByIssue = parseReportEnrichment(readBounded(path.join(reportDirectory, "report.json"), 2 * 1024 * 1024));
+        const sourcesByIssue = parseSourceCorrelation(readBounded(path.join(reportDirectory, "exports", "source-correlation.json"), 512 * 1024));
+        const comparison = enrichIntroducedFindings(comparisonBase, reportByIssue, sourcesByIssue);
+        const graph = parseNavigationGraph(readBounded(path.join(reportDirectory, "navigation-graph.json"), 1024 * 1024));
+        const baselineSource = process.env.TVDOCTOR_BASELINE_SOURCE ?? "none";
+        const artifact = process.env.TVDOCTOR_ARTIFACT_NAME ?? "tvdoctor-report";
+        const body = buildComment(summary, comparison, graph, baselineSource, artifact);
+        await writePrComment(process.env.GITHUB_API_URL ?? "https://api.github.com", repository, number, body, token, process.env.TVDOCTOR_GITHUB_APP_SLUG ?? "");
+        }
+
+        main().catch((error) => {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exitCode = 1;
+        });
+        NODE

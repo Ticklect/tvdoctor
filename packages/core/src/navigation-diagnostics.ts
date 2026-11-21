@@ -22,6 +22,11 @@ import {
 } from "./navigation-focus-rules.js";
 import { addBackBehaviourFindings } from "./navigation-history-rules.js";
 import {
+  addDirectionalAsymmetryFindings,
+  addFocusEscapeAndStaleFindings,
+  addFocusVisibilityFindings,
+} from "./navigation-phase2-rules.js";
+import {
   addConsentWallFindings,
   addFocusTrapFindings,
   addOverlayFocusLeakFindings,
@@ -50,6 +55,10 @@ const RULE_ORDER: Readonly<Record<NavigationDiagnosticRule, number>> = {
   [NAVIGATION_DIAGNOSTIC_RULES.overlayFocusLeak]: 5,
   [NAVIGATION_DIAGNOSTIC_RULES.backBehaviour]: 6,
   [NAVIGATION_DIAGNOSTIC_RULES.unexpectedJump]: 7,
+  [NAVIGATION_DIAGNOSTIC_RULES.directionalAsymmetry]: 8,
+  [NAVIGATION_DIAGNOSTIC_RULES.focusVisibility]: 9,
+  [NAVIGATION_DIAGNOSTIC_RULES.focusEscape]: 10,
+  [NAVIGATION_DIAGNOSTIC_RULES.staleFocus]: 11,
 };
 
 /**
@@ -88,6 +97,9 @@ export function diagnoseNavigation(
   addOverlayFocusLeakFindings(context);
   addBackBehaviourFindings(context);
   addUnexpectedJumpFindings(context);
+  addDirectionalAsymmetryFindings(context);
+  addFocusVisibilityFindings(context);
+  addFocusEscapeAndStaleFindings(context);
 
   const ordered = [...candidates.entries()].sort(([leftIdentity, left], [rightIdentity, right]) => {
     const leftOrder = RULE_ORDER[left.issue.rule as NavigationDiagnosticRule] ?? Number.MAX_SAFE_INTEGER;

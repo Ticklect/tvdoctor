@@ -1,10 +1,96 @@
 # Examples
 
-These examples describe the current `0.1.0` source packages. Package/consumer
-smoke tests exist, but registry commands remain unsupported until npm publication
-and post-publication installation are verified.
+These examples keep the v1 workflow centered on automatic remote-navigation
+discovery. The source packages are versioned `0.1.0`; GitHub Release bundles are
+the documented distribution path for the public preview.
 
-## Inspect a web target through the driver
+## 1. Prove the packaged path with `tvdoctor demo`
+
+After installing the matched Chromium runtime:
+
+```sh
+tvdoctor setup
+tvdoctor demo
+```
+
+The packaged Northstar demo is navigation-only. The proven bounded run completes
+**6 actions, 1 state, 1 issue**: it finds the seeded Home `More info`
+`remote.reachability` failure and the deterministic replay returns
+**REPRODUCED**.
+
+This is **controlled seeded evidence, not a measure of production accuracy**.
+Use it to verify that your TVDoctor installation can launch Chromium, run the
+navigation engine, write evidence, correlate a replay, and reproduce the known
+fixture defect. See the [sample report](sample-report.md) for the sanitized
+evidence excerpt.
+
+## 2. Audit navigation without writing a path
+
+With a built source checkout and a target already running:
+
+```sh
+npm run tvdoctor -- test http://127.0.0.1:3000 \
+  --pack navigation \
+  --mode quick \
+  --output tvdoctor-report
+```
+
+TVDoctor explores the remote graph itself. You do not supply the expected route,
+screen list, or sequence of D-pad presses. Open `report.html`, then check the run
+status before treating zero findings as clean. Navigation scans also write
+`navigation-graph.json` for machine-readable graph data and
+`navigation-graph.md` for a reviewable graph of observed screens, focus targets,
+remote edges, and evidence-backed problem annotations. `inventory.json` remains
+alongside them for semantic baseline input.
+
+If the app starts behind login, consent, or another setup wall, prepare that state
+explicitly. Automatic navigation discovery begins from the resulting auditable
+surface.
+
+## 3. Put the same check in CI
+
+```sh
+tvdoctor ci http://127.0.0.1:3000 \
+  --pack navigation \
+  --mode quick \
+  --fail-on high
+```
+
+The CI command adds a Markdown summary and JUnit export. Findings at or above the
+configured threshold fail the command; partial and failed runs are always
+non-successful.
+
+## 4. Create and compare a baseline
+
+```sh
+tvdoctor baseline create \
+  --report tvdoctor-report/report.json \
+  --output tvdoctor-baseline.json
+
+tvdoctor baseline compare \
+  --baseline tvdoctor-baseline.json \
+  --report current-report/report.json
+```
+
+Create the baseline only from a reviewed complete run. The comparison tracks
+semantic findings, screens, focus targets, transitions, and named latency
+observations and fails closed when observability is not comparable. A comparison
+written as JSON also gets a sibling Markdown rendering with the same basename.
+
+## 5. Replay one deterministic navigation failure
+
+```sh
+npm run tvdoctor -- replay ISSUE_ID \
+  --report tvdoctor-report/report.json \
+  --target http://127.0.0.1:3000
+```
+
+Replay restores the target, executes the stored setup actions, checks the
+pre-action focus checkpoint, sends the final remote key, and compares the
+observed transition. Unsupported issue semantics are rejected instead of being
+approximated.
+
+## 6. Use the web driver directly
 
 ```ts
 import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
@@ -19,16 +105,15 @@ try {
   await driver.press("RIGHT");
   const snapshot = await driver.snapshot();
   console.log(snapshot.focusedElement);
-  await driver.captureScreenshot("artifacts/example/right.png");
 } finally {
   await driver.close();
 }
 ```
 
-Only pass trusted screenshot paths. The driver creates parent directories but
-does not derive paths from page content.
+The web driver exposes DOM-derived semantics. It does not claim browser
+accessibility-tree coverage.
 
-## Run bounded core exploration
+## 7. Run bounded core exploration as a library
 
 ```ts
 import { explore } from "@tvdoctor/core";
@@ -42,97 +127,15 @@ console.log(result.termination);
 console.log(result.statistics);
 ```
 
-An explicit profile activates deterministic priority scheduling and conservative
-repeated-item compression. It still enforces action, state, depth, and duration
-limits. A cutoff is an incomplete result, not a clean audit.
+The core builds screen/focus graphs under action, state, depth, and duration
+budgets. A cutoff is incomplete rather than clean.
 
-## Run the streaming pack
+## Secondary diagnostic packs
 
-```ts
-import { runStreamingPack } from "@tvdoctor/pack-streaming";
+Streaming, search, settings, accessibility, layout, performance, and crash packs
+remain available. They are useful when the selected driver exposes the required
+semantics, but they are secondary to the v1 navigation workflow. Missing required
+observability produces partial/unavailable results instead of an inferred pass.
 
-const result = await runStreamingPack(driver);
-for (const stage of result.stages) {
-  console.log(stage.stage, stage.status);
-}
-for (const issue of result.issues) {
-  console.log(issue.severity, issue.rule, issue.title);
-}
-```
-
-The pack discovers semantics from observable roles, names, selection state,
-player progress, and remote transitions. Platform-specific pointer proof must be
-provided by a fresh isolated context; never fabricate it from fixture metadata.
-
-## Run selected web stages
-
-```ts
-import { runWebPack } from "@tvdoctor/pack-web";
-
-const result = await runWebPack(driver, {
-  stages: ["search", "settings", "accessibility", "crash"],
-  searchQuery: "N",
-});
-
-console.log(result.termination, result.statistics);
-```
-
-Some stages require web-host hooks for computed styling, viewport measurements,
-pointer activation, text entry, performance timing, or logs. Without required
-observability a stage reports partial/unobservable rather than passing.
-
-## Create and compare a semantic baseline
-
-```ts
-import {
-  compareBaseline,
-  createBaseline,
-  renderBaselineJson,
-} from "@tvdoctor/baseline";
-
-const baseline = createBaseline(cleanReport, cleanInventory);
-await saveTrustedText("artifacts/baseline.json", renderBaselineJson(baseline));
-
-const comparison = compareBaseline(baseline, currentReport, currentInventory);
-if (comparison.shouldFail) {
-  console.error(comparison.status, comparison.blockers, comparison.changes);
-  process.exitCode = 1;
-}
-```
-
-`cleanInventory` and `currentInventory` must contain complete semantic screens,
-focus targets, transitions, and latency observations produced by the audit host.
-`saveTrustedText` is intentionally application-owned; the baseline package does
-not choose filesystem paths.
-
-## Replay an issue from the CLI
-
-```sh
-npm run tvdoctor -- replay ISSUE_ID --report tvdoctor-report/report.json
-```
-
-Use `--target http://127.0.0.1:3000` to override a recorded web target. The CLI
-accepts deterministic, correlated focus-transition replays; unsupported issue
-semantics are rejected instead of approximated. When an audited route used a
-query string or fragment, the report may redact it; pass the exact authorised
-route again with `--target` rather than replaying a different page.
-
-## Experimental local CLI audit
-
-From a built source checkout with the target already running:
-
-```sh
-npm run tvdoctor -- test http://127.0.0.1:3000 --pack navigation --pack streaming --pack accessibility --mode standard --output tvdoctor-report --query N
-```
-
-Pack names are `navigation`, `streaming`, `search`, `settings`, `accessibility`,
-`layout`, `performance`, and `crashes`. Repeating `--pack` selects several;
-omitting it selects `all`. The complete controlled M7 fixture gate has passed;
-the audit host remains Experimental because that evidence does not establish
-arbitrary-app accuracy. After registry publication, the intended equivalent is
-`npx tvdoctor test ...`.
-
-A complete run can exit 1 when it finds issues. A partial/inconclusive run exits
-3 and is never a clean result. Write each run to a new trusted output directory,
-then open `report.html` and inspect pack coverage and unavailable evidence before
-using `report.json` in automation.
+See [Baselines and CI](baselines-and-ci.md), [Benchmarking](BENCHMARKING.md), and
+[Current limitations](limitations.md) before using a result as release evidence.

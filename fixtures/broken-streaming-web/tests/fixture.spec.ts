@@ -234,6 +234,30 @@ test("uses different D-pad edges for the test-only semantic alternate route", as
   await expect(page.locator('[data-tv-id="caption-text-colour"]')).toHaveAttribute("data-remote", "false");
 });
 
+test("provides a bounded navigation-only activation surface for the packaged demo", async ({ page }) => {
+  await page.goto("/?tvdoctorDemo=navigation");
+  await expect(page.locator('body[data-screen="home"]')).toBeVisible();
+  await expectFocus(page, "hero-watch");
+
+  const remoteControls = page.locator('[data-screen="home"][data-remote="true"][data-tv-id]');
+  await expect(remoteControls).toHaveCount(1);
+  await expect(page.locator('[data-tv-id="hero-watch"]')).toHaveAttribute("data-nav-right", "hero-watch");
+  await expect(page.locator('[data-tv-id="hero-watch"]')).toHaveAttribute("data-nav-left", "hero-watch");
+  await expect(page.locator('[data-tv-id="hero-more-info"]')).toHaveAttribute("data-remote", "false");
+  await expect(page.locator('[data-tv-id="hero-more-info"]')).toHaveAttribute(
+    "data-defect-id",
+    "fixture-home-more-info-unreachable",
+  );
+  await expect(page.locator(".shelf")).toHaveCount(0);
+  await expect(page.locator(".rail")).toHaveCount(0);
+
+  await page.keyboard.press("ArrowRight");
+  await expectFocus(page, "hero-watch");
+  await page.keyboard.press("Enter");
+  await expectFocus(page, "hero-watch");
+  await expect(page.locator('body[data-screen="home"]')).toBeVisible();
+});
+
 test("keeps playback paused while proving the seeded inverted Rewind delta", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
   await expectFocus(page, "hero-watch");

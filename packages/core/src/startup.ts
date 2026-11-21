@@ -1,4 +1,5 @@
 import type {
+  DriverOperationOptions,
   ElementBounds,
   RemoteKey,
   ResetStrategy,
@@ -61,6 +62,7 @@ export interface StartupPreparationOptions {
   readonly stability?: StartupStabilityOptions;
   readonly monotonicNow?: () => number;
   readonly wait?: (durationMs: number) => Promise<void>;
+  readonly signal?: AbortSignal;
 }
 
 export type StartupPreparationStatus =
@@ -94,7 +96,7 @@ export interface StartupPreparationResult {
    * Present only for `ready`. Each call performs a bounded fresh reset and
    * returns a newly captured snapshot; no DOM or fingerprint is reused.
    */
-  readonly restoreToPreparedState?: () => Promise<StateSnapshot>;
+  readonly restoreToPreparedState?: (options?: DriverOperationOptions) => Promise<StateSnapshot>;
 }
 
 export interface StartupBlockerFinding {
@@ -312,21 +314,66 @@ interface StableCapture {
   readonly identity: string;
 }
 
+/** Abort during a retry backoff instead of allowing another browser reset. */
+async function waitForRetry(durationMs: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (signal === undefined) {
+    await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, durationMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function waitForStability(
+  wait: (durationMs: number) => Promise<void>,
+  durationMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  if (signal === undefined) return await wait(durationMs);
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortListener = () => reject(signal.reason);
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+  try {
+    await Promise.race([wait(durationMs), aborted]);
+    signal.throwIfAborted();
+  } finally {
+    if (abortListener !== undefined) signal.removeEventListener("abort", abortListener);
+  }
+}
+
 async function captureStableSnapshot(
   driver: TVDoctorDriver,
   stability: NormalisedStartupStabilityOptions,
-  context: { monotonicNow(): number; wait(durationMs: number): Promise<void> },
+  context: { monotonicNow(): number; wait(durationMs: number): Promise<void>; signal?: AbortSignal },
 ): Promise<StableCapture> {
   const deadline = context.monotonicNow() + stability.timeoutMs;
-  let current = await driver.snapshot();
+  const operationOptions = context.signal === undefined ? undefined : { signal: context.signal };
+  context.signal?.throwIfAborted();
+  let current = await driver.snapshot(operationOptions);
+  context.signal?.throwIfAborted();
   let currentIdentity = computeSnapshotFingerprint(current).stateIdentity;
   let stableCount = 1;
   let attempts = 1;
   while (stableCount < stability.requiredStableSnapshots) {
     if (attempts >= stability.maxSnapshots) throw new StartupUnstableError();
-    await context.wait(stability.pollIntervalMs);
+    await waitForStability(context.wait, stability.pollIntervalMs, context.signal);
     if (context.monotonicNow() >= deadline) throw new StartupUnstableError();
-    const next = await driver.snapshot();
+    const next = await driver.snapshot(operationOptions);
+    context.signal?.throwIfAborted();
     if (next.uiTree.status !== "available") throw new StartupUnstableError();
     const nextIdentity = computeSnapshotFingerprint(next).stateIdentity;
     stableCount = nextIdentity === currentIdentity ? stableCount + 1 : 1;
@@ -418,7 +465,12 @@ export async function prepareStartup(
   const wait = options.wait ?? ((durationMs: number) => new Promise<void>((resolve) => {
     setTimeout(resolve, durationMs);
   }));
-  const context = { monotonicNow, wait };
+  const context = {
+    monotonicNow,
+    wait,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+  const operationOptions = options.signal === undefined ? undefined : { signal: options.signal };
   const steps: StartupPreparationStep[] = [];
 
   try {
@@ -426,7 +478,9 @@ export async function prepareStartup(
       throw new TypeError("Startup preparation requires a resettable driver.");
     }
     const reset = driver.reset.bind(driver);
-    await reset(resetStrategy);
+    options.signal?.throwIfAborted();
+    await reset(resetStrategy, operationOptions);
+    options.signal?.throwIfAborted();
     const initial = await captureStableSnapshot(driver, stability, context);
     steps.push({
       operation: "initial-stability",
@@ -483,7 +537,11 @@ export async function prepareStartup(
         wait,
       });
       for (const key of policy.actions) {
-        const observation = await pressAndObserve(driver, key, settling);
+        const observation = await pressAndObserve(driver, key, {
+          ...settling,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        });
+        options.signal?.throwIfAborted();
         steps.push({
           operation: "policy-action",
           detail: `${key}: ${observation.actionResult.outcome}${observation.actionResult.message === undefined ? "" : ` (${observation.actionResult.message})`}`,
@@ -508,9 +566,13 @@ export async function prepareStartup(
       });
     }
 
-    await reset(resetStrategy);
+    options.signal?.throwIfAborted();
+    await reset(resetStrategy, operationOptions);
+    options.signal?.throwIfAborted();
     const firstReset = await captureStableSnapshot(driver, stability, context);
-    await reset(resetStrategy);
+    options.signal?.throwIfAborted();
+    await reset(resetStrategy, operationOptions);
+    options.signal?.throwIfAborted();
     const secondReset = await captureStableSnapshot(driver, stability, context);
     const reproducible = firstReset.identity === prepared.identity
       && secondReset.identity === firstReset.identity;
@@ -534,16 +596,32 @@ export async function prepareStartup(
       };
     }
 
-    const restoreToPreparedState = async (): Promise<StateSnapshot> => {
+    const restoreToPreparedState = async (restoreOptions?: DriverOperationOptions): Promise<StateSnapshot> => {
+      const signal = restoreOptions?.signal;
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        signal?.throwIfAborted();
         try {
-          await reset(resetStrategy);
-          const snapshot = await driver.snapshot();
+          await reset(resetStrategy, restoreOptions);
+          signal?.throwIfAborted();
+          const snapshot = await driver.snapshot(restoreOptions);
+          signal?.throwIfAborted();
           const identity = computeSnapshotFingerprint(snapshot).stateIdentity;
           if (identity === prepared.identity) return snapshot;
+          // A relaunch may briefly expose an intermediate focus/UI tree even
+          // after the driver considers navigation settled. It is not proof that
+          // the prepared root diverged. Re-observe within the same bounded
+          // stability policy used to establish the original prepared state,
+          // without replaying keys or accepting a different root identity.
+          const settled = await captureStableSnapshot(driver, stability, {
+            monotonicNow,
+            wait,
+            ...(signal === undefined ? {} : { signal }),
+          });
+          if (settled.identity === prepared.identity) return settled.snapshot;
         } catch {
-          await new Promise<void>((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+          signal?.throwIfAborted();
         }
+        if (attempt < 2) await waitForRetry(50 * (attempt + 1), signal);
       }
       throw new PreparedStateDivergenceError();
     };
@@ -560,6 +638,7 @@ export async function prepareStartup(
       restoreToPreparedState,
     };
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (error instanceof StartupUnstableError) {
       return {
         status: "unstable",

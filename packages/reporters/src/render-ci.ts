@@ -5,6 +5,14 @@ import {
   type TVDoctorReportV1,
 } from "@tvdoctor/protocol";
 import { sanitiseReportForOutput } from "./report-builder.js";
+import {
+  actionabilityCounts,
+  currentRunReferenceLabel,
+  directionalNavigationIssues,
+  navigationCoverageStatement,
+  navigationIssues,
+  findingActionability,
+} from "./render-helpers.js";
 
 export const CI_FAILURE_THRESHOLDS = ["any", ...ISSUE_SEVERITIES, "never"] as const;
 export type CiFailureThreshold = (typeof CI_FAILURE_THRESHOLDS)[number];
@@ -16,6 +24,25 @@ export function issueViolatesPolicy(
   if (failOn === "never") return false;
   if (failOn === "any") return true;
   return ISSUE_SEVERITIES.indexOf(severity) <= ISSUE_SEVERITIES.indexOf(failOn);
+}
+
+/** Only evidence-backed, replayable failures can block a CI severity gate.
+ * REVIEW and UNTESTED observations remain visible without failing the build. */
+export function findingViolatesPolicy(
+  issue: TVDoctorIssue,
+  failOn: CiFailureThreshold,
+): boolean {
+  return findingActionability(issue) === "VERIFIED"
+    && issueViolatesPolicy(issue.severity, failOn);
+}
+
+/** The highest severity that qualifies for a CI gate, independent of threshold. */
+export function highestVerifiedSeverity(
+  issues: readonly TVDoctorIssue[],
+): IssueSeverity | null {
+  return ISSUE_SEVERITIES.find((severity) => issues.some(
+    (issue) => issue.severity === severity && findingActionability(issue) === "VERIFIED",
+  )) ?? null;
 }
 
 function compact(value: string): string {
@@ -36,7 +63,7 @@ function xml(value: string): string {
 }
 
 function policyFailures(issues: readonly TVDoctorIssue[], failOn: CiFailureThreshold): readonly TVDoctorIssue[] {
-  return issues.filter((issue) => issueViolatesPolicy(issue.severity, failOn));
+  return issues.filter((issue) => findingViolatesPolicy(issue, failOn));
 }
 
 export function renderCiSummary(
@@ -51,17 +78,36 @@ export function renderCiSummary(
   const counts = ISSUE_SEVERITIES
     .map((severity) => `${severity} ${String(safe.issues.filter((issue) => issue.severity === severity).length)}`)
     .join(" · ");
-  const findings = safe.issues.slice(0, 10).map((issue) =>
-    `- **${issue.severity.toUpperCase()}** \`${issue.id}\` — ${markdownInline(issue.title)}`
-  );
+  const confidenceCounts = ["deterministic", "heuristic", "inference", "unobservable"]
+    .map((confidence) => `${confidence} ${String(safe.issues.filter((issue) => issue.confidence === confidence).length)}`)
+    .join(" · ");
+  const navigation = navigationIssues(safe);
+  const directional = directionalNavigationIssues(safe);
+  const actionability = actionabilityCounts(safe);
+  const navigationLabel = navigation.length === 1 ? "finding" : "findings";
+  const directionalLabel = directional.length === 1 ? "directional transition finding" : "directional transition findings";
+  const navigationIds = new Set(navigation.map((issue) => issue.id));
+  const orderedIssues = [...navigation, ...safe.issues.filter((issue) => !navigationIds.has(issue.id))];
+  const findings = orderedIssues.slice(0, 10).map((issue) => {
+    const transition = issue.transition === null
+      ? ""
+      : ` · **${issue.transition.action}** ${markdownInline(issue.transition.fromElement ?? "unobserved")} → ${markdownInline(issue.transition.observedElement ?? "unobserved")} (${currentRunReferenceLabel(issue, "target").toLowerCase()}: ${markdownInline(issue.transition.expectedElement ?? "unobserved")})`;
+    return `- **${findingActionability(issue)} · ${issue.severity.toUpperCase()} · ${issue.confidence.toUpperCase()}** \`${issue.id}\` — ${markdownInline(issue.title)}${transition}`;
+  });
   return [
     `# TVDoctor CI: ${verdict}`,
     "",
-    `Run: **${safe.run.status}** · Policy: fail on **${failOn}** · Findings: **${String(safe.issues.length)}**`,
+    `Run: **${safe.run.status}** · Policy: fail on **VERIFIED ${failOn}** · Findings: **${String(safe.issues.length)}**`,
+    "",
+    `${navigationCoverageStatement(safe)} Navigation findings: **${String(navigation.length)} ${navigationLabel}** · **${String(directional.length)} ${directionalLabel}** · Coverage: **${String(safe.coverage.screenStatesDiscovered)} screens / ${String(safe.coverage.focusStatesDiscovered)} focus targets / ${String(safe.coverage.transitionsTested)} transitions**`,
     "",
     counts,
     "",
-    ...(findings.length === 0 ? ["No findings."] : findings),
+    `Actionability: VERIFIED ${String(actionability.VERIFIED)} · REVIEW ${String(actionability.REVIEW)} · UNTESTED ${String(actionability.UNTESTED)}`,
+    "",
+    `Confidence: ${confidenceCounts}`,
+    "",
+    ...(findings.length === 0 ? ["No findings were observed in completed coverage."] : findings),
     ...(safe.issues.length > findings.length
       ? [`- ${String(safe.issues.length - findings.length)} more findings are in the report.`]
       : []),
@@ -83,8 +129,8 @@ export function renderJunitReport(
     ? ['    <testcase classname="tvdoctor" name="audit completed"/>']
     : safe.issues.map((issue) => {
         const opening = `    <testcase classname="tvdoctor.${xml(issue.pack)}" name="${xml(issue.id)}: ${xml(compact(issue.title))}">`;
-        const detail = `${issue.severity.toUpperCase()}: ${compact(issue.observed)}`;
-        return issueViolatesPolicy(issue.severity, failOn)
+        const detail = `${issue.severity.toUpperCase()} · ${issue.confidence.toUpperCase()}: ${compact(issue.observed)}`;
+        return findingViolatesPolicy(issue, failOn)
           ? `${opening}\n      <failure type="tvdoctor.${xml(issue.severity)}" message="${xml(detail)}">${xml(compact(issue.description))}</failure>\n    </testcase>`
           : `${opening}\n      <system-out>${xml(detail)}</system-out>\n    </testcase>`;
       });

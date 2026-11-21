@@ -106,11 +106,105 @@ describe("baseline file adapter", () => {
       newIssues: 1,
       resolvedIssues: 0,
       unchangedIssues: 1,
+      addedFocusTargets: 0,
+      removedFocusTargets: 0,
+      directionalTransitionChanges: 0,
+      latencyRegressions: 0,
+      markdownPath: join(root, "comparison.md"),
     });
     expect(JSON.parse(await readFile(comparisonPath, "utf8"))).toMatchObject({
       schemaVersion: "tvdoctor.comparison/v1",
       status: "regressed",
     });
+    const comparisonMarkdown = await readFile(join(root, "comparison.md"), "utf8");
+    expect(comparisonMarkdown).toContain("# TVDoctor Baseline Comparison");
+    expect(comparisonMarkdown).toContain("### Introduced findings");
+    expect(comparisonMarkdown).toContain(added.id);
+  });
+
+  it("renders a compact Mermaid map for changed navigation transitions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-baseline-navigation-map-"));
+    temporaryDirectories.push(root);
+    const baselineReportPath = join(root, "baseline-report.json");
+    const currentReportPath = join(root, "current-report.json");
+    const inventoryPath = join(root, "inventory.json");
+    const baselinePath = join(root, "baseline.json");
+    const comparisonPath = join(root, "comparison.json");
+    const baselineInventory = {
+      status: "complete" as const,
+      screens: [{ key: "home", label: "Home" }],
+      focusTargets: [
+        { key: "hero", screenKey: "home", role: "button", name: "Play" },
+        { key: "settings", screenKey: "home", role: "button", name: "Settings" },
+      ],
+      transitions: [{
+        key: "home/hero:directional",
+        fromScreenKey: "home",
+        fromFocusKey: "hero",
+        action: "RIGHT" as const,
+        toScreenKey: "home",
+        toFocusKey: "settings",
+      }],
+      latencies: [],
+    };
+    const currentInventory = {
+      ...baselineInventory,
+      transitions: [{
+        ...baselineInventory.transitions[0],
+        action: "DOWN" as const,
+      }],
+    };
+    await writeFile(baselineReportPath, renderReportJson(report("baseline-run", [])));
+    await writeFile(currentReportPath, renderReportJson(report("current-run", [])));
+    await writeFile(inventoryPath, JSON.stringify(baselineInventory));
+    await createBaselineFromFiles({
+      reportPath: baselineReportPath,
+      inventoryPath,
+      outputPath: baselinePath,
+    });
+    await writeFile(inventoryPath, JSON.stringify(currentInventory));
+
+    const compared = await compareBaselineFromFiles({
+      baselinePath,
+      reportPath: currentReportPath,
+      inventoryPath,
+      outputPath: comparisonPath,
+    });
+
+    expect(compared.directionalTransitionChanges).toBe(1);
+    const markdown = await readFile(join(root, "comparison.md"), "utf8");
+    expect(markdown).toContain("## Changed navigation map");
+    expect(markdown).toContain("```mermaid\nflowchart LR");
+    expect(markdown).toContain('N0 -- "was RIGHT" --> N1');
+    expect(markdown).toContain('N0 -- "now DOWN" --> N1');
+    expect(markdown).toContain('N0["home/hero"]');
+    expect(markdown).toContain('N1["home/settings"]');
+  });
+
+  it("does not render a navigation-change diagram when comparison fails closed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tvdoctor-baseline-failed-closed-map-"));
+    temporaryDirectories.push(root);
+    const reportPath = join(root, "report.json");
+    const inventoryPath = join(root, "inventory.json");
+    const baselinePath = join(root, "baseline.json");
+    const comparisonPath = join(root, "comparison.json");
+    await writeFile(reportPath, renderReportJson(report("baseline-run", [])));
+    await writeFile(inventoryPath, JSON.stringify(inventory));
+    await createBaselineFromFiles({ reportPath, inventoryPath, outputPath: baselinePath });
+    await writeFile(inventoryPath, JSON.stringify({ ...inventory, status: "partial" }));
+
+    const compared = await compareBaselineFromFiles({
+      baselinePath,
+      reportPath,
+      inventoryPath,
+      outputPath: comparisonPath,
+    });
+
+    expect(compared.status).toBe("failed-closed");
+    expect(compared.shouldFail).toBe(true);
+    const markdown = await readFile(join(root, "comparison.md"), "utf8");
+    expect(markdown).toContain("Status: **FAILED-CLOSED**");
+    expect(markdown).not.toContain("## Changed navigation map");
   });
 
   it("refuses to overwrite a reviewed baseline", async () => {

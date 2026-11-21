@@ -6,6 +6,10 @@ import { PlaywrightWebDriver } from "@tvdoctor/driver-web";
 const ACTIONS = ["RIGHT", "SELECT", "DOWN"] as const;
 const CAROUSEL_SIZE = 240;
 
+// This stress benchmark performs hundreds of browser resets. Recording every
+// Playwright step can consume hundreds of MiB and distort the benchmark itself.
+test.use({ trace: "off" });
+
 function requireBaseURL(baseURL: string | undefined): string {
   if (baseURL === undefined) throw new Error("The M8 fixture URL is required.");
   return baseURL;

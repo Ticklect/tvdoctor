@@ -24,7 +24,7 @@ import {
   type Response,
 } from "playwright";
 import { capturePageObservation } from "./page-observation.js";
-import { sanitiseObservedText, sanitiseUrl } from "./security.js";
+import { sanitiseObservedText, sanitiseSnapshotUrl, sanitiseUrl } from "./security.js";
 import {
   installSettleTracker,
   readSettleBaseline,
@@ -112,6 +112,7 @@ interface NormalisedOptions {
   readonly maxUiScanNodes: number;
   readonly maxUiTextChars: number;
   readonly navigationTimeoutMs: number;
+  readonly recordVideoDirectory?: string;
   readonly recentNetworkEntries: number;
   readonly settle: SettleConfiguration;
 }
@@ -144,6 +145,9 @@ function normaliseOptions(options: PlaywrightWebDriverOptions): NormalisedOption
     maxUiScanNodes: positiveInteger(options.maxUiScanNodes, DEFAULT_MAX_UI_SCAN_NODES),
     maxUiTextChars: positiveInteger(options.maxUiTextChars, DEFAULT_MAX_UI_TEXT_CHARS),
     navigationTimeoutMs: positiveDuration(options.navigationTimeoutMs, DEFAULT_NAVIGATION_TIMEOUT_MS),
+    ...(options.recordVideoDirectory === undefined
+      ? {}
+      : { recordVideoDirectory: resolve(options.recordVideoDirectory) }),
     recentNetworkEntries: positiveInteger(options.recentNetworkEntries, DEFAULT_RECENT_NETWORK_ENTRIES),
     settle: {
       noResponseGraceMs: nonNegativeDuration(
@@ -224,6 +228,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #requestsStarted = 0;
   #requestsSucceeded = 0;
   #retirement: Promise<void> | null = null;
+  #recordedVideoPath: string | null = null;
   #screenshotSequence = 0;
   #unusable = false;
 
@@ -242,6 +247,11 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     };
   }
 
+  /** Final WebM path after close(); null when recording was not requested or could not be finalised. */
+  getRecordedVideoPath(): string | null {
+    return this.#recordedVideoPath;
+  }
+
   async launch(app: AppReference, options?: DriverOperationOptions): Promise<void> {
     return await this.#runOperation(options, async () => {
     if (app.launchUri === undefined || app.launchUri.trim().length === 0) {
@@ -251,6 +261,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     await this.#closeContext();
     this.#clearTelemetry();
     this.#currentApp = app;
+    this.#recordedVideoPath = null;
 
     try {
       if (this.#browser === null || !this.#browser.isConnected()) {
@@ -260,9 +271,15 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
         });
       }
 
+      if (this.#options.recordVideoDirectory !== undefined) {
+        await mkdir(this.#options.recordVideoDirectory, { recursive: true });
+      }
       this.#context = await this.#browser.newContext({
         viewport: DEFAULT_VIEWPORT,
         ...this.#options.contextOptions,
+        ...(this.#options.recordVideoDirectory === undefined
+          ? {}
+          : { recordVideo: { dir: this.#options.recordVideoDirectory } }),
       });
       this.#page = await this.#context.newPage();
       this.#attachPageTelemetry(this.#page);
@@ -374,7 +391,9 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       };
     }
 
-    const location = availableObservation(sanitiseUrl(page.url()));
+    // Unlike network/log telemetry, snapshot identity retains only opaque,
+    // allowlisted route distinctions so SPA views do not collapse together.
+    const location = availableObservation(sanitiseSnapshotUrl(page.url()));
     try {
       const observation = await capturePageObservation(page, this.#options.maxUiNodes, {
         maxDepth: this.#options.maxUiDepth,
@@ -471,12 +490,31 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       });
     }
 
-    if (strategy === "reload") {
-      await page.reload({ waitUntil: "domcontentloaded" });
-    } else {
-      await page.goto(launchUri, { waitUntil: "domcontentloaded" });
+    try {
+      if (strategy === "reload") {
+        // Reload must retain this exact tab: creating another page would lose
+        // sessionStorage and silently change the state used for replay.
+        await page.reload({ waitUntil: "domcontentloaded" });
+      } else {
+        // Relaunch navigates the existing tab back to the launch URI; only an
+        // explicit clear-data reset removes per-tab storage above.
+        await page.goto(launchUri, { waitUntil: "domcontentloaded" });
+      }
+      const settled = await waitForInitialPageSettle(page, this.#options.settle);
+      if (settled.timedOut) {
+        throw new Error("The page did not reach the configured stability threshold after reset.");
+      }
+    } catch (error) {
+      if (options?.signal?.aborted === true) throw options.signal.reason;
+      // A navigation may have partially committed before failing. Neither a
+      // fresh tab nor a second navigation can prove equivalent session state.
+      // Fail closed and prohibit subsequent operations on the uncertain page.
+      this.#unusable = true;
+      throw new Error(
+        `Web ${strategy} reset did not complete in its original tab; the driver state is unverified.`,
+        { cause: error },
+      );
     }
-    await waitForInitialPageSettle(page, this.#options.settle);
     } finally {
       this.#performanceProfile.resetMs += Math.max(0, performance.now() - profileStartedAt);
     }
@@ -516,7 +554,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     operation: () => Promise<T>,
   ): Promise<T> {
     if (this.#unusable) {
-      throw new Error("Playwright web driver is unusable after cancellation.");
+      throw new Error("Playwright web driver is unusable after cancellation or a failed reset.");
     }
     const signal = options?.signal;
     if (signal === undefined) return await operation();
@@ -558,12 +596,31 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
   async #closeContext(): Promise<void> {
     const context = this.#context;
+    const page = this.#activePage();
+    const video = this.#options.recordVideoDirectory === undefined ? null : page?.video() ?? null;
     this.#page = null;
     this.#context = null;
     this.#pendingRequestEntries = new WeakMap();
     this.#pendingRequestsRetained.clear();
     if (context !== null) {
-      await context.close();
+      let closeFailure: unknown;
+      try {
+        await context.close();
+      } catch (error) {
+        closeFailure = error;
+      }
+      if (video !== null && this.#options.recordVideoDirectory !== undefined) {
+        const finalPath = resolve(this.#options.recordVideoDirectory, "audit-session.webm");
+        try {
+          await video.saveAs(finalPath);
+          await video.delete().catch(() => undefined);
+          this.#recordedVideoPath = finalPath;
+        } catch {
+          // Video is optional evidence; finalisation failures cannot change audit classification.
+          this.#recordedVideoPath = null;
+        }
+      }
+      if (closeFailure !== undefined) throw closeFailure;
     }
   }
 

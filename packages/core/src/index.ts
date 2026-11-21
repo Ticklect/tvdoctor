@@ -1,6 +1,7 @@
 export * from "./action-settling.js";
 export * from "./errors.js";
 export { NAVIGATION_UI_TREE_LIMITS } from "./bounded-ui-tree.js";
+export * from "./driver-conformance.js";
 export * from "./explorer.js";
 export {
   fingerprintSnapshot,
@@ -11,6 +12,7 @@ export {
 } from "./fingerprint.js";
 export * from "./graph.js";
 export * from "./navigation-diagnostics.js";
+export * from "./navigation-focus-graph.js";
 export * from "./operation-deadline.js";
 export * from "./replay.js";
 export * from "./sequence-minimizer.js";

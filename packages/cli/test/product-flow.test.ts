@@ -18,6 +18,8 @@ import {
   ANDROID_TRAVERSAL_VERIFIED_LIVE_ONLY,
   ANDROID_TRAVERSAL_RESTORATION,
   ANDROID_EXPLORATION_BUDGETS,
+  androidBuildToolsPreflight,
+  androidObserverPreflight,
   androidPreflight,
   buildAndroidExplorationEvidence,
   buildAndroidTraversalLedger,
@@ -187,6 +189,26 @@ describe("APK inspection", () => {
     expect(apk.minSdk).toBe(21);
   });
 
+  it("preserves a fully-qualified launcher activity outside the application package namespace", async () => {
+    const apk = await inspectApk("D:/apps/NovaVideoPlayer.apk", {
+      environment: { ANDROID_SDK_ROOT: "D:/Android/Sdk" },
+      toolCommands: [process.platform === "win32" ? "D:/tools/aapt2.exe" : "/tools/aapt2"],
+      exists: async (path) => path.endsWith(process.platform === "win32" ? "aapt2.exe" : "aapt2"),
+      runTool: async () => ({
+        stdout: [
+          "package: name='org.courville.nova' versionCode='100' versionName='6.4.64'",
+          "application-label:'Nova Video Player'",
+          "leanback-launchable-activity: name='com.archos.mediacenter.video.leanback.MainActivityLeanback'",
+          "native-code: 'x86_64'",
+          "sdkVersion:'23'",
+          "targetSdkVersion:'35'",
+        ].join("\n"),
+        stderr: "",
+      }),
+    });
+    expect(apk.leanbackActivity).toBe("com.archos.mediacenter.video.leanback.MainActivityLeanback");
+  });
+
   it("blocks architecture mismatch before installation", () => {
     const result = checkApkCompatibility(
       { minSdk: 24, supportedAbis: ["arm64-v8a"] },
@@ -231,6 +253,36 @@ describe("tvdoctor start", () => {
     expect(safeTarget("HTTPS://Example.COM")).toBe("https://example.com/");
   });
 
+  it("redacts query and fragment data from guided web terminal summaries", async () => {
+    let stdout = "";
+    const selections = [0, 0];
+    const terminal: StartTerminal = {
+      isInteractive: true,
+      prompt: async () => "https://example.test/watch?token=top-secret#account",
+      select: async () => selections.shift() ?? null,
+    };
+    const code = await runCli(["start"], {
+      ...contextWithTerminal(terminal),
+      io: { writeStdout: (value) => { stdout += value; }, writeStderr: () => undefined },
+      runtimeProbe: async () => ({ capabilities: ["remote-input"] }),
+      operations: {
+        replayIssue: async () => ({ status: "fixed", details: [] }),
+        testTarget: async () => ({
+          status: "completed",
+          issueCount: 0,
+          highestSeverity: null,
+          reportPath: null,
+          details: ["Target https://example.test/watch?token=top-secret#account completed"],
+        }),
+      },
+    });
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(stdout).toContain("Target: https://example.test/watch\n");
+    expect(stdout).toContain("Target https://example.test/watch completed");
+    expect(stdout).not.toMatch(/top-secret|#account/u);
+  });
+
   it("does not offer cookie actions for a non-consent setup blocker", async () => {
     let selections = 0;
     let auditStarted = false;
@@ -266,6 +318,7 @@ describe("tvdoctor start", () => {
   it("confirms a successful report action after a website scan", async () => {
     let stdout = "";
     let openedPath: string | null = null;
+    let requestedPacks: readonly string[] | undefined;
     const selections = [0, 0, 0];
     const terminal: StartTerminal = {
       isInteractive: true,
@@ -289,17 +342,21 @@ describe("tvdoctor start", () => {
       operations: {
         replayIssue: async () => ({ status: "fixed", details: [] }),
         detectWebsiteStartup: async () => ({ status: "ready", detail: "Ready." }),
-        testTarget: async () => ({
-          status: "completed",
-          issueCount: 0,
-          highestSeverity: null,
-          reportPath: "D:/reports/report.json",
-          details: ["All reachable work was exhausted."],
-        }),
+        testTarget: async (request) => {
+          requestedPacks = request.packs;
+          return {
+            status: "completed",
+            issueCount: 0,
+            highestSeverity: null,
+            reportPath: "D:/reports/report.json",
+            details: ["All reachable work was exhausted."],
+          };
+        },
       },
     });
 
     expect(code).toBe(EXIT_CODES.success);
+    expect(requestedPacks).toEqual(["navigation"]);
     expect(openedPath).toMatch(/[\\/]reports[\\/]report\.html$/u);
     expect(stdout).toContain("sent the report to your default viewer");
   });
@@ -626,6 +683,55 @@ describe("Android final target validation", () => {
       "org.example.tv",
       async () => undefined,
     )).rejects.toThrow(/ended outside org\.example\.tv/u);
+  });
+
+  it("does not persist raw local diagnostics in final target validation evidence", () => {
+    const result = {
+      termination: {
+        reason: "driver-error",
+        complete: false,
+        detail: "ADB command failed: adb -s 192.0.2.40:5555 shell dumpsys window cwd=C:\\Users\\alice\\Android",
+      },
+      budgets: { maxActions: 10, maxStates: 10, maxDepth: 4, maxDurationMs: 60_000 },
+      actionOrder: [],
+      graph: {
+        screens: { states: [], transitions: [] },
+        focus: { states: [], transitions: [] },
+        actions: [],
+      },
+      statistics: {
+        physicalActions: 0,
+        focusStates: 0,
+        screenStates: 0,
+        elapsedMs: 1,
+      },
+      restorationDiagnostics: [],
+    } as never;
+    const evidence = buildAndroidExplorationEvidence(
+      result,
+      "org.example.tv",
+      null,
+      "spawn C:\\Users\\alice\\adb.exe shell dumpsys cwd=/home/alice/private",
+      "android-private-diagnostic-test",
+    ) as never as {
+      finalTargetValidation: { status: string; detail?: string };
+      termination: { reason: string; detail?: string };
+    };
+
+    expect(evidence.finalTargetValidation).toEqual({
+      status: "failed",
+      detail: "Android final target ownership could not be verified.",
+    });
+    expect(evidence.termination).toEqual({
+      reason: "driver-error",
+      complete: false,
+      detail: "Android traversal stopped at driver-error; raw device diagnostics were withheld.",
+    });
+    expect(JSON.stringify(evidence)).not.toContain("C:\\Users\\alice");
+    expect(JSON.stringify(evidence)).not.toContain("/home/alice/private");
+    expect(JSON.stringify(evidence)).not.toContain("dumpsys");
+    expect(JSON.stringify(evidence)).not.toContain("192.0.2.40:5555");
+    expect(JSON.stringify(evidence)).not.toContain("adb -s");
   });
 });
 
@@ -1185,6 +1291,190 @@ describe("Android device preflight", () => {
     expect(result.devices[1]).toMatchObject({ online: true, model: "Android TV" });
     expect(result.devices[2]?.detail).toContain("Offline");
     expect(created).toBe(3);
+  });
+
+  it("reports no connected device without treating ADB itself as unavailable", async () => {
+    const result = await androidPreflight("adb", {
+      createDriver: () => ({
+        listDevices: async () => [],
+        getDeviceMetadata: async () => { throw new Error("unused"); },
+        close: () => undefined,
+      }),
+    });
+
+    expect(result.available).toBe(true);
+    expect(result.message).toBe("ADB is available, but no online Android devices were found.");
+    expect(result.devices).toEqual([]);
+  });
+
+  it.each([
+    ["unauthorized", "Unauthorized. Accept the USB debugging prompt on the device."],
+    ["offline", "Offline. Wake or reconnect the device."],
+  ] as const)("preserves an actionable %s device state", async (state, detail) => {
+    const result = await androidPreflight("adb", {
+      createDriver: () => ({
+        listDevices: async () => [{ serial: "tv-1", state, model: "Living Room TV" }],
+        getDeviceMetadata: async () => { throw new Error("unused"); },
+        close: () => undefined,
+      }),
+    });
+
+    expect(result.available).toBe(true);
+    expect(result.devices).toEqual([expect.objectContaining({
+      serial: "tv-1",
+      state,
+      online: false,
+      detail,
+    })]);
+  });
+
+  it("keeps metadata-probe failure distinct from having no connected devices", async () => {
+    const result = await androidPreflight("adb", {
+      createDriver: (options) => options.serial === undefined
+        ? {
+            listDevices: async () => [{ serial: "tv-1", state: "device", model: "Living Room TV" }],
+            getDeviceMetadata: async () => { throw new Error("unused"); },
+            close: () => undefined,
+          }
+        : {
+            listDevices: async () => [],
+            getDeviceMetadata: async () => { throw new Error("device metadata probe failed"); },
+            close: () => undefined,
+          },
+    });
+
+    expect(result.available).toBe(true);
+    expect(result.devices[0]).toMatchObject({
+      serial: "tv-1",
+      state: "device",
+      online: false,
+      detail: "device metadata probe failed",
+    });
+    expect(result.message).toContain("metadata");
+    expect(result.message).not.toContain("no online Android devices");
+  });
+
+  it("finds aapt2 from PATH when no Android SDK root is configured", async () => {
+    const separator = process.platform === "win32" ? ";" : ":";
+    const executable = process.platform === "win32" ? "aapt2.exe" : "aapt2";
+    const expected = process.platform === "win32" ? `D:\\tools\\${executable}` : `/tools/${executable}`;
+    const environment = {
+      PATH: process.platform === "win32" ? `D:\\missing${separator}D:\\tools` : `/missing${separator}/tools`,
+    };
+    const exists = async (candidate: string): Promise<boolean> => candidate === expected;
+    const result = await androidBuildToolsPreflight({
+      environment,
+      exists,
+    });
+    let inspectedWith: string | null = null;
+    const apk = await inspectApk("D:/apps/example.apk", {
+      environment,
+      exists,
+      runTool: async (command) => {
+        inspectedWith = command;
+        return {
+          stdout: [
+            "package: name='org.example.tv' versionCode='1' versionName='1.0'",
+            "leanback-launchable-activity: name='org.example.tv.MainActivity'",
+            "sdkVersion:'23'",
+          ].join("\n"),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.available).toBe(true);
+    expect(result.path).toBe(expected);
+    expect(inspectedWith).toBe(expected);
+    expect(apk.packageName).toBe("org.example.tv");
+  });
+
+  it("reports missing build-tools without probing an APK", async () => {
+    const result = await androidBuildToolsPreflight({
+      environment: { PATH: "" },
+      exists: async () => false,
+    });
+
+    expect(result).toEqual({
+      available: false,
+      path: null,
+      detail: "Android SDK build-tools (aapt2/aapt) were not found.",
+    });
+  });
+
+  it("reports Observer absent without mutating the device", async () => {
+    const calls: string[][] = [];
+    const result = await androidObserverPreflight("adb", "tv-1", {
+      runAdb: async (_adb, arguments_) => {
+        calls.push([...arguments_]);
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.detail).toContain("not installed");
+    expect(calls).toEqual([["-s", "tv-1", "shell", "pm", "path", "org.tvdoctor.observer"]]);
+  });
+
+  it("fails Observer readiness before touching the device when the packaged Observer asset is invalid", async () => {
+    const calls: readonly string[][] = [];
+    const result = await androidObserverPreflight("adb", "tv-1", {
+      validateObserverAsset: async () => {
+        throw new Error("observer checksum mismatch at C:\\Users\\alice\\observer.apk; adb shell SECRET_COMMAND");
+      },
+      runAdb: async (_adbPath, arguments_) => {
+        (calls as string[][]).push([...arguments_]);
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.detail).toBe("The packaged TVDoctor Observer failed integrity validation.");
+    expect(result.detail).not.toContain("C:\\Users\\alice");
+    expect(result.detail).not.toContain("adb shell");
+    expect(result.detail).not.toContain("SECRET_COMMAND");
+    expect(calls).toEqual([]);
+  });
+
+  it("reports Observer installed but accessibility disabled using read-only queries", async () => {
+    const calls: string[][] = [];
+    const result = await androidObserverPreflight("adb", "tv-1", {
+      runAdb: async (_adb, arguments_) => {
+        calls.push([...arguments_]);
+        const command = arguments_.join(" ");
+        if (command.includes("pm path")) return { stdout: "package:/data/app/org.tvdoctor.observer/base.apk", stderr: "" };
+        if (command.includes("accessibility_enabled")) return { stdout: "0", stderr: "" };
+        return { stdout: "null", stderr: "" };
+      },
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.detail).toContain("accessibility access is not enabled");
+    expect(calls.every((arguments_) => {
+      const command = arguments_.join(" ");
+      return !/\b(?:install|uninstall|forward)\b/u.test(command)
+        && !command.includes("settings put")
+        && !command.includes("content call");
+    })).toBe(true);
+  });
+
+  it("reports Observer ready only when accessibility is globally enabled and the service is selected", async () => {
+    const result = await androidObserverPreflight("adb", "tv-1", {
+      runAdb: async (_adb, arguments_) => {
+        const command = arguments_.join(" ");
+        if (command.includes("pm path")) return { stdout: "package:/data/app/org.tvdoctor.observer/base.apk", stderr: "" };
+        if (command.includes("accessibility_enabled")) return { stdout: "1", stderr: "" };
+        return {
+          stdout: "com.example.other/.Service:org.tvdoctor.observer/.ObserverAccessibilityService",
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result).toEqual({
+      status: "ok",
+      detail: "TVDoctor Observer is installed and accessibility access is enabled on tv-1.",
+    });
   });
 
   it("rejects invalid guided URLs without starting an audit", async () => {
