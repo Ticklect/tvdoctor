@@ -18,6 +18,13 @@ export const NAVIGATION_DIAGNOSTIC_RULES = {
   focusVisibility: "remote.focus-visibility",
   focusEscape: "remote.focus-escape",
   staleFocus: "remote.stale-focus",
+  keyboardModalFocusEscape: "keyboard.modal-focus-escape",
+  keyboardModalTabFocusLoss: "keyboard.modal-tab-focus-loss",
+  keyboardModalOpenFocusNotTransferred: "keyboard.modal-open-focus-not-transferred",
+  keyboardOffscreenFocus: "keyboard.focus-offscreen",
+  keyboardPossibleTrap: "keyboard.possible-focus-trap",
+  keyboardUnvisitedControl: "keyboard.unvisited-control",
+  keyboardEscapeFocusLoss: "keyboard.escape-focus-loss",
 } as const;
 
 export type NavigationDiagnosticRule =

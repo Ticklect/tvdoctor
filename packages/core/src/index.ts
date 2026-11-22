@@ -11,6 +11,7 @@ export {
   type StateFingerprint,
 } from "./fingerprint.js";
 export * from "./graph.js";
+export * from "./keyboard-navigation-diagnostics.js";
 export * from "./navigation-diagnostics.js";
 export * from "./navigation-focus-graph.js";
 export * from "./operation-deadline.js";

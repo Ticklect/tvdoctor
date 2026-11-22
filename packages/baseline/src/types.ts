@@ -84,8 +84,11 @@ export interface ComparisonBlocker {
   readonly code:
     | "baseline-invalid"
     | "baseline-incompatible"
+    | "baseline-version-incompatible"
+    | "baseline-mode-incompatible"
     | "current-report-partial"
     | "current-inventory-partial"
+    | "navigation-coverage-incomplete"
     | "capability-missing"
     | "pack-incomplete"
     | "observation-missing";
@@ -96,6 +99,15 @@ export interface TransitionChange {
   readonly key: string;
   readonly before: BaselineTransitionObservation;
   readonly after: BaselineTransitionObservation;
+}
+
+export interface IssueMetadataChange {
+  readonly id: string;
+  readonly rule: string;
+  readonly before: BaselineIssueObservation;
+  readonly after: BaselineIssueObservation;
+  readonly severityEscalated: boolean;
+  readonly confidenceDowngraded: boolean;
 }
 
 export interface LatencyRegression {
@@ -112,6 +124,8 @@ export interface BaselineComparisonChanges {
   readonly resolvedIssues: readonly BaselineIssueObservation[];
   /** Findings present in both baseline and current run, keyed by rule + issue id. */
   readonly unchangedIssues: readonly BaselineIssueObservation[];
+  /** Same finding identity, but its severity/confidence/pack metadata changed. */
+  readonly issueMetadataChanges: readonly IssueMetadataChange[];
   readonly screensAdded: readonly BaselineScreenObservation[];
   readonly screensRemoved: readonly BaselineScreenObservation[];
   readonly focusAdded: readonly BaselineFocusObservation[];

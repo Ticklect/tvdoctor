@@ -159,7 +159,9 @@ export async function compareBaselineFromFiles(
     + comparison.changes.focusRemoved.length
     + comparison.changes.transitionsRemoved.length
     + comparison.changes.transitionsChanged.length
-    + comparison.changes.latencyRegressions.length;
+    + comparison.changes.latencyRegressions.length
+    + comparison.changes.issueMetadataChanges.filter((change) =>
+      change.severityEscalated || change.confidenceDowngraded).length;
   const outputPath = await writeNewJson(request.outputPath, renderComparisonJson(comparison));
   const markdownPath = await writeNewJson(markdownSibling(request.outputPath), renderComparisonReviewMarkdown(comparison));
   return {
@@ -170,6 +172,9 @@ export async function compareBaselineFromFiles(
     unchangedIssues: comparison.status === "failed-closed"
       ? 0
       : Math.max(0, baselineIssueCount - comparison.changes.resolvedIssues.length),
+    issueMetadataChanges: comparison.changes.issueMetadataChanges.length,
+    severityEscalations: comparison.changes.issueMetadataChanges.filter((change) => change.severityEscalated).length,
+    confidenceDowngrades: comparison.changes.issueMetadataChanges.filter((change) => change.confidenceDowngraded).length,
     structuralRegressions,
     addedFocusTargets: comparison.changes.focusAdded.length,
     removedFocusTargets: comparison.changes.focusRemoved.length,

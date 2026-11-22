@@ -59,6 +59,13 @@ const RULE_ORDER: Readonly<Record<NavigationDiagnosticRule, number>> = {
   [NAVIGATION_DIAGNOSTIC_RULES.focusVisibility]: 9,
   [NAVIGATION_DIAGNOSTIC_RULES.focusEscape]: 10,
   [NAVIGATION_DIAGNOSTIC_RULES.staleFocus]: 11,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardModalFocusEscape]: 12,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardModalTabFocusLoss]: 12,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardModalOpenFocusNotTransferred]: 12,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardOffscreenFocus]: 13,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardPossibleTrap]: 14,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardUnvisitedControl]: 15,
+  [NAVIGATION_DIAGNOSTIC_RULES.keyboardEscapeFocusLoss]: 16,
 };
 
 /**

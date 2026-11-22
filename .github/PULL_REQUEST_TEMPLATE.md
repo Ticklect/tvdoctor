@@ -1,6 +1,6 @@
 ## Problem and scope
 
-<!-- What observable problem does this change address? What is deliberately out of scope? -->
+<!-- Which user workflow improves? For MCP changes, identify the tools, affected clients, and any compatibility impact. -->
 
 ## Evidence
 
@@ -16,6 +16,7 @@
 - [ ] Visual assets were reviewed in both light and dark backgrounds.
 - [ ] Relevant unit and real-platform gates pass on the first attempt.
 - [ ] Partial/inconclusive results are not presented as clean.
+- [ ] Fix-verification changes use the original finding and describe the supported evidence.
 - [ ] Public behaviour, compatibility, limitations, and changelog are updated.
 - [ ] Generated artifacts, package tarballs, secrets, and sensitive target data are not committed.
 - [ ] Driver/support status is no stronger than the attached evidence.

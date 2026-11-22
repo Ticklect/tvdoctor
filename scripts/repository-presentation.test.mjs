@@ -62,7 +62,7 @@ function runActionCommentExecution({
   actionPath,
 }) {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
-  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8');
+  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8').replace(/\r\n/gu, '\n');
   const workspace = mkdtempSync(path.join(tmpdir(), 'tvdoctor-action-comment-'));
   try {
     const reportDirectory = path.join(workspace, 'tvdoctor-report');
@@ -166,7 +166,7 @@ function runActionCommentScenario(options) {
 
 function runJobSummaryGraphScenario(navigationGraph) {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
-  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8');
+  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8').replace(/\r\n/gu, '\n');
   const workspace = mkdtempSync(path.join(tmpdir(), 'tvdoctor-job-summary-'));
   try {
     const reportDirectory = path.join(workspace, 'tvdoctor-report');
@@ -266,12 +266,11 @@ test('hosted runtime matrix builds a rehearsal bundle without requiring an unuse
   assert.match(releaseBuilder, /Release tag v\$Version already exists/u);
 });
 
-test('puts the navigation-first quick path before advanced diagnostics', () => {
+test('links the MCP-first landing page to the navigation CLI reference', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const readme = readFileSync(path.join(repositoryRoot, 'README.md'), 'utf8');
   const cliReadme = readFileSync(path.join(repositoryRoot, 'packages/cli/README.md'), 'utf8');
-  assert.match(readme, /tvdoctor scan https:\/\/your-tv-app\.example/u);
-  assert.match(readme, /navigation-first/u);
+  assert.match(readme, /\[CLI command reference\]\(packages\/cli\/README\.md\)/u);
   assert.match(readme, /VERIFIED.*REVIEW.*UNTESTED/su);
   assert.match(cliReadme, /npx tvdoctor scan/u);
   assert.match(readme, /npm run tvdoctor -- scan http:\/\/127\.0\.0\.1:5173/u);
@@ -290,7 +289,7 @@ test('root quick path does not give source users an installed-only tvdoctor comm
     /After installing the Windows bundle or building from source,[\s\S]{0,240}`?tvdoctor scan/u,
   );
   assert.match(readme, /source checkout[\s\S]{0,240}npm run tvdoctor -- scan/iu);
-  assert.match(readme, /source checkout[\s\S]{0,900}later CLI examples[\s\S]{0,120}`npm run tvdoctor --`/iu);
+  assert.doesNotMatch(readme, /^\s*tvdoctor (?:scan|ui)\b/mu);
   assert.match(cliReadme, /source checkout[\s\S]{0,900}later CLI examples[\s\S]{0,120}`npm run tvdoctor --`/iu);
 });
 
@@ -318,18 +317,27 @@ test('replay docs state the exact standalone reproduced exit code', () => {
   }
 });
 
-test('first-run docs lead with audience, current scope, and the packaged seeded demo', () => {
+test('first-run docs lead with the MCP repair workflow and retain the seeded TV demo', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const readme = readFileSync(path.join(repositoryRoot, 'README.md'), 'utf8');
   const cliReadme = readFileSync(path.join(repositoryRoot, 'packages/cli/README.md'), 'utf8');
   const demo = readFileSync(path.join(repositoryRoot, 'docs/demo.md'), 'utf8');
   const examples = readFileSync(path.join(repositoryRoot, 'docs/examples.md'), 'utf8');
 
-  const firstScreen = readme.slice(0, 5_000);
-  assert.match(firstScreen, /## Who TVDoctor is for/u);
-  assert.match(firstScreen, /## Current scope/u);
-  assert.match(firstScreen, /## Try the packaged demo/u);
-  assert.match(firstScreen, /\[Sample report\]\(docs\/sample-report\.md\)/u);
+  for (const [label, markdown, demoHeading] of [
+    ['README', readme, '## Try the packaged demo'],
+    ['CLI README', cliReadme, '## First success: packaged demo'],
+  ]) {
+    const start = markdown.indexOf('## Connect your coding agent');
+    const end = markdown.indexOf('## Current scope', start);
+    assert.ok(start >= 0 && end > start, `${label} should present MCP setup before scope details`);
+    assert.ok(end < markdown.indexOf(demoHeading), `${label} should present the agent path before the TV demo`);
+    const setup = markdown.slice(start, end);
+    assert.match(setup, /npm ci[\s\S]{0,100}npm run build:packages[\s\S]{0,100}npm run tvdoctor -- setup/u);
+    assert.match(setup, /tvdoctor_scan[\s\S]*tvdoctor_triage[\s\S]*tvdoctor_verify_fix/u);
+    assert.match(setup, /partial|untested/iu);
+  }
+  assert.match(readme, /\[Sample report\]\(docs\/sample-report\.md\)/u);
   assert.match(demo, /\[sample report\]\(sample-report\.md\)/iu);
   assert.ok(
     readme.indexOf('## Try the packaged demo') < readme.indexOf('## Experimental boundaries'),
@@ -342,7 +350,7 @@ test('first-run docs lead with audience, current scope, and the packaged seeded 
     ['demo guide', demo],
     ['examples', examples],
   ]) {
-    assert.match(markdown, /tvdoctor demo/u, `${label} should show the first-success demo command`);
+    assert.match(markdown, /tvdoctor (?:-- )?demo/u, `${label} should show the first-success demo command`);
     assert.match(markdown, /6 actions/u, `${label} should preserve the proven action count`);
     assert.match(markdown, /1 state/u, `${label} should preserve the proven state count`);
     assert.match(markdown, /1 issue/u, `${label} should preserve the proven issue count`);
@@ -361,7 +369,7 @@ test('distribution, setup, experimental boundaries, and exit codes stay consiste
 
   for (const [label, markdown] of [['README', readme], ['CLI README', cliReadme]]) {
     assert.match(markdown, /not published to npm yet/iu, `${label} must not imply npm availability`);
-    assert.match(markdown, /tvdoctor setup/u, `${label} should explain explicit Chromium setup`);
+    assert.match(markdown, /tvdoctor (?:-- )?setup/u, `${label} should explain explicit Chromium setup`);
     assert.match(markdown, /web[^\n]*Experimental/iu, `${label} should mark web support Experimental`);
     assert.match(markdown, /Android TV[^\n]*Experimental/iu, `${label} should mark Android TV support Experimental`);
     assert.match(markdown, /\| `?0`? \|[^\n]*requested (?:failure )?policy[^\n]*seeded[^\n]*demo/iu, `${label} should document demo success under code 0`);
@@ -401,7 +409,7 @@ test('package smoke explicitly proves npx cannot install a missing package', () 
 
 test('composite action keeps baseline review read-only by default and gates PR writes', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
-  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8');
+  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8').replace(/\r\n/gu, '\n');
   const workflow = readFileSync(path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
 
   assert.match(action, /\n {2}baseline:\n[\s\S]{0,180}default:\s*["']{0,1}["']{0,1}\s*$/mu);
@@ -594,7 +602,7 @@ test('PR comment security preflight blocks unsafe events and tokens before netwo
 
 test('composite action prefers an explicit baseline and safely discovers the reviewed committed baseline', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
-  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8');
+  const action = readFileSync(path.join(repositoryRoot, 'action.yml'), 'utf8').replace(/\r\n/gu, '\n');
   const runStep = extractRunTvDoctorStep(action);
 
   const explicitAssignment = runStep.indexOf('baseline_path="$TVDOCTOR_BASELINE"');

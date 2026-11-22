@@ -4,7 +4,12 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
-import { removeTemporaryTree } from "./package-smoke-cleanup.mjs";
+import {
+  hasOnlyEmptyDirectories,
+  removeTemporaryTree,
+  WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
+  windowsNativeCleanupScript,
+} from "./package-smoke-cleanup.mjs";
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temporaryPrefix = path.join(tmpdir(), "tvdoctor-package-smoke-");
@@ -572,24 +577,20 @@ async function cleanupSmokeDirectory(directory) {
     }
     // Use Windows' native long-path deletion if the bounded Node retries
     // were exhausted. Pass the owned temp path as data, never shell text.
-    const script = [
-      "$target = [IO.Path]::GetFullPath($env:TVDOCTOR_SMOKE_OWNED_TEMP)",
-      "$parent = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\\', '/')",
-      "$prefix = $parent + [IO.Path]::DirectorySeparatorChar",
-      "if (-not $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or -not [IO.Path]::GetFileName($target).StartsWith('tvdoctor-package-smoke-', [StringComparison]::Ordinal)) { throw 'Unsafe smoke cleanup target' }",
-      "for ($i = 0; $i -lt 8; $i++) {",
-      "  if (-not [IO.Directory]::Exists($target)) { exit 0 }",
-      "  try { [IO.Directory]::Delete('\\\\?\\' + $target, $true); exit 0 }",
-      "  catch { if ($i -eq 7) { throw }; Start-Sleep -Milliseconds 500 }",
-      "}",
-    ].join("; ");
+    const script = windowsNativeCleanupScript();
     const fallback = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
       cwd: repositoryRoot,
       encoding: "utf8",
       env: { ...process.env, TVDOCTOR_SMOKE_OWNED_TEMP: directory },
-      timeout: 15_000,
+      timeout: WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
     });
     if (fallback.status !== 0 || fallback.error !== undefined) {
+      // Windows can retain an empty directory handle after all files are gone.
+      // Refuse to ignore a partial cleanup if any package files or links remain.
+      if (await hasOnlyEmptyDirectories(directory)) {
+        process.stderr.write("package smoke Windows cleanup: empty directories remain temporarily locked.\n");
+        return;
+      }
       throw new AggregateError([error, fallback.error ?? new Error(fallback.stderr)],
         `Windows smoke cleanup failed for owned temp directory ${directory}`, { cause: error });
     }

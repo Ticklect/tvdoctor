@@ -29,6 +29,7 @@ describe("platform-neutral protocol", () => {
     expect(REMOTE_KEYS).toEqual([
       ...NAVIGATION_KEYS,
       "TAB",
+      "SHIFT_TAB",
       "HOME",
       "PLAY_PAUSE",
       "PLAY",
@@ -41,6 +42,7 @@ describe("platform-neutral protocol", () => {
     ]);
     expect(isRemoteKey("SELECT")).toBe(true);
     expect(isRemoteKey("TAB")).toBe(true);
+    expect(isRemoteKey("SHIFT_TAB")).toBe(true);
     expect(isRemoteKey("HOME")).toBe(true);
     expect(isRemoteKey("PLAY_PAUSE")).toBe(true);
     expect(isRemoteKey("CLICK")).toBe(false);

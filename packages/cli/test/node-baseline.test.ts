@@ -154,8 +154,16 @@ describe("baseline file adapter", () => {
         action: "DOWN" as const,
       }],
     };
-    await writeFile(baselineReportPath, renderReportJson(report("baseline-run", [])));
-    await writeFile(currentReportPath, renderReportJson(report("current-run", [])));
+    const baselineReport = report("baseline-run", []);
+    const currentReport = report("current-run", []);
+    await writeFile(baselineReportPath, renderReportJson({
+      ...baselineReport,
+      coverage: { ...baselineReport.coverage, focusStatesDiscovered: baselineInventory.focusTargets.length },
+    }));
+    await writeFile(currentReportPath, renderReportJson({
+      ...currentReport,
+      coverage: { ...currentReport.coverage, focusStatesDiscovered: currentInventory.focusTargets.length },
+    }));
     await writeFile(inventoryPath, JSON.stringify(baselineInventory));
     await createBaselineFromFiles({
       reportPath: baselineReportPath,

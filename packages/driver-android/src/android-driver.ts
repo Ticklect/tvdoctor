@@ -54,7 +54,7 @@ const SYSTEM_SETUP_PACKAGES: ReadonlySet<string> = new Set([
   "com.android.packageinstaller",
   "com.google.android.packageinstaller",
 ]);
-const KEY_CODES: Readonly<Record<RemoteKey, string>> = {
+const KEY_CODES: Readonly<Partial<Record<RemoteKey, string>>> = {
   UP: "KEYCODE_DPAD_UP", DOWN: "KEYCODE_DPAD_DOWN", LEFT: "KEYCODE_DPAD_LEFT",
   RIGHT: "KEYCODE_DPAD_RIGHT", SELECT: "KEYCODE_DPAD_CENTER", BACK: "KEYCODE_BACK",
   TAB: "KEYCODE_TAB",
@@ -429,7 +429,17 @@ export class AndroidTvDriver implements TVDoctorDriver {
     signal?: AbortSignal,
     foreground: "target" | "system-setup" = "target",
   ): Promise<ActionResult> {
-    this.#ensureOpen(); const observer = await this.#requiredObserver(signal);
+    this.#ensureOpen();
+    const keyCode = KEY_CODES[key];
+    if (keyCode === undefined) {
+      return {
+        key,
+        outcome: "unsupported",
+        timing: { inputSentAtMs: Date.now() },
+        message: "This keyboard combination is unavailable on the Android TV input transport.",
+      };
+    }
+    const observer = await this.#requiredObserver(signal);
     const totalStarted = performance.now(); const inputSentAtMs = Date.now();
     let inputDelivered = false; let beginRoundTripMs = 0;
     try {
@@ -445,7 +455,7 @@ export class AndroidTvDriver implements TVDoctorDriver {
       // Keep input synchronous after the durable focused-window launch guard.
       // This is the delivery barrier that prevents a delayed key from crossing
       // a reset boundary and mutating the next activity instance.
-      await this.#deviceCommand(["shell", "input", "keyevent", KEY_CODES[key]], {
+      await this.#deviceCommand(["shell", "input", "keyevent", keyCode], {
         timeoutMs: this.#options.commandTimeoutMs, maxOutputBytes: 4_096,
         ...(signal === undefined ? {} : { signal }),
       });

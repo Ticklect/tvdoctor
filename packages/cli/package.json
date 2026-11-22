@@ -2,12 +2,19 @@
   "name": "tvdoctor",
   "version": "0.1.0",
   
-  "description": "CLI for automatic TV D-pad and focus-navigation regression discovery.",
+  "description": "Local MCP server and CLI for UI bug discovery, evidence, and independent fix verification.",
   "keywords": [
     "tvdoctor",
+    "ai-coding-agent",
+    "autonomous-ui-testing",
+    "browser-qa",
+    "mcp",
     "tv",
     "d-pad",
     "focus-navigation",
+    "keyboard-navigation",
+    "ui-testing",
+    "mcp-server",
     "regression-testing",
     "remote-control"
   ],
@@ -34,7 +41,8 @@
     }
   },
   "bin": {
-    "tvdoctor": "dist/bin.js"
+    "tvdoctor": "dist/bin.js",
+    "tvdoctor-mcp": "dist/mcp-bin.js"
   },
   "files": [
     "dist",

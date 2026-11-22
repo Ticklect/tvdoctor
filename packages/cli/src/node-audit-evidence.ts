@@ -4,12 +4,9 @@ import type {
   WebLogEntry,
 } from "@tvdoctor/driver-web";
 import type {
-  ActionResult,
   RemoteKey,
-  StateSnapshot,
   TVDoctorIssue,
   TVDoctorReplayV1,
-  UiNodeSnapshot,
 } from "@tvdoctor/protocol";
 import {
   sanitiseEvidenceJson,
@@ -27,190 +24,40 @@ import {
   type AuditRunProducts,
   type CapturedIssue,
 } from "./node-audit-contracts.js";
-import { createSafeExplorationDriver } from "./node-audit-navigation.js";
+import {
+  captureContext,
+  focusedIdentity,
+  modalFocusSource,
+  persistedSnapshot,
+} from "./node-audit-evidence-context.js";
 import { sequenceForIssue } from "./node-audit-selection.js";
+
+export { boundedSnapshot, EVIDENCE_EXCERPT_MAX_NODES } from "./node-audit-evidence-context.js";
 
 function asJson(value: unknown): import("@tvdoctor/reporters").JsonValue {
   return JSON.parse(JSON.stringify(value)) as import("@tvdoctor/reporters").JsonValue;
 }
 
-export const EVIDENCE_EXCERPT_MAX_NODES = 150;
-const EVIDENCE_CAPTURE_FAILED_REASON = "Evidence capture was inconclusive because the bounded evidence journey failed.";
-
 /**
- * Bounded excerpt of a snapshot's UI tree for report embedding. Complex real
- * pages can produce trees whose serialised form would exceed the reporters'
- * sanitisation budget; this retains only the first N nodes depth-first.
+ * Console messages and pageerror stacks are arbitrary application-authored
+ * bytes: they can include passwords, tokens and customer records with no
+ * recognisable key or URL prefix. Generic text sanitisation is insufficient.
+ * Keep only the non-content metadata needed to correlate a log with an issue.
+ * Rule-specific runtime exception class witnesses are separately bounded and
+ * never derive a FIXED verdict from these logs.
  */
-function boundedUiTree(tree: readonly UiNodeSnapshot[]): readonly UiNodeSnapshot[] {
-  let retained = 0;
-  const walk = (nodes: readonly UiNodeSnapshot[]): UiNodeSnapshot[] => {
-    const result: UiNodeSnapshot[] = [];
-    for (const node of nodes) {
-      if (retained >= EVIDENCE_EXCERPT_MAX_NODES) return result;
-      const { children, ...rest } = node;
-      retained += 1;
-      result.push({
-        ...rest,
-        ...(retained < EVIDENCE_EXCERPT_MAX_NODES && children.length > 0
-          ? { children: walk(children) }
-          : { children: [] }),
-      });
-    }
-    return result;
-  };
-  return walk(tree);
+export function redactedConsoleEvidence(logs: readonly WebLogEntry[]): import("@tvdoctor/reporters").JsonValue {
+  return sanitiseEvidenceJson(asJson(logs.slice(-512).map((entry) => ({
+    timestamp: entry.timestamp,
+    level: entry.level,
+    source: entry.source,
+    message: "[REDACTED: application-authored console content]",
+    location: null,
+    stack: null,
+  }))));
 }
 
-export function boundedSnapshot(snapshot: StateSnapshot): StateSnapshot {
-  if (snapshot.uiTree.status !== "available") return snapshot;
-  return {
-    ...snapshot,
-    uiTree: { status: "available", value: boundedUiTree(snapshot.uiTree.value) },
-  };
-}
-
-function persistedSnapshot(snapshot: StateSnapshot, targetRedaction?: "origin"): StateSnapshot {
-  const bounded = boundedSnapshot(snapshot);
-  if (targetRedaction !== "origin" || bounded.location.status !== "available") return bounded;
-  try {
-    return {
-      ...bounded,
-      location: { status: "available", value: new URL(bounded.location.value).origin },
-    };
-  } catch {
-    return {
-      ...bounded,
-      location: { status: "unavailable", reason: "Location omitted by strict target redaction." },
-    };
-  }
-}
-
-async function withinDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  deadlineMs: number,
-  label: string,
-): Promise<T> {
-  const remainingMs = deadlineMs - performance.now();
-  if (remainingMs <= 0) throw new Error(`${label} exceeded the bounded evidence-capture deadline.`);
-  const controller = new AbortController();
-  const deadlineError = new Error(`${label} exceeded the bounded evidence-capture deadline.`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      Promise.resolve().then(() => operation(controller.signal)),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => {
-            controller.abort(deadlineError);
-            reject(deadlineError);
-          },
-          remainingMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
-async function captureContext(
-  target: string,
-  sequence: readonly RemoteKey[],
-  driver: PlaywrightWebDriver,
-  closeDriver: boolean,
-  maximumDurationMs = EVIDENCE_CAPTURE_PER_ISSUE_TIMEOUT_MS,
-  captureScreenshots = true,
-  fixtureProfileSelection = false,
-): Promise<{
-  readonly before: StateSnapshot;
-  readonly after: StateSnapshot;
-  readonly beforePng: Uint8Array | null;
-  readonly afterPng: Uint8Array | null;
-  readonly action: ActionResult | null;
-  readonly logs: readonly WebLogEntry[];
-}> {
-  const deadlineMs = performance.now() + maximumDurationMs;
-  // Use the same per-press semantic SELECT guard as exploration. It captures a
-  // fresh focus snapshot and refuses an ambiguous or unsafe activation before
-  // forwarding the key to the browser, including during setup replay.
-  const safeDriver = createSafeExplorationDriver(driver, { fixtureProfileSelection });
-  try {
-    await withinDeadline(
-      (signal) => driver.launch({ id: "cli-issue-evidence", launchUri: target }, { signal }),
-      deadlineMs,
-      "Evidence browser launch",
-    );
-    const setup = sequence.length === 0 ? [] : sequence.slice(0, -1);
-    for (const key of setup) {
-      const result = await withinDeadline(
-        (signal) => safeDriver.press(key, { signal }), deadlineMs, `Evidence setup ${key}`,
-      );
-      if (result.outcome !== "applied") throw new Error(`Evidence setup ${key} was ${result.outcome}.`);
-    }
-    const before = await withinDeadline(
-      (signal) => driver.snapshot({ signal }), deadlineMs, "Evidence before snapshot",
-    );
-    const beforePng = captureScreenshots
-      ? await withinDeadline(
-        () => driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-        deadlineMs,
-        "Evidence before screenshot",
-      )
-      : null;
-    const assertion = sequence.at(-1);
-    const action = assertion === undefined
-      ? null
-      : await withinDeadline(
-        (signal) => safeDriver.press(assertion, { signal }), deadlineMs, `Evidence assertion ${assertion}`,
-      );
-    if (action !== null && action.outcome !== "applied") {
-      throw new Error(`Evidence assertion ${assertion} was ${action.outcome}.`);
-    }
-    const after = await withinDeadline(
-      (signal) => driver.snapshot({ signal }), deadlineMs, "Evidence after snapshot",
-    );
-    const afterPng = captureScreenshots
-      ? await withinDeadline(
-        () => driver.getPage().screenshot({ type: "png", animations: "disabled" }),
-        deadlineMs,
-        "Evidence after screenshot",
-      )
-      : null;
-    const logs = await withinDeadline(() => driver.getLogs(), deadlineMs, "Evidence log capture");
-    return { before, after, beforePng, afterPng, action, logs };
-  } catch (error) {
-    // A pooled session that fails mid-operation is retired before reuse. The
-    // next launch may create a new browser process, while successful captures
-    // keep the process alive and receive a fresh BrowserContext on launch().
-    if (!closeDriver) {
-      await withinDeadline(
-        () => driver.close(),
-        performance.now() + 5_000,
-        "Evidence browser retirement",
-      ).catch(() => undefined);
-    }
-    throw error;
-  } finally {
-    if (closeDriver) {
-      await withinDeadline(
-        () => driver.close(),
-        performance.now() + 5_000,
-        "Evidence browser cleanup",
-      ).catch(() => undefined);
-    }
-  }
-}
-
-function focusedIdentity(snapshot: StateSnapshot): string | null {
-  if (snapshot.focusedElement.status !== "available") return null;
-  const target = snapshot.focusedElement.value;
-  for (const value of [target?.stableId, target?.name, target?.role]) {
-    const candidate = value?.trim();
-    if (candidate !== undefined && candidate.length > 0) return candidate;
-  }
-  return null;
-}
+const EVIDENCE_CAPTURE_FAILED_REASON = "Evidence capture was inconclusive because the bounded evidence journey failed.";
 
 /**
  * Return a bounded reason when a fresh evidence journey no longer witnesses
@@ -337,6 +184,7 @@ export async function captureIssue(
       maximumDurationMs,
       captureScreenshots,
       fixtureProfileSelection,
+      modalFocusSource(sourceIssue, sequence),
     );
     const driftReason = freshEvidenceDriftReason(sourceIssue, context);
     if (driftReason !== null) throw new Error(driftReason);
@@ -392,7 +240,7 @@ export async function captureIssue(
       safeArtifact("console-log", () => ({
         slot: "console-log" as const,
         capture: (() => {
-          const value = sanitiseEvidenceJson(asJson(context.logs));
+          const value = redactedConsoleEvidence(context.logs);
           return { status: "available" as const, format: "json" as const, value };
         })(),
       })),

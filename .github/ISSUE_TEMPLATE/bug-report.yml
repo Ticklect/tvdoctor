@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect TVDoctor behaviour without sensitive data.
+description: Report a reproducible problem with agent setup, a scan, or verification.
 title: "[Bug]: "
 labels:
   - bug
@@ -14,6 +14,9 @@ body:
     attributes:
       label: Affected surface
       options:
+        - MCP client setup or tool discovery
+        - MCP scan, findings, or fix verification
+        - Local dashboard
         - CLI
         - Protocol or validation
         - Core exploration or diagnostics
@@ -41,8 +44,8 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, architecture, Node/npm versions, browser or Android API/device type where relevant.
-      placeholder: Windows 11 x64; Node 24.18.0; npm 11.16.0; Playwright Chromium
+      description: Include the MCP client and version if relevant, plus OS, Node, browser, or device.
+      placeholder: Codex CLI; Windows 11 x64; Node 24; Chromium
     validations:
       required: true
 
@@ -50,7 +53,7 @@ body:
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: Use an authorised local or redistributable target. Include exact bounded steps and commands.
+      description: Use an authorised local or redistributable target. Include tool names, sanitised arguments, and scan limits or the exact CLI command.
       placeholder: |
         1. npm ci
         2. ...
@@ -69,7 +72,7 @@ body:
     id: actual
     attributes:
       label: Actual behaviour
-      description: State whether the run was completed, partial, inconclusive, or errored.
+      description: Include scan status and termination reason, or the original-finding verification result if applicable.
     validations:
       required: true
 

@@ -2,7 +2,7 @@
   "name": "tvdoctor-monorepo",
   "version": "0.0.0",
   "private": true,
-  "description": "Automatic D-pad and focus-navigation regression discovery for TV apps and 10-foot user interfaces.",
+  "description": "TVDoctor local MCP tools and CLI for finding UI bugs and verifying coding agent fixes.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "packageManager": "npm@11.16.0",
@@ -39,7 +39,9 @@
     "benchmark:real-app": "node scripts/real-app-benchmark.mjs",
     "tvdoctor": "node packages/cli/dist/bin.js",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false && npm run typecheck --workspace @tvdoctor/broken-streaming-web && npm run typecheck --workspace @tvdoctor/driver-web && npm run typecheck --workspace @tvdoctor/driver-roku && npm run typecheck --workspace @tvdoctor/core && npm run typecheck --workspace @tvdoctor/pack-streaming && npm run typecheck --workspace @tvdoctor/reporters",
-    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:device-proof && npm run test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:device-proof && npm run test && npm run build",
+    "mcp": "node packages/cli/dist/mcp-bin.js",
+    "ui": "npm run build:packages && node packages/cli/dist/bin.js ui"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

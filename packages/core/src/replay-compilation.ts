@@ -18,6 +18,7 @@ import {
   type ReplayElementSelector,
   type ReplayElementStateAssertion,
   type ReplayElementStateExpectation,
+  type ReplayModalOpenIdentity,
 } from "./replay-contracts.js";
 
 const COMPILED_PLAN_SIGNATURES = new WeakMap<CompiledReplayPlan, string>();
@@ -82,13 +83,129 @@ function replayMatchesIssue(replay: TVDoctorReplayV1, issue: TVDoctorIssue): str
 }
 
 function inferredElementAssertions(issue: TVDoctorIssue | undefined): readonly ReplayElementStateAssertion[] {
-  if (issue?.rule !== "remote.focus-trap") return [];
-  return [{
-    selector: { roles: ["dialog", "alertdialog"] },
-    checkpoint: { present: true, visible: true, modal: true },
-    reproduced: { present: true, visible: true, modal: true },
-    fixed: { present: false },
-  }];
+  if (issue?.rule === "remote.focus-trap") {
+    return [{
+      selector: { roles: ["dialog", "alertdialog"] },
+      checkpoint: { present: true, visible: true, modal: true },
+      reproduced: { present: true, visible: true, modal: true },
+      fixed: { present: false },
+    }];
+  }
+  if (issue?.rule === "keyboard.modal-focus-escape") {
+    return [{
+      selector: { roles: ["dialog", "alertdialog"] },
+      checkpoint: { present: true, visible: true, modal: true, containsFocus: true },
+      reproduced: { present: true, visible: true, modal: true, containsFocus: false,
+        sameAsCheckpoint: true, sameLocationAsCheckpoint: true },
+      fixed: { present: true, visible: true, modal: true, containsFocus: true,
+        sameAsCheckpoint: true, sameLocationAsCheckpoint: true },
+    }];
+  }
+  if (issue?.rule === "keyboard.modal-tab-focus-loss") {
+    return [{
+      selector: { roles: ["dialog", "alertdialog"] },
+      checkpoint: { present: true, visible: true, modal: true, containsFocus: true },
+      reproduced: { present: true, visible: true, modal: true, focusAbsent: true,
+        sameAsCheckpoint: true, sameLocationAsCheckpoint: true },
+      fixed: { present: true, visible: true, modal: true, containsFocus: true,
+        sameAsCheckpoint: true, sameLocationAsCheckpoint: true },
+    }];
+  }
+  return [];
+}
+
+/**
+ * The only deterministic keyboard detector currently emitted by the explorer
+ * is modal-focus-escape. Other keyboard rules are explicit REVIEW leads and
+ * lack a positive corrected-state predicate in portable report/v1.
+ */
+const MODAL_OPEN_WITNESS_SOURCE = "tvdoctor.keyboard.modal-open/v1";
+const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
+const PORTABLE_ISSUE_ARTIFACT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u;
+
+/**
+ * This witness is an exact machine-readable observation of the new modal and
+ * its opener, retained from the original action. A stable ID without role/name
+ * is insufficient: an unrelated dialog can reuse a DOM ID after a repair.
+ */
+function modalOpenWitness(issue: TVDoctorIssue | undefined): ReplayModalOpenIdentity | null {
+  if (issue?.rule !== "keyboard.modal-open-focus-not-transferred") return null;
+  const records = issue.evidence.filter((entry) => entry.source === MODAL_OPEN_WITNESS_SOURCE);
+  if (records.length !== 1 || records[0]?.kind !== "verified-fact"
+    || !PORTABLE_ISSUE_ARTIFACT_ID.test(issue.id)) return null;
+  // The scanner emits the canonical witness with artifact:null. The report
+  // writer attaches its real evidence/issue-id/transition.json slot. Permit
+  // only that exact issue-owned path; higher-level saved-report verification
+  // must still validate the descriptor's SHA-256/length and file containment.
+  const artifact = records[0].artifact;
+  if (artifact !== null && artifact !== `evidence/${issue.id}/transition.json`) return null;
+  const raw = records[0].summary;
+  if (raw.length === 0 || raw.length > 1_000) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+  const record = (value: unknown, keys: readonly string[]): value is Record<string, unknown> => (
+    typeof value === "object" && value !== null && !Array.isArray(value)
+    && Object.keys(value).join(",") === keys.join(",")
+  );
+  if (!record(data, ["modal", "opener"])
+    || !record(data["modal"], ["stableId", "role", "name"])
+    || !record(data["opener"], ["stableId", "role", "name"])) return null;
+  const modal = data["modal"];
+  const opener = data["opener"];
+  const goodId = (value: unknown): value is string => typeof value === "string" && PORTABLE_ID.test(value);
+  const goodName = (value: unknown): value is string => typeof value === "string"
+    && value.length > 0 && value.length <= 160 && value.trim() === value
+    && Array.from(value).every((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code >= 32 && code !== 127 && !(code >= 128 && code <= 159);
+    });
+  if (JSON.stringify(data) !== raw
+    || !goodId(modal["stableId"]) || !goodId(opener["stableId"])
+    || modal["stableId"] === opener["stableId"]
+    || (modal["role"] !== "dialog" && modal["role"] !== "alertdialog")
+    || opener["role"] !== "button"
+    || !goodName(modal["name"]) || !goodName(opener["name"])) return null;
+  const transition = issue.transition;
+  if (transition === null || transition.action !== "SELECT"
+    || transition.fromElement !== opener["stableId"]
+    || transition.observedElement !== opener["stableId"]
+    || transition.expectedElement !== modal["stableId"]) return null;
+  return {
+    modal: { stableId: modal["stableId"], role: modal["role"], name: modal["name"] },
+    opener: { stableId: opener["stableId"], role: "button", name: opener["name"] },
+  };
+}
+
+function keyboardOracle(
+  issue: TVDoctorIssue | undefined,
+  modalOpen: ReplayModalOpenIdentity | null,
+): CompiledReplayPlan["keyboardOracle"] {
+  if (issue === undefined || !issue.rule.startsWith("keyboard.")) return null;
+  if (issue.rule === "keyboard.modal-open-focus-not-transferred") {
+    return issue.confidence === "deterministic"
+      && issue.evidence.some((entry) => entry.kind === "deterministic-failure")
+      && issue.reproduction.status === "available"
+      && issue.reproduction.confidence === "deterministic"
+      && modalOpen !== null
+      ? "modal-open-focus-not-transferred" : "review-only";
+  }
+  if (issue.rule !== "keyboard.modal-focus-escape"
+    && issue.rule !== "keyboard.modal-tab-focus-loss") return "review-only";
+  const transition = issue.transition;
+  if (issue.confidence !== "deterministic"
+    || !issue.evidence.some((entry) => entry.kind === "deterministic-failure")
+    || issue.reproduction.status !== "available"
+    || issue.reproduction.confidence !== "deterministic"
+    || transition === null
+    || (transition.action !== "TAB" && transition.action !== "SHIFT_TAB")
+    || transition.fromElement === null || transition.expectedElement === null
+    || (issue.rule === "keyboard.modal-focus-escape" && transition.observedElement === null)
+    || (issue.rule === "keyboard.modal-tab-focus-loss" && transition.observedElement !== null)) return "review-only";
+  return issue.rule === "keyboard.modal-focus-escape" ? "modal-focus-escape" : "modal-tab-focus-loss";
 }
 
 function validateSteps(
@@ -132,7 +249,10 @@ function selectorIsValid(selector: ReplayElementSelector): boolean {
   return stringsValid && rolesValid && hasIdentity && !(selector.role !== undefined && selector.roles !== undefined);
 }
 
-const ELEMENT_STATE_KEYS = ["present", "visible", "enabled", "focusable", "focused", "modal"] as const;
+const ELEMENT_STATE_KEYS = [
+  "present", "visible", "enabled", "focusable", "focused", "modal",
+  "containsFocus", "focusAbsent", "sameAsCheckpoint", "sameLocationAsCheckpoint",
+] as const;
 
 function expectationIsValid(expectation: ReplayElementStateExpectation): boolean {
   let asserted = false;
@@ -140,6 +260,10 @@ function expectationIsValid(expectation: ReplayElementStateExpectation): boolean
     const value = expectation[key];
     if (value !== undefined) {
       if (typeof value !== "boolean") return false;
+      if (key === "focusAbsent" && value !== true) return false;
+      // The same-identity predicate has only a positive meaning. Accepting
+      // `false` as a standalone assertion would silently match everything.
+      if ((key === "sameAsCheckpoint" || key === "sameLocationAsCheckpoint") && value !== true) return false;
       asserted = true;
     }
   }
@@ -147,6 +271,7 @@ function expectationIsValid(expectation: ReplayElementStateExpectation): boolean
   if (expectation.present === false) {
     return ELEMENT_STATE_KEYS.every((key) => key === "present" || expectation[key] === undefined);
   }
+  if (expectation.focusAbsent === true && expectation.containsFocus !== undefined) return false;
   return true;
 }
 
@@ -190,6 +315,10 @@ function copyExpectation(expectation: ReplayElementStateExpectation): ReplayElem
     ...(expectation.focusable === undefined ? {} : { focusable: expectation.focusable }),
     ...(expectation.focused === undefined ? {} : { focused: expectation.focused }),
     ...(expectation.modal === undefined ? {} : { modal: expectation.modal }),
+    ...(expectation.containsFocus === undefined ? {} : { containsFocus: expectation.containsFocus }),
+    ...(expectation.focusAbsent === undefined ? {} : { focusAbsent: expectation.focusAbsent }),
+    ...(expectation.sameAsCheckpoint === undefined ? {} : { sameAsCheckpoint: expectation.sameAsCheckpoint }),
+    ...(expectation.sameLocationAsCheckpoint === undefined ? {} : { sameLocationAsCheckpoint: expectation.sameLocationAsCheckpoint }),
   };
 }
 
@@ -286,11 +415,14 @@ export function compileReplay(replay: TVDoctorReplayV1, options: ReplayCompilati
     : options.sourceIssue.confidence === "deterministic" && issueReproduction?.status === "available"
       && issueReproduction.confidence === "deterministic" && options.confidence !== "best-effort"
       ? "deterministic" : "best-effort";
+  const modalOpen = modalOpenWitness(options.sourceIssue);
   const plan = registerCompiledPlan({
     replay: copiedReplay,
     setup: { steps: splitSetupSteps(copiedSteps), checkpointFocusElement: assertion.fromElement },
     assertion,
     elementStateAssertions: elementAssertions.map(copyElementAssertion),
+    keyboardOracle: keyboardOracle(options.sourceIssue, modalOpen),
+    keyboardModalOpenIdentity: modalOpen,
     confidence: correlatedConfidence,
     totalActions: stepsValidation.total,
     sequence: {
@@ -358,6 +490,16 @@ export function validateCompiledReplayPlan(plan: CompiledReplayPlan): ExecutionP
   }
   if (trustedPlan.confidence !== "deterministic" && trustedPlan.confidence !== "best-effort") {
     return invalidExecutionPlan("Compiled replay confidence is invalid.");
+  }
+  if (trustedPlan.keyboardOracle !== null && trustedPlan.keyboardOracle !== "modal-focus-escape"
+    && trustedPlan.keyboardOracle !== "modal-tab-focus-loss"
+    && trustedPlan.keyboardOracle !== "modal-open-focus-not-transferred"
+    && trustedPlan.keyboardOracle !== "review-only") {
+    return invalidExecutionPlan("Compiled keyboard oracle classification is invalid.");
+  }
+  if (trustedPlan.keyboardOracle === "modal-open-focus-not-transferred"
+    && trustedPlan.keyboardModalOpenIdentity === null) {
+    return invalidExecutionPlan("A deterministic modal-open oracle needs the exact original modal identity.");
   }
   try {
     parseTVDoctorReplayV1(trustedPlan.replay);

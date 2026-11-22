@@ -22,7 +22,8 @@ interface ProbeResult {
   readonly beforeFocus: string | null;
   readonly afterFocus: string | null;
   readonly focusRetained: boolean;
-  readonly focusableIds: readonly string[];
+  readonly focusTargets: readonly BaselineFocusObservation[];
+  readonly transitions: readonly BaselineTransitionObservation[];
 }
 
 function requireBaseURL(baseURL: string | undefined): string {
@@ -36,11 +37,15 @@ function focusId(snapshot: StateSnapshot): string | null {
     : null;
 }
 
-function collectFocusableIds(snapshot: StateSnapshot): readonly string[] {
-  if (snapshot.uiTree.status !== "available") return [];
-  const visit = (nodes: readonly UiNodeSnapshot[]): readonly string[] => (
+function collectFocusableTargets(snapshot: StateSnapshot): readonly BaselineFocusObservation[] {
+  if (snapshot.uiTree.status !== "available") {
+    throw new Error("The M10 probe requires an observed UI tree for its focus inventory.");
+  }
+  const visit = (nodes: readonly UiNodeSnapshot[]): readonly BaselineFocusObservation[] => (
     nodes.flatMap((node) => [
-      ...(node.focusable === true && node.stableId !== null ? [node.stableId] : []),
+      ...(node.focusable === true && node.stableId !== null
+        ? [{ key: node.stableId, screenKey: "home", role: node.role, name: node.name }]
+        : []),
       ...visit(node.children),
     ])
   );
@@ -61,21 +66,54 @@ async function runProbe(
   const url = `${fixtureUrl}/?baselineVariant=${variant}`;
   await driver.launch({ id: `m10-probe-${variant}`, launchUri: url });
   try {
+    let current = await driver.snapshot();
+    const transitions: BaselineTransitionObservation[] = [];
     for (const key of PROBE_PATH) {
+      const fromFocus = focusId(current);
+      if (fromFocus === null) throw new Error(`Navigation ${key} has no observed source focus.`);
       const result = await driver.press(key);
       if (result.outcome !== "applied") throw new Error(`Navigation ${key} was ${result.outcome}.`);
+      current = await driver.snapshot();
+      transitions.push({
+        key: `home/${fromFocus}:${key}`,
+        fromScreenKey: "home",
+        fromFocusKey: fromFocus,
+        action: key,
+        toScreenKey: "home",
+        toFocusKey: focusId(current),
+      });
     }
-    const before = await driver.snapshot();
+    const before = current;
     const action = await driver.press("SELECT");
     if (action.outcome !== "applied") throw new Error("SELECT failed.");
     const after = await driver.snapshot();
     const beforeFocus = focusId(before);
     const afterFocus = focusId(after);
+    if (beforeFocus !== "m10-probe-a") {
+      throw new Error(`The probe reached ${String(beforeFocus)}, not the expected M10 control.`);
+    }
+    const beforeTargets = collectFocusableTargets(before);
+    const afterTargets = collectFocusableTargets(after);
+    for (const requiredId of ["m10-probe-a", "m10-probe-b"]) {
+      expect(afterTargets.some((target) => target.key === requiredId), `Missing ${requiredId} from observed focus inventory`)
+        .toBe(true);
+    }
+    expect(afterTargets.map((target) => target.key).sort())
+      .toEqual(beforeTargets.map((target) => target.key).sort());
+    transitions.push({
+      key: `home/${beforeFocus}:SELECT`,
+      fromScreenKey: "home",
+      fromFocusKey: beforeFocus,
+      action: "SELECT",
+      toScreenKey: "home",
+      toFocusKey: afterFocus,
+    });
     return {
       beforeFocus,
       afterFocus,
       focusRetained: afterFocus !== null && afterFocus !== undefined,
-      focusableIds: collectFocusableIds(after),
+      focusTargets: afterTargets,
+      transitions,
     };
   } finally {
     await driver.close();
@@ -86,29 +124,11 @@ function buildInventory(result: ProbeResult): BaselineObservationInventory {
   const screens: BaselineScreenObservation[] = [
     { key: "home", label: "Home screen" },
   ];
-  const focusTargets: BaselineFocusObservation[] = result.focusableIds.map((id) => ({
-    key: id,
-    screenKey: "home",
-    role: "button",
-    name: id,
-  }));
-  const transitions: BaselineTransitionObservation[] = [
-    ...(result.beforeFocus !== null && result.afterFocus !== null
-      ? [{
-          key: `home/${result.beforeFocus}:SELECT`,
-          fromScreenKey: "home",
-          fromFocusKey: result.beforeFocus,
-          action: "SELECT" as const,
-          toScreenKey: "home",
-          toFocusKey: result.afterFocus ?? "",
-        }]
-      : []),
-  ];
   return {
     status: "complete",
     screens,
-    focusTargets,
-    transitions,
+    focusTargets: result.focusTargets,
+    transitions: result.transitions,
     latencies: [],
   };
 }
@@ -117,6 +137,7 @@ function buildReport(
   runId: string,
   location: string,
   issues: readonly TVDoctorIssue[],
+  inventory: BaselineObservationInventory,
 ): TVDoctorReportV1 {
   return {
     schemaVersion: "tvdoctor.report/v1",
@@ -136,16 +157,16 @@ function buildReport(
       environment: {},
     },
     coverage: {
-      screenStatesDiscovered: 1,
-      focusStatesDiscovered: 2,
-      transitionsTested: 1,
-      actionsSent: 5,
+      screenStatesDiscovered: inventory.screens.length,
+      focusStatesDiscovered: inventory.focusTargets.length,
+      transitionsTested: inventory.transitions.length,
+      actionsSent: PROBE_PATH.length + 1,
       capabilitiesObserved: ["remote-input", "ui-tree"],
       packs: [{ pack: "navigation", status: "completed" }],
       budget: {
         maxActions: 10,
         maxStates: 50,
-        maxDepth: 4,
+        maxDepth: PROBE_PATH.length + 1,
         maxDurationMs: 30_000,
         maxRepetitiveItems: 12,
         exhausted: [],
@@ -195,9 +216,9 @@ test("M10 baseline: clean → regressed → restored lifecycle proves exactly on
   const regressedInventory = buildInventory(regressedRun);
   const restoredInventory = buildInventory(restoredRun);
 
-  const cleanReport = buildReport("m10-clean", cleanLocation, []);
-  const regressedReport = buildReport("m10-regressed", regressedLocation, regressedIssues);
-  const restoredReport = buildReport("m10-restored", cleanLocation, []);
+  const cleanReport = buildReport("m10-clean", cleanLocation, [], cleanInventory);
+  const regressedReport = buildReport("m10-regressed", regressedLocation, regressedIssues, regressedInventory);
+  const restoredReport = buildReport("m10-restored", cleanLocation, [], restoredInventory);
 
   // GAUNTLET 1: clean baseline vs regressed → exactly one new HIGH.
   const baseline = createBaseline(cleanReport, cleanInventory, { createdAt: "2026-08-23T00:00:00Z" });
@@ -215,14 +236,14 @@ test("M10 baseline: clean → regressed → restored lifecycle proves exactly on
   expect(restoredComparison.changes.resolvedIssues[0]?.id).toBe("TVDOCTOR-M10-FOCUS-LOSS");
 
   // GAUNTLET 3: clean vs clean → identical.
-  const cleanAgain = compareBaseline(baseline, buildReport("m10-clean-again", cleanLocation, []), cleanInventory);
+  const cleanAgain = compareBaseline(baseline, buildReport("m10-clean-again", cleanLocation, [], cleanInventory), cleanInventory);
   expect(cleanAgain.status).toBe("identical");
   expect(cleanAgain.shouldFail).toBe(false);
   expect(cleanAgain.blockers).toEqual([]);
 
   // GAUNTLET 4: false-positive resistance — an irrelevant metadata change
   // must not produce the seeded HIGH regression.
-  const noisyReport = buildReport("m10-noisy", `${cleanLocation}&irrelevant=noise`, []);
+  const noisyReport = buildReport("m10-noisy", `${cleanLocation}&irrelevant=noise`, [], cleanInventory);
   const noisyInventory = buildInventory(cleanRun);
   const noisyComparison = compareBaseline(baseline, noisyReport, noisyInventory);
   expect(noisyComparison.changes.newIssues).toHaveLength(0);

@@ -3,6 +3,7 @@ import type {
   BaselineIssueObservation,
   BaselineScreenObservation,
   BaselineTransitionObservation,
+  IssueMetadataChange,
   TVDoctorBaselineComparisonV1,
   TransitionChange,
 } from "./types.js";
@@ -41,6 +42,15 @@ function changedTransitionLine(change: TransitionChange): string {
   return `- \`${inline(change.key)}\` — **${before.action}** was \`${endpoint(before.fromScreenKey, before.fromFocusKey)}\` → \`${endpoint(before.toScreenKey, before.toFocusKey)}\`; now **${after.action}** is \`${endpoint(after.fromScreenKey, after.fromFocusKey)}\` → \`${endpoint(after.toScreenKey, after.toFocusKey)}\``;
 }
 
+function issueMetadataLine(change: IssueMetadataChange): string {
+  const flags = [
+    ...(change.severityEscalated ? ["severity escalated"] : []),
+    ...(change.confidenceDowngraded ? ["confidence downgraded"] : []),
+    ...(change.before.pack !== change.after.pack ? ["pack changed"] : []),
+  ];
+  return `- \`${inline(change.id)}\` — ${inline(change.before.severity)} / ${inline(change.before.confidence)} → ${inline(change.after.severity)} / ${inline(change.after.confidence)} (${flags.join(", ")})`;
+}
+
 function section(title: string, lines: readonly string[]): string {
   return `### ${title}\n\n${lines.length === 0 ? "None." : lines.join("\n")}`;
 }
@@ -64,12 +74,15 @@ export function renderComparisonMarkdown(comparison: TVDoctorBaselineComparisonV
 | Introduced | ${String(comparison.changes.newIssues.length)} |
 | Resolved | ${String(comparison.changes.resolvedIssues.length)} |
 | Unchanged | ${String(comparison.changes.unchangedIssues.length)} |
+| Metadata changed | ${String(comparison.changes.issueMetadataChanges.length)} |
 
 ${section("Introduced findings", comparison.changes.newIssues.map(issueLine))}
 
 ${section("Resolved findings", comparison.changes.resolvedIssues.map(issueLine))}
 
 ${section("Unchanged findings", comparison.changes.unchangedIssues.map(issueLine))}
+
+${section("Finding metadata changes", comparison.changes.issueMetadataChanges.map(issueMetadataLine))}
 
 ## Navigation inventory changes
 

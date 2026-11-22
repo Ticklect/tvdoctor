@@ -25,6 +25,57 @@ export interface SafeExplorationOptions {
   readonly fixtureProfileSelection?: boolean;
 }
 
+/**
+ * A conservative semantic witness for ordinary ID-less links. A UI tree has
+ * no href, so this is NOT authorization to press Enter by itself: the opt-in
+ * safe-link runtime must also prove the exact focused live anchor and href.
+ */
+export function idlessFocusedSafeLink(snapshot: StateSnapshot): {
+  readonly name: string;
+  readonly contextIdentity: string;
+} | null {
+  const metadata = (snapshot as StateSnapshot & {
+    readonly uiTreeMetadata?: {
+      readonly status: string;
+      readonly value?: { readonly truncated?: boolean };
+    };
+  }).uiTreeMetadata;
+  if (snapshot.location.status !== "available"
+    || snapshot.uiTree.status !== "available"
+    || snapshot.focusedElement.status !== "available"
+    || metadata?.status !== "available" || metadata.value?.truncated !== false) return null;
+  const focus = snapshot.focusedElement.value;
+  if (focus?.stableId !== undefined || focus?.role !== "link"
+    || typeof focus.name !== "string" || focus.name.length < 1 || focus.name.length > 160) return null;
+  const queue: { readonly node: UiNodeSnapshot; readonly ancestors: readonly UiNodeSnapshot[] }[] =
+    snapshot.uiTree.value.map((node) => ({ node, ancestors: [] }));
+  let count = 0;
+  let sameName = 0;
+  let focusedCount = 0;
+  let witness: { name: string; contextIdentity: string } | null = null;
+  for (const entry of queue) {
+    if (++count > 4_096) return null;
+    const { node, ancestors } = entry;
+    if (node.focused === true) focusedCount++;
+    if (node.role === "link" && node.name === focus.name) {
+      sameName++;
+      if (node.stableId !== null || node.focused !== true
+        || node.visible !== true || node.enabled !== true || node.focusable !== true
+        || node.selectionState !== null || node.valueNow !== null
+        || !isSafeWebControl(node, webSemanticContext({ node, ancestors, order: count - 1 }))
+        || ancestors.some((ancestor) => ancestor.visible !== true
+          || ancestor.enabled === false || ancestor.modal === true
+          || ["form", "dialog", "alertdialog", "button"].includes(ancestor.role ?? ""))) return null;
+      // Preserve reparenting evidence without ever exporting private labels.
+      witness = { name: node.name, contextIdentity: JSON.stringify(ancestors.map((ancestor) =>
+        [ancestor.role, ancestor.stableId, ancestor.name])) };
+    }
+    for (const child of node.children) queue.push({ node: child, ancestors: [...ancestors, node] });
+    if (queue.length > 4_096) return null;
+  }
+  return focusedCount === 1 && sameName === 1 ? witness : null;
+}
+
 function isNorthstarFixtureProfile(snapshot: StateSnapshot, focused: NonNullable<ReturnType<typeof focusedWebEntry>>): boolean {
   if (snapshot.location.status !== "available") return false;
   let hostname: string;
@@ -119,8 +170,41 @@ export function navigationInventory(
   }
   const screenKeyById = new Map(navigation.graph.screens.states.map((screen) => [screen.id, screen.fingerprint.value]));
   const focusKeyById = new Map(navigation.graph.focus.states.map((focus) => [focus.id, focus.fingerprint.value]));
+  // A complete frontier is not enough for a trustworthy cross-run diff. A
+  // low-confidence identity can alias two different screens/controls and make
+  // a regression disappear. Keep the inventory inspectable, but refuse to use
+  // it as a reviewed baseline unless every identity is high-confidence.
+  const identitiesReliable = navigation.graph.screens.states.length > 0
+    && navigation.graph.focus.states.length > 0
+    && navigation.graph.screens.states.every((screen) => screen.fingerprint.confidence === "high")
+    && navigation.graph.focus.states.every((focus) => focus.fingerprint.confidence === "high");
+  let transitionIdentityIncomplete = false;
+  const transitions = navigation.graph.actions.flatMap((action) => {
+    if (action.toScreenStateId === null) {
+      transitionIdentityIncomplete = true;
+      return [];
+    }
+    const fromScreenKey = screenKeyById.get(action.fromScreenStateId);
+    const toScreenKey = screenKeyById.get(action.toScreenStateId);
+    const fromFocusKey = focusKeyById.get(action.fromFocusStateId);
+    const toFocusKey = action.toFocusStateId === null ? null : focusKeyById.get(action.toFocusStateId);
+    if (fromScreenKey === undefined || toScreenKey === undefined || fromFocusKey === undefined
+      || (action.toFocusStateId !== null && toFocusKey === undefined)) {
+      transitionIdentityIncomplete = true;
+      return [];
+    }
+    return [{
+      key: `${fromScreenKey}/${fromFocusKey}:${action.key}`,
+      fromScreenKey,
+      fromFocusKey,
+      action: action.key,
+      toScreenKey,
+      toFocusKey: toFocusKey ?? null,
+    }];
+  });
   return {
-    status: navigationCoverageComplete(navigation) ? "complete" : "partial",
+    status: navigationCoverageComplete(navigation) && identitiesReliable && !transitionIdentityIncomplete
+      ? "complete" : "partial",
     screens: navigation.graph.screens.states.map((screen) => ({
       key: screen.fingerprint.value,
       label: screenLabel(screen.representativeSnapshot),
@@ -136,23 +220,7 @@ export function navigationInventory(
         name: target?.name ?? null,
       };
     }),
-    transitions: navigation.graph.actions.flatMap((action) => {
-      if (action.toScreenStateId === null || action.toFocusStateId === null) return [];
-      const fromScreenKey = screenKeyById.get(action.fromScreenStateId);
-      const toScreenKey = screenKeyById.get(action.toScreenStateId);
-      const fromFocusKey = focusKeyById.get(action.fromFocusStateId);
-      const toFocusKey = focusKeyById.get(action.toFocusStateId);
-      if (fromScreenKey === undefined || toScreenKey === undefined
-        || fromFocusKey === undefined || toFocusKey === undefined) return [];
-      return [{
-        key: `${fromScreenKey}/${fromFocusKey}:${action.key}`,
-        fromScreenKey,
-        fromFocusKey,
-        action: action.key,
-        toScreenKey,
-        toFocusKey,
-      }];
-    }),
+    transitions,
     latencies: performanceLatencies(web),
   };
 }

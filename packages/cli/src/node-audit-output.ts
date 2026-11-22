@@ -45,9 +45,23 @@ type FailedRunCode =
   | "network-unreachable"
   | "browser-runtime-unavailable"
   | "filesystem-access"
+  | "authentication-journey-failed"
   | "browser-session-failed";
 
+/** Safe typed boundary: never classify an app-authored exception by echoing its message. */
+export class AuthJourneyExecutionFailure extends Error {
+  constructor() {
+    super("The configured authenticated journey did not complete.");
+  }
+}
+
 function classifyFailedRun(error: unknown): { readonly code: FailedRunCode; readonly summary: string } {
+  if (error instanceof AuthJourneyExecutionFailure) {
+    return {
+      code: "authentication-journey-failed",
+      summary: "The approved login journey did not complete. Check the private journey, expected focus and protected route assertions. No authenticated scan was completed.",
+    };
+  }
   const raw = error instanceof Error ? error.message : String(error);
   if (/page\.goto|net::|ERR_(?:CONNECTION|NAME|TIMED)|ECONNREFUSED|ENOTFOUND/iu.test(raw)) {
     return {
@@ -108,7 +122,11 @@ export async function writeFailedRunReport(
       name: request.targetName ?? new URL(request.target).hostname,
       platform: "web",
       location: publicTargetLocation(request),
-      environment: { browser: "chromium", failure: failure.summary },
+      environment: {
+        browser: "chromium",
+        failure: failure.summary,
+        ...(request.inputMode === "keyboard" ? { inputMode: "keyboard" } : {}),
+      },
     },
     coverage: {
       screenStatesDiscovered: 0,
@@ -153,6 +171,76 @@ export async function writeFailedRunReport(
   };
 }
 
+/**
+ * A successfully loaded SPA can redirect to a different authenticated route
+ * during browser relaunch. Never attach that other route's findings to the
+ * requested project route, even when its UI is stable and replayable.
+ */
+export async function writeProjectRouteMismatchReport(
+  store: ArtifactStore,
+  request: TestCommandRequest,
+  startedAt: Date,
+  bundleOptions: Pick<ReportBundleOptions, "htmlSidecars"> = {},
+  cause: "redirected" | "content-unproven" = "redirected",
+): Promise<TestCommandResult> {
+  const completedAt = new Date();
+  const detail = cause === "content-unproven"
+    ? "Developer-declared protected content was not uniquely visible after authentication or restoration. Coverage is inconclusive; no defect was attributed to an unproven page."
+    : "The original project route could not be restored and compared after browser navigation. No defect was attributed to a different route.";
+  const report = buildTVDoctorReportV1({
+    run: {
+      id: `route-inconclusive-${startedAt.getTime().toString(36)}`,
+      tvdoctorVersion: CLI_VERSION,
+      mode: request.mode,
+      status: "partial",
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+    },
+    target: {
+      name: request.targetName ?? new URL(request.target).hostname,
+      platform: "web",
+      location: publicTargetLocation(request),
+      environment: {
+        browser: "chromium",
+        outcome: cause === "content-unproven" ? "project-content-inconclusive" : "project-route-inconclusive",
+        ...(request.inputMode === "keyboard" ? { inputMode: "keyboard" } : {}),
+      },
+    },
+    coverage: {
+      screenStatesDiscovered: 0,
+      focusStatesDiscovered: 0,
+      transitionsTested: 0,
+      actionsSent: 0,
+      capabilitiesObserved: [],
+      packs: [...selectedPacks(request)].map((pack) => ({ pack, status: "partial" as const })),
+      budget: {
+        maxActions: null,
+        maxStates: null,
+        maxDepth: null,
+        maxDurationMs: null,
+        maxRepetitiveItems: null,
+        exhausted: [],
+      },
+    },
+    issues: [],
+    artifacts: [],
+    replays: [],
+  });
+  const bundle = await writeReportBundle(store, report, {
+    ...bundleOptions,
+    ...(request.ciFailOn === undefined ? {} : { ci: { failOn: request.ciFailOn } }),
+  });
+  return {
+    status: "partial",
+    issueCount: 0,
+    highestSeverity: null,
+    highestVerifiedSeverity: null,
+    reportPath: bundle.reportJson.absolutePath,
+    details: [detail],
+  };
+}
+
 export async function writeSetupNotStartedReport(
   store: ArtifactStore,
   request: TestCommandRequest,
@@ -187,7 +275,11 @@ export async function writeSetupNotStartedReport(
       name: request.targetName ?? new URL(request.target).hostname,
       platform: "web",
       location: publicTargetLocation(request),
-      environment: { browser: "chromium", outcome: "scan-not-started" },
+      environment: {
+        browser: "chromium",
+        outcome: "scan-not-started",
+        ...(request.inputMode === "keyboard" ? { inputMode: "keyboard" } : {}),
+      },
     },
     coverage: {
       screenStatesDiscovered: 0,

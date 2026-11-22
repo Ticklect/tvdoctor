@@ -12,6 +12,7 @@ export const NAVIGATION_KEYS = [
 export const REMOTE_KEYS = [
   ...NAVIGATION_KEYS,
   "TAB",
+  "SHIFT_TAB",
   "HOME",
   "PLAY_PAUSE",
   "PLAY",

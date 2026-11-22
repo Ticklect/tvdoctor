@@ -49,7 +49,7 @@ export async function capturePageObservation(
   },
 ): Promise<CapturedPageObservation> {
   const captureStartedAtMs = performance.now();
-  const observation = await page.evaluate(({ nodeLimit, limits }) => {
+  const observationJson = await page.evaluate(({ nodeLimit, limits }) => {
     const evaluationStartedAtMs = performance.now();
     interface Bounds {
       x: number;
@@ -243,6 +243,17 @@ export async function capturePageObservation(
       element.getAttribute("data-tv-id") ?? element.id,
     );
 
+    const rolesNamedByContent = new Set([
+      "button",
+      "checkbox",
+      "heading",
+      "link",
+      "menuitem",
+      "option",
+      "radio",
+      "tab",
+    ]);
+
     const nameFor = (element: Element, role: string | null): string | null => {
       const ariaLabel = normaliseText(element.getAttribute("aria-label"));
       if (ariaLabel !== null) {
@@ -281,16 +292,6 @@ export async function capturePageObservation(
         return title;
       }
 
-      const rolesNamedByContent = new Set([
-        "button",
-        "checkbox",
-        "heading",
-        "link",
-        "menuitem",
-        "option",
-        "radio",
-        "tab",
-      ]);
       return role !== null && rolesNamedByContent.has(role)
         ? textFromSubtree(element)
         : null;
@@ -401,11 +402,15 @@ export async function capturePageObservation(
       || name === "data-screen"
       || name === "data-tv-id";
 
-    const attributesFor = (element: Element): Record<string, string> => Object.fromEntries(
-      Array.from(element.attributes)
-        .filter((attribute) => allowedAttribute(attribute.name))
-        .map((attribute) => [attribute.name, consumeTextPrefix(attribute.value, textLimit)]),
-    );
+    const attributesFor = (element: Element): Record<string, string> => {
+      const attributes: Record<string, string> = {};
+      for (const attribute of element.attributes) {
+        if (allowedAttribute(attribute.name)) {
+          attributes[attribute.name] = consumeTextPrefix(attribute.value, textLimit);
+        }
+      }
+      return attributes;
+    };
 
     const isEnabled = (element: Element): boolean => {
       if (element.getAttribute("aria-disabled")?.toLowerCase() === "true") return false;
@@ -491,29 +496,6 @@ export async function capturePageObservation(
       ? deepActiveElement
       : null;
 
-    const childElementsFor = (element: Element, maximum: number): readonly Element[] => {
-      const collections: HTMLCollection[] = [];
-      if (element instanceof HTMLIFrameElement && frameBoundaryFor(element) === "same-origin") {
-        const frameChildren = element.contentDocument?.body?.children;
-        if (frameChildren === undefined) return [];
-        collections.push(frameChildren);
-      } else {
-        if (element.shadowRoot !== null) collections.push(element.shadowRoot.children);
-        collections.push(element.children);
-      }
-      const children: Element[] = [];
-      let totalChildren = 0;
-      for (const collection of collections) {
-        totalChildren += collection.length;
-        for (let index = 0; index < collection.length && children.length < maximum; index += 1) {
-          const child = collection.item(index);
-          if (child !== null) children.push(child);
-        }
-      }
-      if (children.length < totalChildren) truncationReasons.add("scanned-nodes");
-      return children;
-    };
-
     interface PendingElement {
       readonly element: Element;
       readonly output: DomNode[];
@@ -523,6 +505,48 @@ export async function capturePageObservation(
     const observedMediaElements: HTMLMediaElement[] = [];
     const uiTree: DomNode[] = [];
     const pendingElements: PendingElement[] = [{ element: document.documentElement, output: uiTree, depth: 0 }];
+
+    // Push the selected prefix in reverse so the stack still explores shadow
+    // children before light DOM children, and same-origin frame body children
+    // instead of the iframe's own children. Avoid allocating an intermediate
+    // children array for every inspected element (usually a leaf).
+    const enqueueChildren = (
+      element: Element,
+      output: DomNode[],
+      depth: number,
+      maximum: number,
+      frameBoundary: "same-origin" | "cross-origin" | null,
+    ): void => {
+      if (frameBoundary === "same-origin" && element instanceof HTMLIFrameElement) {
+        const frameChildren = element.contentDocument?.body?.children;
+        if (frameChildren === undefined) return;
+        const selected = Math.min(maximum, frameChildren.length);
+        if (selected < frameChildren.length) truncationReasons.add("scanned-nodes");
+        for (let index = selected - 1; index >= 0; index -= 1) {
+          const child = frameChildren.item(index);
+          if (child !== null) pendingElements.push({ element: child, output, depth });
+        }
+        return;
+      }
+
+      const shadowChildren = element.shadowRoot?.children;
+      const lightChildren = element.children;
+      const selectedShadow = Math.min(maximum, shadowChildren?.length ?? 0);
+      const selectedLight = Math.min(Math.max(0, maximum - selectedShadow), lightChildren.length);
+      if (selectedShadow + selectedLight < (shadowChildren?.length ?? 0) + lightChildren.length) {
+        truncationReasons.add("scanned-nodes");
+      }
+      for (let index = selectedLight - 1; index >= 0; index -= 1) {
+        const child = lightChildren.item(index);
+        if (child !== null) pendingElements.push({ element: child, output, depth });
+      }
+      if (shadowChildren !== undefined) {
+        for (let index = selectedShadow - 1; index >= 0; index -= 1) {
+          const child = shadowChildren.item(index);
+          if (child !== null) pendingElements.push({ element: child, output, depth });
+        }
+      }
+    };
 
     const domEnumerationStartedAtMs = performance.now();
     let semanticAnalysisMs = 0;
@@ -598,13 +622,7 @@ export async function capturePageObservation(
         0,
         limits.maxScannedNodeCount - scannedNodeCount - pendingElements.length,
       );
-      const children = childElementsFor(element, remainingScanCapacity);
-      for (let index = children.length - 1; index >= 0; index -= 1) {
-        const child = children[index];
-        if (child !== undefined) {
-          pendingElements.push({ element: child, output: childOutput, depth: pending.depth + 1 });
-        }
-      }
+      enqueueChildren(element, childOutput, pending.depth + 1, remainingScanCapacity, frameBoundary);
     }
     // These counters must describe non-overlapping work. Previously both
     // measured the same entire loop and appeared as two independent costs.
@@ -673,7 +691,7 @@ export async function capturePageObservation(
     const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     const optionalDuration = (value: number): number | null => Number.isFinite(value) && value >= 0 ? value : null;
 
-    return {
+    return JSON.stringify({
       focus,
       mediaElements,
       performance: {
@@ -715,8 +733,13 @@ export async function capturePageObservation(
         scrollX: window.scrollX,
         scrollY: window.scrollY,
       },
-    };
-  }, { nodeLimit: maxNodeCount, limits: workLimits }) as Omit<CapturedPageObservation, "timings"> & {
+    });
+  }, { nodeLimit: maxNodeCount, limits: workLimits });
+  const browserEvaluationEndedAtMs = performance.now();
+  if (typeof observationJson !== "string") {
+    throw new Error("Page observation did not produce a serializable snapshot.");
+  }
+  const observation = JSON.parse(observationJson) as Omit<CapturedPageObservation, "timings"> & {
     readonly timings: {
       readonly browserEvaluationMs: number;
       readonly domEnumerationMs: number;
@@ -724,7 +747,6 @@ export async function capturePageObservation(
       readonly auxiliaryObservationMs: number;
     };
   };
-  const browserEvaluationEndedAtMs = performance.now();
 
   const sanitiseNullableText = (value: string | null): string | null => value === null
     ? null

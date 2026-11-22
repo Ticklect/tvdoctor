@@ -1,5 +1,6 @@
 import {
   createStartupBlockerFinding,
+  diagnoseKeyboardNavigation,
   diagnoseNavigation,
   explore,
   prepareStartup,
@@ -12,8 +13,7 @@ import type {
   PlaywrightWebDriver,
   WebDriverPerformanceProfile,
 } from "@tvdoctor/driver-web";
-import { lstat, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   discoverStreamingSettingsRoute,
@@ -25,14 +25,12 @@ import {
   runWebPack,
   type WebPackResult,
 } from "@tvdoctor/pack-web";
-import type { Capability, RemoteKey } from "@tvdoctor/protocol";
+import type { Capability, RemoteKey, TVDoctorIssue } from "@tvdoctor/protocol";
 import {
   buildTVDoctorReportV1,
   highestVerifiedSeverity,
   writeReportBundle,
-  type ArtifactStore,
   type JsonValue,
-  type ReportBundleOptions,
 } from "@tvdoctor/reporters";
 import type {
   TestCommandRequest,
@@ -57,9 +55,16 @@ import {
 } from "./node-audit-evidence.js";
 import {
   createSafeExplorationDriver,
+  navigationCoverageComplete,
   navigationInventory,
   resolveStartupDecisionThroughFocus,
 } from "./node-audit-navigation.js";
+import { keyboardActionsForState, safeKeyboardDriver } from "./keyboard-actions.js";
+import { independentlyReobserveWebKeyboardErrors, WebKeyboardRuntimeWitnesses } from "./web-keyboard-runtime.js";
+import { createSafeLinkNavigationDriver } from "./web-safe-link-runtime.js";
+import { attachIssueReplayVideos } from "./issue-replay-video.js";
+import { applyControlledDemoContract } from "./demo-seeded-proof.js";
+import { recordedVideoSidecar, videoBundleOptions, videoDetails } from "./web-session-video.js";
 import {
   highestSeverity,
   publicTargetLocation,
@@ -67,10 +72,11 @@ import {
   targetRequiresReplayOverride,
   writeAuditAuxiliaryArtifacts,
   writeFailedRunReport,
+  AuthJourneyExecutionFailure,
+  writeProjectRouteMismatchReport,
   writeSetupNotStartedReport,
 } from "./node-audit-output.js";
 import {
-  exhaustedBudgets,
   packCoverage,
   partialRunDetails,
   selectedPacks,
@@ -78,6 +84,7 @@ import {
   streamingSettingsSequence,
 } from "./node-audit-selection.js";
 import {
+  NAVIGATION_GRAPH_HTML_PATH,
   NAVIGATION_GRAPH_JSON_PATH,
   NAVIGATION_GRAPH_MARKDOWN_PATH,
   writeNavigationGraphArtifacts,
@@ -86,13 +93,26 @@ import {
   createStreamingAuditPointerProbe,
   createWebAuditHooks,
 } from "./web-audit-hooks.js";
+import { auditReportCoverage, auditStageLedger } from "./node-audit-run-report.js";
 import { CLI_VERSION } from "./version.js";
+import { launchAuditWithStartupReview } from "./node-audit-startup-runtime.js";
+import { ProjectRouteMismatchError, requireOriginalProjectRoute } from "./node-audit-project-route.js";
+import {
+  PROJECT_AUTH_READY_HASH_ENVIRONMENT_KEY,
+  projectAuthReadyDigest,
+} from "./project-auth-binding.js";
+import { validateProjectAuthReady } from "./node-audit-project-readiness.js";
+
+class ProjectContentUnprovenError extends Error {
+  constructor() { super("The developer-declared protected content could not be proven."); }
+}
 import {
   SOURCE_CORRELATION_JSON_PATH,
   SOURCE_CORRELATION_MARKDOWN_PATH,
   writeSourceCorrelationArtifacts,
 } from "./source-correlation.js";
 import {
+  authoredProtectedContentWaitMs,
   executeJourney,
   JOURNEY_HASH_ENVIRONMENT_KEY,
   JOURNEY_NAME_ENVIRONMENT_KEY,
@@ -100,10 +120,6 @@ import {
   type JourneyExecutionResult,
   type JourneyV1,
 } from "./journey.js";
-
-function asJson(value: unknown): JsonValue {
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
 
 /**
  * Experimental, opt-in web traversal optimisation. Root-only stays the default
@@ -120,58 +136,6 @@ export function webNavigationRestorationMode(
   if (value === undefined || value === "" || value === "root-only") return "root-only";
   if (value === "verified-live-only" || value === "verified-local") return value;
   throw new TypeError("TVDOCTOR_WEB_NAV_RESTORATION must be root-only, verified-live-only, or verified-local.");
-}
-
-interface VideoEvidenceSidecar {
-  readonly absolutePath: string;
-  readonly relativePath: "video/audit-session.webm";
-}
-
-async function recordedVideoSidecar(
-  store: ArtifactStore,
-  driver: PlaywrightWebDriver,
-  requested: boolean,
-): Promise<VideoEvidenceSidecar | null> {
-  if (!requested || typeof driver.getRecordedVideoPath !== "function") return null;
-  let candidate: string | null;
-  try {
-    candidate = driver.getRecordedVideoPath();
-  } catch {
-    return null;
-  }
-  if (candidate === null) return null;
-
-  const expected = resolve(store.outputRoot, "video", "audit-session.webm");
-  if (resolve(candidate) !== expected) return null;
-  try {
-    const metadata = await lstat(expected);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
-    const [realRoot, realFile] = await Promise.all([realpath(store.outputRoot), realpath(expected)]);
-    const difference = relative(realRoot, realFile);
-    if (difference === ".." || difference.startsWith(`..${sep}`) || isAbsolute(difference)) return null;
-  } catch {
-    return null;
-  }
-  return { absolutePath: expected, relativePath: "video/audit-session.webm" };
-}
-
-function videoBundleOptions(video: VideoEvidenceSidecar | null): Pick<ReportBundleOptions, "htmlSidecars"> {
-  if (video === null) return {};
-  return {
-    htmlSidecars: [{
-      href: video.relativePath,
-      label: "Audit session video",
-      mediaType: "video/webm",
-      warning: "Optional recording; may contain sensitive target content. Review before sharing.",
-    }],
-  };
-}
-
-function videoDetails(requested: boolean, video: VideoEvidenceSidecar | null): readonly string[] {
-  if (!requested) return [];
-  return video === null
-    ? ["Video evidence unavailable; audit classification does not depend on video recording."]
-    : [`Video evidence: ${video.absolutePath} (optional; may contain sensitive target content).`];
 }
 
 export async function runAudit(
@@ -198,6 +162,9 @@ export async function runAudit(
   let capabilities: ReadonlySet<Capability> = new Set();
   let navigation: ExplorationResult | null = null;
   let navigationFindings: readonly NavigationDiagnosticFinding[] = [];
+  let runtimeIssues: readonly TVDoctorIssue[] = [];
+  const startupRuntimeIssues: TVDoctorIssue[] = [];
+  const safeLinkIssues: TVDoctorIssue[] = [];
   let navigationStartup: StartupPreparationResult | null = null;
   let startupFindings: readonly NavigationDiagnosticFinding[] = [];
   let startupPreparationMs = 0;
@@ -209,6 +176,8 @@ export async function runAudit(
   let playerSettingsSequence: readonly RemoteKey[] | undefined;
   let web: WebPackResult | null = null;
   let runFailure: { readonly error: unknown } | null = null;
+  let projectRouteMismatch = false;
+  let projectContentUnproven = false;
   let journey: JourneyV1 | null = null;
   let journeyExecution: JourneyExecutionResult | null = null;
   let sessionState: WebStorageState | null = null;
@@ -217,15 +186,41 @@ export async function runAudit(
     const preparedState = sessionState;
     return preparedState === null ? createDriver() : createSessionDriver(preparedState);
   };
-  try {
-    await driver.launch(
-      { id: "cli-web-audit", launchUri: request.target },
-      request.signal === undefined ? undefined : { signal: request.signal },
-    );
-    if (request.journeyPath !== undefined) {
-      journey = await loadJourney(request.journeyPath);
-      journeyExecution = await executeJourney(driver, journey, process.env, request.signal);
+  const requireProjectContent = async (): Promise<void> => {
+    requireOriginalProjectRoute(driver, request);
+    if (request.authReady !== undefined) {
+      const authoredWaitMs = journey === null ? null : authoredProtectedContentWaitMs(journey, {
+        path: new URL(request.target).pathname, ...request.authReady,
+      });
+      if (!await validateProjectAuthReady(driver.getPage(), {
+        expectedUrl: request.target,
+        ...request.authReady,
+        ...(authoredWaitMs === null ? {} : { authoredWaitMs }),
+      })) {
+        throw new ProjectContentUnprovenError();
+      }
     }
+  };
+  try {
+    startupRuntimeIssues.push(...await launchAuditWithStartupReview(driver,
+      { id: "cli-web-audit", launchUri: request.target }, {
+        ...(request.inputMode === undefined ? {} : { inputMode: request.inputMode }),
+        navigation: packs.has("navigation"),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }));
+    if (request.journeyPath !== undefined) {
+      try {
+        journey = await loadJourney(request.journeyPath);
+        journeyExecution = await executeJourney(driver, journey, process.env, request.signal);
+      } catch {
+        // Raw Playwright and authored journey failures can embed URLs, DOM text
+        // and private env keys. A typed outcome is enough for repair guidance.
+        throw new AuthJourneyExecutionFailure();
+      }
+    }
+    // Successful journey assertions alone do not prove that a subsequent
+    // root reload is still on the same protected SPA route.
+    await requireProjectContent();
     capabilities = await driver.capabilities(
       request.signal === undefined ? undefined : { signal: request.signal },
     );
@@ -270,11 +265,25 @@ export async function runAudit(
           });
         }
       }
+      await requireProjectContent();
+      if (navigationStartup.status === "ready" && navigationStartup.restoreToPreparedState !== undefined
+        && request.requireTargetRoute === true) {
+        const restore = navigationStartup.restoreToPreparedState;
+        navigationStartup = {
+          ...navigationStartup,
+          restoreToPreparedState: async (options) => {
+            const snapshot = await restore(options);
+            await requireProjectContent();
+            return snapshot;
+          },
+        };
+      }
       if (navigationStartup.status === "ready" && journey !== null) {
         sessionState = await driver.getPage().context().storageState();
       }
     }
-    if (packs.has("navigation")
+    if (request.inputMode !== "keyboard"
+      && packs.has("navigation")
       && navigationStartup !== null
       && navigationStartup.representativeSnapshot !== undefined
       && navigationStartup.blockers.length > 0) {
@@ -312,10 +321,29 @@ export async function runAudit(
     }
     if (packs.has("navigation") && navigationStartup?.status === "ready" && navigationStartup.restoreToPreparedState !== undefined) {
       const explorationStartedAt = performance.now();
-      navigation = await explore(createSafeExplorationDriver(driver, {
-        fixtureProfileSelection: request.fixtureProfileSelection === true,
-      }), {
+      const useKeyboardInteractions = request.inputMode === "keyboard" && request.keyboardInteractions === true;
+      const keyboardKeys = useKeyboardInteractions ? (["TAB", "SHIFT_TAB", "BACK", "SELECT"] as const) : (["TAB", "SHIFT_TAB"] as const);
+      const explorationDriver = createSafeExplorationDriver(driver, { fixtureProfileSelection: request.fixtureProfileSelection === true });
+      // An explicitly authorized journey may prepare an authenticated route.
+      // The prepared-state restore below independently validates its canonical
+      // identity; only then is a safe keyboard runtime event reobserved.
+      const runtimeWitnesses = request.inputMode === "keyboard"
+        ? new WebKeyboardRuntimeWitnesses(driver) : null;
+      if (runtimeWitnesses !== null) driver.consumeActionRuntimeErrors();
+      const keyboardExplorationDriver = safeKeyboardDriver(explorationDriver);
+      const chosenDriver = useKeyboardInteractions && request.safeLinkNavigation === true
+        ? createSafeLinkNavigationDriver({
+          browser: driver, safeKeyboard: keyboardExplorationDriver,
+          policyDriver: explorationDriver, issues: safeLinkIssues,
+        })
+        : useKeyboardInteractions ? keyboardExplorationDriver : explorationDriver;
+      navigation = await explore(chosenDriver, {
         profile: request.mode,
+        ...(request.inputMode === "keyboard" ? {
+          actions: keyboardKeys,
+          replayActions: keyboardKeys,
+          ...(useKeyboardInteractions ? { actionsForState: ({ snapshot }: { readonly snapshot: import("@tvdoctor/protocol").StateSnapshot }) => keyboardActionsForState(snapshot, { safeLinks: request.safeLinkNavigation === true }) } : {}),
+        } : {}),
         restorationMode: navigationRestorationMode,
         allowRootRestorationFallback: true,
         refreshVisibleSelfLoops: true,
@@ -324,6 +352,9 @@ export async function runAudit(
         // Web relaunch uses the original tab and retains sessionStorage.
         resetStrategy: "relaunch",
         restoreInitialSnapshot: navigationStartup.restoreToPreparedState,
+        ...(runtimeWitnesses === null ? {} : { onActionObserved: ({ key, afterSnapshot }) => {
+          runtimeWitnesses.observe(key, afterSnapshot);
+        } }),
         ...((request.maxDurationMs === undefined && request.navigationBudgets === undefined)
           ? {}
           : { budgets: {
@@ -346,8 +377,31 @@ export async function runAudit(
       const diagnosticsStartedAt = performance.now();
       navigationFindings = [
         ...startupFindings,
-        ...diagnoseNavigation(navigation).findings,
+        ...(request.inputMode === "keyboard"
+          ? diagnoseKeyboardNavigation(navigation).findings
+          : diagnoseNavigation(navigation).findings),
       ];
+      navigationFindings = applyControlledDemoContract(request, navigation, navigationFindings);
+      if (runtimeWitnesses !== null && request.signal?.aborted !== true) {
+        const prepared = navigationStartup;
+        runtimeIssues = await independentlyReobserveWebKeyboardErrors({
+          driver, navigation, witnesses: runtimeWitnesses,
+          restore: async () => {
+            const restored = await prepared.restoreToPreparedState?.();
+            const originalLocation = prepared.representativeSnapshot?.location;
+            if (restored?.location.status !== "available"
+              || originalLocation?.status !== "available"
+              || restored.location.value !== originalLocation.value
+              || driver.getPage().url() !== originalLocation.value) {
+              throw new Error("Original prepared route or authenticated state changed.");
+            }
+            requireOriginalProjectRoute(driver, request);
+            return restored;
+          },
+          fixtureProfileSelection: request.fixtureProfileSelection === true,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        });
+      }
       navigationDiagnosticsMs = Math.max(0, performance.now() - diagnosticsStartedAt);
     }
     if ((packs.has("navigation") || journey !== null) && navigationStartup?.status !== "ready") {
@@ -395,15 +449,23 @@ export async function runAudit(
       });
     }
   } catch (error) {
-    runFailure = { error };
+    if (error instanceof ProjectRouteMismatchError) projectRouteMismatch = true;
+    else if (error instanceof ProjectContentUnprovenError) projectContentUnproven = true;
+    else runFailure = { error };
   } finally {
     await driver.close().catch((error: unknown) => {
-      if (runFailure === null && request.signal?.aborted !== true) throw error;
+      if (runFailure === null && !projectRouteMismatch && !projectContentUnproven
+        && request.signal?.aborted !== true) throw error;
     });
   }
   const video = await recordedVideoSidecar(store, driver, request.recordVideo === true);
   const bundleSidecars = videoBundleOptions(video);
   const recordingDetails = videoDetails(request.recordVideo === true, video);
+  if (projectRouteMismatch || projectContentUnproven) {
+    const incomplete = await writeProjectRouteMismatchReport(store, request, startedAt, bundleSidecars,
+      projectContentUnproven ? "content-unproven" : "redirected");
+    return { ...incomplete, details: [...incomplete.details, ...recordingDetails] };
+  }
   if (runFailure !== null) {
     const failed = await writeFailedRunReport(store, request, startedAt, runFailure.error, bundleSidecars);
     return { ...failed, details: [...failed.details, ...recordingDetails] };
@@ -452,59 +514,22 @@ export async function runAudit(
       ? MAX_DEEP_ISSUES_WITH_FRESH_EVIDENCE
       : MAX_ISSUES_WITH_FRESH_EVIDENCE,
   );
+  const capturedWithClips = await attachIssueReplayVideos(store, captured, request, createDriver);
   const evidenceGenerationMs = Math.max(0, performance.now() - evidenceStartedAt);
   const inventory = navigationInventory(navigation, web);
-  const ledgerValue = asJson({
-    schemaVersion: 1,
-    target: publicTargetLocation(request),
-    mode: request.mode,
-    selectedPacks: [...packs],
-    navigationRestorationMode: packs.has("navigation") ? navigationRestorationMode : null,
-    fixtureProfileSelectionEnabled: request.fixtureProfileSelection === true,
-    startupPreparation: navigationStartup === null ? null : {
-      status: navigationStartup.status,
-      policy: navigationStartup.policy.kind,
-      actions: navigationStartup.policy.kind === "remote-sequence" ? [...navigationStartup.policy.actions] : [],
-      identityHash: navigationStartup.identityHash,
-      blockers: navigationStartup.blockers,
-      controls: navigationStartup.controls,
-      steps: navigationStartup.steps,
-    },
-    journey: journey === null ? null : {
-      schemaVersion: journey.schemaVersion,
-      name: journey.name,
-      sha256: journey.sha256,
-      steps: journey.steps.map((step) => step.action === "type-from-env"
-        ? { action: step.action, source: "environment" }
-        : step),
-      execution: journeyExecution,
-    },
-    timings: {
-      navigationExplorationMs,
-      startupPreparationMs,
-      navigationDiagnosticsMs,
-      evidenceGenerationMs,
-    },
-    navigationDriverPerformance,
-    navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
-    navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
-    streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
-    settingsRouteDiscovery: settingsRouteDiscovery === null ? null : {
-      status: settingsRouteDiscovery.status,
-      detail: settingsRouteDiscovery.detail,
-      sequence: settingsRouteDiscovery.sequence ?? null,
-      statistics: settingsRouteDiscovery.statistics,
-    },
-    web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
+  const ledgerValue = auditStageLedger({
+    request, products, packs, navigationRestorationMode, journey, journeyExecution,
+    settingsRouteDiscovery, navigationDriverPerformance,
+    navigationExplorationMs, startupPreparationMs, navigationDiagnosticsMs, evidenceGenerationMs,
   });
   // navigationInventory constructs JSON-safe primitives/arrays with explicit nulls;
   // streaming these directly avoids serialising and parsing the full graph twice.
   const auxiliaryArtifacts = await writeAuditAuxiliaryArtifacts(store, ledgerValue, inventory as unknown as JsonValue);
   const navigationGraphArtifacts = navigation === null
     ? []
-    : await writeNavigationGraphArtifacts(store, navigation, navigationFindings);
+    : await writeNavigationGraphArtifacts(store, navigation, navigationFindings, request.inputMode);
   const globalArtifacts = [...auxiliaryArtifacts, ...navigationGraphArtifacts];
-  const evidenceFailed = captured.some((entry) => entry.failed);
+  const evidenceFailed = capturedWithClips.some((entry) => entry.failed);
   const coverage = packCoverage(products, packs);
   const runPartial = request.signal?.aborted === true
     || evidenceFailed
@@ -528,9 +553,17 @@ export async function runAudit(
         browser: "chromium",
         viewport: "1280x720",
         orchestration: "bounded semantic local audit",
+        ...(request.inputMode === "keyboard" ? { inputMode: "keyboard" } : {}),
+        ...(request.inputMode === "keyboard" ? {
+          safeLinkNavigation: request.safeLinkNavigation === true ? "enabled" : "disabled",
+          keyboardInteractions: request.keyboardInteractions === true ? "enabled" : "disabled",
+        } : {}),
         ...(journey === null ? {} : {
           [JOURNEY_HASH_ENVIRONMENT_KEY]: journey.sha256,
           [JOURNEY_NAME_ENVIRONMENT_KEY]: journey.name,
+        }),
+        ...(request.authReady === undefined ? {} : {
+          [PROJECT_AUTH_READY_HASH_ENVIRONMENT_KEY]: projectAuthReadyDigest(request.authReady),
         }),
         ...(request.packagedDemo === true
           ? { [PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY]: PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO }
@@ -539,46 +572,14 @@ export async function runAudit(
           : {}),
       },
     },
-    coverage: {
-      screenStatesDiscovered: navigation?.statistics.screenStates ?? 0,
-      focusStatesDiscovered: navigation?.statistics.focusStates
-        ?? (streaming?.statistics.uniqueStates ?? settingsRouteDiscovery?.statistics.uniqueStates ?? 0)
-          + (web?.statistics.uniqueStates ?? 0),
-      transitionsTested: navigation?.graph.actions.length ?? 0,
-      actionsSent: (journeyExecution?.actions ?? 0)
-        + (navigation?.statistics.physicalActions ?? 0)
-        + (streaming?.statistics.physicalActions ?? settingsRouteDiscovery?.statistics.physicalActions ?? 0)
-        + (web?.statistics.physicalActions ?? 0),
-      capabilitiesObserved: [...capabilities],
-      packs: coverage,
-      budget: {
-        maxActions: (journeyExecution?.maxActions ?? 0)
-          + (navigation?.budgets.maxActions ?? 0)
-          + (streaming?.budgets.maxActions ?? settingsRouteDiscovery?.budgets.maxActions ?? 0)
-          + (web?.budgets.maxActions ?? 0),
-        maxStates: (navigation?.budgets.maxStates ?? 0)
-          + (streaming?.budgets.maxStates ?? settingsRouteDiscovery?.budgets.maxStates ?? 0)
-          + (web?.budgets.maxStates ?? 0),
-        maxDepth: Math.max(
-          navigation?.budgets.maxDepth ?? 0,
-          streaming?.budgets.maxLocalDepth ?? settingsRouteDiscovery?.budgets.maxLocalDepth ?? 0,
-          web?.budgets.maxLocalDepth ?? 0,
-        ),
-        maxDurationMs: (journeyExecution?.maxDurationMs ?? 0)
-          + (navigation?.budgets.maxDurationMs ?? 0)
-          + (streaming?.budgets.maxDurationMs ?? settingsRouteDiscovery?.budgets.maxDurationMs ?? 0)
-          + (web?.budgets.maxDurationMs ?? 0),
-        // The source-checkout scan command disables repetition compression.
-        // Do not report the profile's compression allowance as an active cap.
-        maxRepetitiveItems: request.disableRepetitionCompression === true
-          ? null
-          : request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
-        exhausted: exhaustedBudgets(products, packs),
-      },
-    },
-    issues: captured.map((entry) => entry.issue),
-    artifacts: [...globalArtifacts, ...captured.flatMap((entry) => entry.artifacts)],
-    replays: captured.flatMap((entry) => entry.replay === null ? [] : [entry.replay]),
+    coverage: auditReportCoverage({
+      request, products, packs, coverage, capabilities, journeyExecution, settingsRouteDiscovery,
+    }),
+    // Independent functional pageerror recurrence is observation evidence
+    // only: no unsupported generic fix replay, and never a false FIXED claim.
+    issues: [...capturedWithClips.map((entry) => entry.issue), ...runtimeIssues, ...safeLinkIssues, ...startupRuntimeIssues],
+    artifacts: [...globalArtifacts, ...capturedWithClips.flatMap((entry) => entry.artifacts)],
+    replays: capturedWithClips.flatMap((entry) => entry.replay === null ? [] : [entry.replay]),
   });
   const bundle = await writeReportBundle(
     store,
@@ -612,12 +613,24 @@ export async function runAudit(
     highestSeverity: highestSeverity(report.issues),
     highestVerifiedSeverity: highestVerifiedSeverity(report.issues),
     reportPath: bundle.reportJson.absolutePath,
+    ...(navigation === null ? {} : {
+      navigationCoverage: {
+        reason: navigation.termination.reason,
+        complete: navigationCoverageComplete(navigation),
+        pendingStates: navigation.statistics.pendingStates,
+        remainingFrontierEntries: navigation.termination.remainingFrontierEntries ?? null,
+        remainingCandidateActions: navigation.termination.remainingCandidateActions ?? null,
+        deferredStates: navigation.statistics.deferredStates ?? 0,
+      },
+    }),
     details: [
       `Packs ${String(coverage.filter((entry) => entry.status === "completed").length)}/${String(coverage.length)} completed`,
+      ...(request.inputMode === "keyboard" ? ["Input mode: keyboard (Tab / Shift+Tab)"] : []),
       ...(navigation === null ? [] : [`Navigation restoration: ${navigationRestorationMode}${navigationRestorationMode === "root-only" ? "" : " (experimental opt-in)"}`]),
       `Actions ${String(report.coverage.actionsSent)}/${String(report.coverage.budget.maxActions ?? 0)}`,
       `States ${String(report.coverage.focusStatesDiscovered)}; issues ${String(report.issues.length)}; evidence failures ${String(evidenceFailureCount)}`,
       ...(navigation === null ? [] : [
+        `Interactive navigation graph: ${join(dirname(bundle.reportJson.absolutePath), NAVIGATION_GRAPH_HTML_PATH)}`,
         `Navigation graph JSON: ${join(dirname(bundle.reportJson.absolutePath), NAVIGATION_GRAPH_JSON_PATH)}`,
         `Navigation graph: ${join(dirname(bundle.reportJson.absolutePath), NAVIGATION_GRAPH_MARKDOWN_PATH)}`,
       ]),

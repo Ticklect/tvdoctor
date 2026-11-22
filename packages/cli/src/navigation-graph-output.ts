@@ -15,6 +15,7 @@ import {
   type NavigationFocusGraphV2Target,
 } from "@tvdoctor/core";
 import type { ArtifactDescriptor } from "@tvdoctor/protocol";
+import { renderNavigationGraphViewer } from "./navigation-graph-viewer.js";
 import {
   aggregateReportJsonChunks,
   sanitiseUntrustedText,
@@ -23,6 +24,7 @@ import {
 
 export const NAVIGATION_GRAPH_JSON_PATH = "navigation-graph.json";
 export const NAVIGATION_GRAPH_MARKDOWN_PATH = "navigation-graph.md";
+export const NAVIGATION_GRAPH_HTML_PATH = "navigation-graph.html";
 
 const QUICK_FOCUS_ROUTE_LIMIT = 20;
 const QUICK_NAVIGATION_MAP_TARGET_LIMIT = 24;
@@ -181,13 +183,15 @@ function problemTarget(problem: NavigationFocusGraphProblem | NavigationFocusGra
 
 export function renderNavigationFocusGraphMarkdown(
   graph: NavigationFocusGraph | NavigationFocusGraphV2,
+  inputMode: "remote" | "keyboard" = "remote",
 ): string {
   const lines: string[] = [
     "# TVDoctor Navigation Graph",
     "",
     `- Schema: ${code(graph.schemaVersion)}`,
+    `- Input mode: **${inputMode}**`,
     `- Coverage: **${graph.coverage.toUpperCase()}**`,
-    `- Configured remote actions: ${graph.configuredActions.length === 0 ? "none observed" : graph.configuredActions.map(code).join(", ")}`,
+    `- Configured ${inputMode === "keyboard" ? "keyboard" : "remote"} actions: ${graph.configuredActions.length === 0 ? "none observed" : graph.configuredActions.map(code).join(", ")}`,
     `- Screens: ${String(graph.screens.length)}`,
     `- Focus targets: ${String(graph.focusTargets.length)}`,
     `- Observed edges: ${String(graph.transitions.length)}`,
@@ -325,13 +329,17 @@ export function renderNavigationFocusGraphMarkdown(
   }
 
   lines.push(
-    "## Observed remote edges",
+    inputMode === "keyboard" ? "## Observed keyboard edges" : "## Observed remote edges",
     "",
-    "Only observed UP/DOWN/LEFT/RIGHT/SELECT/BACK transitions are listed. Missing edges are not inferred.",
+    inputMode === "keyboard"
+      ? "Only observed Tab/Shift+Tab transitions are listed. Missing edges are not inferred."
+      : "Only observed UP/DOWN/LEFT/RIGHT/SELECT/BACK transitions are listed. Missing edges are not inferred.",
     "",
   );
   if (graph.transitions.length === 0) {
-    lines.push("No matching remote edges were observed.", "");
+    lines.push(inputMode === "keyboard"
+      ? "No matching keyboard edges were observed."
+      : "No matching remote edges were observed.", "");
   } else {
     lines.push(
       "| From | Action | To | Outcome | Evidence | Reproduction path |",
@@ -411,14 +419,17 @@ export async function writeNavigationGraphArtifacts(
   store: ArtifactStore,
   result: ExplorationResult,
   findings: readonly NavigationDiagnosticFinding[],
+  inputMode: "remote" | "keyboard" = "remote",
 ): Promise<readonly ArtifactDescriptor[]> {
   const graph = createNavigationFocusGraphV2(result, diagnosticsFor(findings));
   const jsonFile = await store.writeBundleFileStream(
     NAVIGATION_GRAPH_JSON_PATH,
     aggregateReportJsonChunks(graph),
   );
-  const markdownText = renderNavigationFocusGraphMarkdown(graph);
+  const markdownText = renderNavigationFocusGraphMarkdown(graph, inputMode);
   await store.writeBundleFile(NAVIGATION_GRAPH_MARKDOWN_PATH, markdownText);
+  const viewerText = renderNavigationGraphViewer(graph, inputMode);
+  await store.writeBundleFile(NAVIGATION_GRAPH_HTML_PATH, viewerText);
   return [
     {
       id: "run:navigation-graph-json",
@@ -430,5 +441,6 @@ export async function writeNavigationGraphArtifacts(
       sha256: jsonFile.sha256,
     },
     descriptor("run:navigation-graph-markdown", NAVIGATION_GRAPH_MARKDOWN_PATH, "text/markdown", markdownText),
+    descriptor("run:navigation-graph-html", NAVIGATION_GRAPH_HTML_PATH, "text/html", viewerText),
   ];
 }
