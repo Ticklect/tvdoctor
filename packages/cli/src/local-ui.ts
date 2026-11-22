@@ -6,6 +6,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 
 import { safeTarget, type TestCommandResult, type TestRunMode } from "./cli.js";
 import { renderLocalUiPage } from "./local-ui-page.js";
+import { canonicalOutputRoot } from "./local-output-paths.js";
 import { readLocalTriage, type TriageSummary } from "./local-ui-triage.js";
 import { inspectReport } from "./node-triage.js";
 import { parseTVDoctorReportJson, REPORT_SCHEMA_VERSION_V1 } from "@tvdoctor/protocol";
@@ -774,7 +775,7 @@ export async function serveLocalUi(options: LocalUiOptions): Promise<LocalUiServ
     || options.port < 0 || options.port > 65535)) {
     throw new TypeError("UI port must be between 0 and 65535.");
   }
-  const outputRoot = resolve(options.outputRoot ?? join(process.cwd(), "Tests", "ui"));
+  const outputRoot = canonicalOutputRoot(options.outputRoot ?? join(process.cwd(), "Tests", "ui"));
   const csrfToken = randomBytes(32).toString("base64url");
   const jobs = new Map<string, Job>();
   let current: Job | null = null;

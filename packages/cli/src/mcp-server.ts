@@ -16,6 +16,7 @@ import { compileReplay, type CompiledReplayPlan } from "@tvdoctor/core";
 import { runCli, safeTarget, type CliOperations, type ReplayCommandRequest, type TestCommandRequest, type TestCommandResult } from "./cli.js";
 import { createNodeCliOperations } from "./node-replay.js";
 import { inspectReport } from "./node-triage.js";
+import { canonicalOutputRoot, canonicalRegisteredFile } from "./local-output-paths.js";
 import { JOURNEY_HASH_ENVIRONMENT_KEY, parseJourney } from "./journey.js";
 import { parseSiteArguments, type SiteScanIndex } from "./site-scan.js";
 import type { SpaJourneyIssue, SpaJourneyResult, SpaJourneyStep } from "./spa-journey.js";
@@ -495,7 +496,7 @@ export class TvDoctorMcpServer {
 
   constructor(options: McpServerOptions = {}) {
     this.#options = options;
-    this.#root = resolve(options.outputRoot ?? join(tmpdir(), `tvdoctor-mcp-${randomUUID()}`));
+    this.#root = canonicalOutputRoot(options.outputRoot ?? join(tmpdir(), `tvdoctor-mcp-${randomUUID()}`));
   }
 
   get outputRoot(): string { return this.#root; }
@@ -632,12 +633,12 @@ export class TvDoctorMcpServer {
     if (!isAbsolute(sourcePath)) throw new TypeError("Registered journey path must be absolute.");
     const absolute = resolve(sourcePath);
     const metadata = await lstat(absolute);
-    const canonical = await realpath(absolute);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || canonical !== absolute
+    if (!metadata.isFile() || metadata.isSymbolicLink()
       || metadata.size === 0 || metadata.size > MAX_MCP_JOURNEY_BYTES) {
       throw new TypeError("Registered journey must be an ordinary bounded file without symlinks or junctions.");
     }
-    const contents = await readLimited(absolute, MAX_MCP_JOURNEY_BYTES);
+    const canonical = await canonicalRegisteredFile(absolute);
+    const contents = await readLimited(canonical, MAX_MCP_JOURNEY_BYTES);
     const digest = createHash("sha256").update(contents).digest("hex");
     if (!/^[a-f0-9]{64}$/u.test(approvedHash) || digest !== approvedHash) {
       throw new TypeError("Registered journey differs from host-approved exact file bytes.");
