@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 
-import { hasOnlyEmptyDirectories, removeTemporaryTree, windowsNativeCleanupScript } from "./package-smoke-cleanup.mjs";
+import {
+  hasOnlyEmptyDirectories,
+  removeTemporaryTree,
+  WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
+  windowsNativeCleanupScript,
+} from "./package-smoke-cleanup.mjs";
 
 test("only locked, artifact-free temporary directories may defer Windows cleanup", async () => {
   const root = await mkdtemp(join(tmpdir(), "tvdoctor-package-smoke-empty-test-"));
@@ -81,8 +86,9 @@ test("native Windows cleanup fallback parses and safely exits for a nonexistent 
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsNativeCleanupScript()], {
     encoding: "utf8",
     env: { ...process.env, TVDOCTOR_SMOKE_OWNED_TEMP: missing },
-    timeout: 8_000,
+    timeout: WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
   });
+  assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   await assert.rejects(stat(missing), { code: "ENOENT" });
 });

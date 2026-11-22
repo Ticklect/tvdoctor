@@ -9,6 +9,9 @@ const WINDOWS_TRANSIENT_CLEANUP_ERRORS = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]
 const WINDOWS_CLEANUP_ATTEMPTS = 120;
 const WINDOWS_CLEANUP_RETRY_DELAY_MS = 250;
 
+// Allow for a cold PowerShell start on Windows CI before the bounded delete retries.
+export const WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS = 30_000;
+
 /** The fallback accepts the owned path as environment data, never shell text. */
 export function windowsNativeCleanupScript() {
   return [

@@ -4,7 +4,12 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
-import { hasOnlyEmptyDirectories, removeTemporaryTree, windowsNativeCleanupScript } from "./package-smoke-cleanup.mjs";
+import {
+  hasOnlyEmptyDirectories,
+  removeTemporaryTree,
+  WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
+  windowsNativeCleanupScript,
+} from "./package-smoke-cleanup.mjs";
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temporaryPrefix = path.join(tmpdir(), "tvdoctor-package-smoke-");
@@ -577,7 +582,7 @@ async function cleanupSmokeDirectory(directory) {
       cwd: repositoryRoot,
       encoding: "utf8",
       env: { ...process.env, TVDOCTOR_SMOKE_OWNED_TEMP: directory },
-      timeout: 15_000,
+      timeout: WINDOWS_NATIVE_CLEANUP_TIMEOUT_MS,
     });
     if (fallback.status !== 0 || fallback.error !== undefined) {
       // Windows can retain an empty directory handle after all files are gone.
