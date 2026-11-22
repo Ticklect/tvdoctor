@@ -640,12 +640,10 @@ export function evaluateElementPhase(
   phase: "checkpoint" | "reproduced" | "fixed",
   checkpointSnapshot?: StateSnapshot,
 ): readonly PredicateEvaluation[] {
-  const evaluations: PredicateEvaluation[] = [];
-  for (const assertion of assertions) {
+  return assertions.flatMap((assertion) => {
     const expectation = assertion[phase];
-    if (expectation !== undefined) {
-      evaluations.push(evaluateElementState(snapshot, assertion.selector, expectation, checkpointSnapshot));
-    }
-  }
-  return evaluations;
+    return expectation === undefined
+      ? []
+      : [evaluateElementState(snapshot, assertion.selector, expectation, checkpointSnapshot)];
+  });
 }

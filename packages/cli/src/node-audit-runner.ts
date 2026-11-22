@@ -77,7 +77,6 @@ import {
   writeSetupNotStartedReport,
 } from "./node-audit-output.js";
 import {
-  exhaustedBudgets,
   packCoverage,
   partialRunDetails,
   selectedPacks,
@@ -94,6 +93,7 @@ import {
   createStreamingAuditPointerProbe,
   createWebAuditHooks,
 } from "./web-audit-hooks.js";
+import { auditReportCoverage, auditStageLedger } from "./node-audit-run-report.js";
 import { CLI_VERSION } from "./version.js";
 import { launchAuditWithStartupReview } from "./node-audit-startup-runtime.js";
 import { ProjectRouteMismatchError, requireOriginalProjectRoute } from "./node-audit-project-route.js";
@@ -120,10 +120,6 @@ import {
   type JourneyExecutionResult,
   type JourneyV1,
 } from "./journey.js";
-
-function asJson(value: unknown): JsonValue {
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
 
 /**
  * Experimental, opt-in web traversal optimisation. Root-only stays the default
@@ -521,49 +517,10 @@ export async function runAudit(
   const capturedWithClips = await attachIssueReplayVideos(store, captured, request, createDriver);
   const evidenceGenerationMs = Math.max(0, performance.now() - evidenceStartedAt);
   const inventory = navigationInventory(navigation, web);
-  const ledgerValue = asJson({
-    schemaVersion: 1,
-    target: publicTargetLocation(request),
-    mode: request.mode,
-    ...(request.inputMode === "keyboard" ? { inputMode: "keyboard" } : {}),
-    selectedPacks: [...packs],
-    navigationRestorationMode: packs.has("navigation") ? navigationRestorationMode : null,
-    fixtureProfileSelectionEnabled: request.fixtureProfileSelection === true,
-    startupPreparation: navigationStartup === null ? null : {
-      status: navigationStartup.status,
-      policy: navigationStartup.policy.kind,
-      actions: navigationStartup.policy.kind === "remote-sequence" ? [...navigationStartup.policy.actions] : [],
-      identityHash: navigationStartup.identityHash,
-      blockers: navigationStartup.blockers,
-      controls: navigationStartup.controls,
-      steps: navigationStartup.steps,
-    },
-    journey: journey === null ? null : {
-      schemaVersion: journey.schemaVersion,
-      name: journey.name,
-      sha256: journey.sha256,
-      steps: journey.steps.map((step) => step.action === "type-from-env"
-        ? { action: step.action, source: "environment" }
-        : step),
-      execution: journeyExecution,
-    },
-    timings: {
-      navigationExplorationMs,
-      startupPreparationMs,
-      navigationDiagnosticsMs,
-      evidenceGenerationMs,
-    },
-    navigationDriverPerformance,
-    navigation: navigation === null ? null : { termination: navigation.termination, statistics: navigation.statistics },
-    navigationFindings: navigationFindings.map((finding) => ({ id: finding.issue.id, rule: finding.issue.rule, classification: finding.classification })),
-    streaming: streaming === null ? null : { status: streaming.status, termination: streaming.termination, statistics: streaming.statistics, stages: streaming.stages },
-    settingsRouteDiscovery: settingsRouteDiscovery === null ? null : {
-      status: settingsRouteDiscovery.status,
-      detail: settingsRouteDiscovery.detail,
-      sequence: settingsRouteDiscovery.sequence ?? null,
-      statistics: settingsRouteDiscovery.statistics,
-    },
-    web: web === null ? null : { status: web.status, termination: web.termination, statistics: web.statistics, stages: web.stages },
+  const ledgerValue = auditStageLedger({
+    request, products, packs, navigationRestorationMode, journey, journeyExecution,
+    settingsRouteDiscovery, navigationDriverPerformance,
+    navigationExplorationMs, startupPreparationMs, navigationDiagnosticsMs, evidenceGenerationMs,
   });
   // navigationInventory constructs JSON-safe primitives/arrays with explicit nulls;
   // streaming these directly avoids serialising and parsing the full graph twice.
@@ -615,43 +572,9 @@ export async function runAudit(
           : {}),
       },
     },
-    coverage: {
-      screenStatesDiscovered: navigation?.statistics.screenStates ?? 0,
-      focusStatesDiscovered: navigation?.statistics.focusStates
-        ?? (streaming?.statistics.uniqueStates ?? settingsRouteDiscovery?.statistics.uniqueStates ?? 0)
-          + (web?.statistics.uniqueStates ?? 0),
-      transitionsTested: navigation?.graph.actions.length ?? 0,
-      actionsSent: (journeyExecution?.actions ?? 0)
-        + (navigation?.statistics.physicalActions ?? 0)
-        + (streaming?.statistics.physicalActions ?? settingsRouteDiscovery?.statistics.physicalActions ?? 0)
-        + (web?.statistics.physicalActions ?? 0),
-      capabilitiesObserved: [...capabilities],
-      packs: coverage,
-      budget: {
-        maxActions: (journeyExecution?.maxActions ?? 0)
-          + (navigation?.budgets.maxActions ?? 0)
-          + (streaming?.budgets.maxActions ?? settingsRouteDiscovery?.budgets.maxActions ?? 0)
-          + (web?.budgets.maxActions ?? 0),
-        maxStates: (navigation?.budgets.maxStates ?? 0)
-          + (streaming?.budgets.maxStates ?? settingsRouteDiscovery?.budgets.maxStates ?? 0)
-          + (web?.budgets.maxStates ?? 0),
-        maxDepth: Math.max(
-          navigation?.budgets.maxDepth ?? 0,
-          streaming?.budgets.maxLocalDepth ?? settingsRouteDiscovery?.budgets.maxLocalDepth ?? 0,
-          web?.budgets.maxLocalDepth ?? 0,
-        ),
-        maxDurationMs: (journeyExecution?.maxDurationMs ?? 0)
-          + (navigation?.budgets.maxDurationMs ?? 0)
-          + (streaming?.budgets.maxDurationMs ?? settingsRouteDiscovery?.budgets.maxDurationMs ?? 0)
-          + (web?.budgets.maxDurationMs ?? 0),
-        // The source-checkout scan command disables repetition compression.
-        // Do not report the profile's compression allowance as an active cap.
-        maxRepetitiveItems: request.disableRepetitionCompression === true
-          ? null
-          : request.mode === "quick" ? 1 : request.mode === "standard" ? 2 : 4,
-        exhausted: exhaustedBudgets(products, packs),
-      },
-    },
+    coverage: auditReportCoverage({
+      request, products, packs, coverage, capabilities, journeyExecution, settingsRouteDiscovery,
+    }),
     // Independent functional pageerror recurrence is observation evidence
     // only: no unsupported generic fix replay, and never a false FIXED claim.
     issues: [...capturedWithClips.map((entry) => entry.issue), ...runtimeIssues, ...safeLinkIssues, ...startupRuntimeIssues],

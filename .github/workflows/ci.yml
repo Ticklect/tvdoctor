@@ -149,11 +149,11 @@ jobs:
       - name: Typecheck supported runtime
         run: npm run typecheck
 
-      - name: Unit tests on supported runtime
-        run: npm run test:unit
-
       - name: Install matched Chromium
         run: npx playwright install chromium
+
+      - name: Unit tests on supported runtime
+        run: npm run test:unit
 
       - name: Prove tarball, installed demo/replay, and real global shim
         run: npm run test:package-smoke
