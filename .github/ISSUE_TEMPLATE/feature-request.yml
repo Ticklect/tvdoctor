@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a bounded diagnostic, workflow, report, or usability improvement.
+description: Propose an improvement to agent setup, UI scans, evidence, or fix verification.
 title: "[Feature]: "
 labels:
   - enhancement
@@ -13,7 +13,7 @@ body:
     id: problem
     attributes:
       label: User problem
-      description: Who is blocked, on which TV workflow, and what evidence is currently missing?
+      description: Who is blocked, which step of the workflow is affected, and what evidence is missing?
     validations:
       required: true
 
@@ -22,6 +22,8 @@ body:
     attributes:
       label: Likely scope
       options:
+        - MCP tools or coding-agent workflow
+        - Local dashboard
         - CLI or developer experience
         - Core exploration
         - Diagnostic pack or rule

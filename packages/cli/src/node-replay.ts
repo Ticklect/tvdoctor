@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -16,6 +17,8 @@ import {
   type TVDoctorDriver,
   type TVDoctorIssue,
   type TVDoctorReplayV1,
+  type StateSnapshot,
+  type UiNodeSnapshot,
 } from "@tvdoctor/protocol";
 import type {
   CliOperations,
@@ -30,6 +33,7 @@ import {
   REPLAY_TARGET_OVERRIDE_REQUIRED,
   createNodeAuditOperation,
 } from "./node-audit.js";
+import { createSafeExplorationDriver } from "./node-audit-navigation.js";
 import {
   androidBuildToolsPreflight,
   androidObserverPreflight,
@@ -40,11 +44,114 @@ import {
 import { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
 import { createNodeDemoOperation, withPackagedDemoFixture } from "./node-demo.js";
 import {
+  authoredProtectedContentWaitMs,
   executeJourney,
   JOURNEY_HASH_ENVIRONMENT_KEY,
   loadJourney,
+  parseJourney,
   type JourneyV1,
 } from "./journey.js";
+import { validateProjectAuthReady } from "./node-audit-project-readiness.js";
+import {
+  PROJECT_AUTH_READY_HASH_ENVIRONMENT_KEY,
+  projectAuthReadyDigest,
+} from "./project-auth-binding.js";
+
+const JOURNEY_RESTORE_DRIFT = "Authenticated journey state changed after replay reset; no replay input was sent.";
+const JOURNEY_RESTORE_UNAVAILABLE = "Authenticated journey restoration could not be safely validated.";
+const MAX_JOURNEY_PROOF_NODES = 4_096;
+
+interface JourneyStateProof {
+  readonly url: string;
+  readonly uiFingerprint: string;
+}
+
+/** Build an in-memory UI identity proof, never place UI labels or secret-bearing URLs in reports/errors. */
+function journeyStateProof(driver: PlaywrightWebDriver, origin: string): Promise<JourneyStateProof> {
+  return (async () => {
+    let url: URL;
+    try { url = new URL(driver.getPage().url()); }
+    catch { throw new Error(JOURNEY_RESTORE_UNAVAILABLE); }
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.origin !== origin
+      || url.username !== "" || url.password !== "") {
+      throw new Error(JOURNEY_RESTORE_DRIFT);
+    }
+    let snapshot: StateSnapshot;
+    try { snapshot = await driver.snapshot(); }
+    catch { throw new Error(JOURNEY_RESTORE_UNAVAILABLE); }
+    // snapshot.location is intentionally privacy-redacted (e.g.
+    // /__tvroute/r_<hash>) and must never be compared with the raw browser
+    // route. The trusted page URL above is the sole route source; the
+    // snapshot provides only the structural UI identity evidence.
+    if (snapshot.uiTree.status !== "available" || snapshot.uiTree.value.length === 0) {
+      throw new Error(JOURNEY_RESTORE_UNAVAILABLE);
+    }
+    // Snapshot collection is asynchronous. A same-origin SPA may redirect to
+    // another protected route while its UI is read; never pair the OLD URL
+    // with the NEW route's structurally identical UI fingerprint.
+    try {
+      if (driver.getPage().url() !== url.href) throw new Error(JOURNEY_RESTORE_DRIFT);
+    } catch { throw new Error(JOURNEY_RESTORE_DRIFT); }
+    const nodes: { id: string | null; role: string | null; name: string | null;
+      visible: boolean | null; enabled: boolean | null;
+      modal: boolean | null; depth: number }[] = [];
+    const queue: { node: UiNodeSnapshot; depth: number }[] = snapshot.uiTree.value
+      .map((node) => ({ node, depth: 0 }));
+    while (queue.length > 0) {
+      if (nodes.length >= MAX_JOURNEY_PROOF_NODES) throw new Error(JOURNEY_RESTORE_UNAVAILABLE);
+      const entry = queue.shift();
+      if (entry === undefined) break;
+      nodes.push({
+        id: entry.node.stableId,
+        role: entry.node.role,
+        name: entry.node.name,
+        visible: entry.node.visible,
+        enabled: entry.node.enabled,
+        modal: entry.node.modal,
+        depth: entry.depth,
+      });
+      queue.push(...entry.node.children.map((node) => ({ node, depth: entry.depth + 1 })));
+    }
+    try {
+      if (driver.getPage().url() !== url.href) throw new Error(JOURNEY_RESTORE_DRIFT);
+    } catch { throw new Error(JOURNEY_RESTORE_DRIFT); }
+    return {
+      url: url.href,
+      uiFingerprint: createHash("sha256").update(JSON.stringify(nodes)).digest("hex"),
+    };
+  })();
+}
+
+/** Re-check only terminal assertions from the exact validated journey. Never submit login again. */
+function terminalJourneyAssertions(journey: JourneyV1): JourneyV1 | null {
+  let lastInput = -1;
+  for (const [index, step] of journey.steps.entries()) {
+    if (step.action === "press" || step.action === "type-from-env" || step.action === "navigate-route") {
+      lastInput = index;
+    }
+  }
+  const assertions = journey.steps.slice(lastInput + 1);
+  if (assertions.length === 0) return null;
+  if (assertions.some((step) => step.action === "press"
+    || step.action === "type-from-env" || step.action === "navigate-route")) {
+    throw new TypeError("Journey terminal validation must not submit input.");
+  }
+  // Legacy immediate assertions retain their 10s replay cap. A developer may
+  // explicitly author a bounded read-only wait (up to 30s per step) for real
+  // framework hydration; permit that same wait after restoration instead of
+  // silently shortening it to 10s. The original journey's total duration and
+  // global 120s parser bound still apply. No new navigation or inputs are
+  // allowed in these terminal assertions.
+  const authoredWaitMs = assertions.reduce((total, step) => total
+    + (step.action === "wait-for-route" || step.action === "wait-for-ui"
+      ? step.timeoutMs : 0), 0);
+  return parseJourney({
+    schemaVersion: journey.schemaVersion,
+    name: journey.name,
+    maxDurationMs: Math.min(journey.maxDurationMs, Math.max(10_000, authoredWaitMs + 2_000)),
+    steps: assertions,
+  });
+}
 
 async function detectWebsiteStartup(target: string): Promise<WebsiteStartupDetection> {
   const driver = new PlaywrightWebDriver();
@@ -244,6 +351,27 @@ async function replayIssue(
   } else if (request.journeyPath !== undefined) {
     throw new TypeError("The report does not declare a custom journey; --journey is not allowed.");
   }
+  const savedAuthReady = report.target.environment[PROJECT_AUTH_READY_HASH_ENVIRONMENT_KEY];
+  if (savedAuthReady !== undefined || expectedJourneyHash !== undefined) {
+    if (request.authReady === undefined || request.journeyPath === undefined
+      || typeof savedAuthReady !== "string") {
+      return { status: "inconclusive", details: ["The original protected-content assertion is required before authenticated replay."] };
+    }
+    try {
+      if (projectAuthReadyDigest(request.authReady) !== savedAuthReady) {
+        return { status: "inconclusive", details: ["The protected-content assertion differs from the original report."] };
+      }
+    } catch {
+      return { status: "inconclusive", details: ["The protected-content assertion is invalid."] };
+    }
+  } else if (request.authReady !== undefined) {
+    return { status: "inconclusive", details: ["The original report did not declare protected content."] };
+  }
+  const authoredWaitMs = journey !== null && request.authReady !== undefined
+    ? authoredProtectedContentWaitMs(journey, {
+      path: new URL(targetUrl(report.target.location, request.targetOverride)).pathname,
+      ...request.authReady,
+    }) : null;
   if (report.target.platform === "web"
     && report.target.environment[PACKAGED_REPLAY_TARGET_ENVIRONMENT_KEY]
       === PACKAGED_REPLAY_TARGET_NORTHSTAR_DEMO
@@ -296,6 +424,9 @@ async function replayIssue(
   }
 
   try {
+    const replayDriver: TVDoctorDriver = report.target.platform === "web"
+      ? createSafeExplorationDriver(driver as PlaywrightWebDriver)
+      : driver;
     if (report.target.platform === "android-tv" || report.target.platform === "fire-tv") {
       const androidDriver = driver as AndroidReplayCliDriver;
       if (androidApk === null || androidApk.packageName === null || request.apkPath === undefined) {
@@ -308,25 +439,111 @@ async function replayIssue(
         ...(component === undefined ? {} : { launchUri: component }),
       });
     } else {
+      const launchUri = targetUrl(report.target.location, request.targetOverride);
+      if (journey !== null && request.targetOverride !== undefined
+        && new URL(launchUri).pathname !== new URL(targetUrl(report.target.location, undefined)).pathname) {
+        return {
+          status: "inconclusive",
+          details: ["Authenticated journey launch route MISMATCH", "Replay was not started."],
+        };
+      }
       await driver.launch({
         id: `cli-${issue.id}`,
-        launchUri: targetUrl(report.target.location, request.targetOverride),
+        launchUri,
       });
       if (journey !== null) {
+        // This is an explicitly authored and hash-pinned setup journey, not
+        // autonomous exploration. Use the same journey driver as the original
+        // authenticated scan so ordinary accessible controls without DOM IDs
+        // remain usable. The subsequent defect replay STILL uses replayDriver,
+        // whose SELECT actions are subject to the safe-exploration policy.
         await executeJourney(driver as PlaywrightWebDriver, journey, process.env, request.signal);
+        if (request.authReady !== undefined && !await validateProjectAuthReady(
+          (driver as PlaywrightWebDriver).getPage(), {
+            expectedUrl: launchUri, ...request.authReady,
+            ...(authoredWaitMs === null ? {} : { authoredWaitMs }),
+          })) {
+          return { status: "inconclusive", details: ["Protected content was not proven after login; no replay was started."] };
+        }
       }
     }
-    const result = await executeReplay(driver, plan, {
+    let journeyProof: JourneyStateProof | null = null;
+    let journeyAssertions: JourneyV1 | null = null;
+    let journeyWebDriver: PlaywrightWebDriver | null = null;
+    let journeyOrigin: string | null = null;
+    if (journey !== null) {
+      journeyWebDriver = driver as PlaywrightWebDriver;
+      journeyOrigin = new URL(targetUrl(report.target.location, request.targetOverride)).origin;
+      journeyAssertions = terminalJourneyAssertions(journey);
+      try {
+        if (journeyAssertions !== null) {
+          await executeJourney(journeyWebDriver, journeyAssertions, {}, request.signal);
+        }
+        journeyProof = await journeyStateProof(journeyWebDriver, journeyOrigin);
+      } catch {
+        return {
+          status: "inconclusive",
+          details: ["Authenticated journey state could not be independently verified", "Replay was not started."],
+        };
+      }
+    }
+    const result = await executeReplay(replayDriver, plan, {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.confirmStableFix === true ? { confirmStableFix: true } : {}),
+      ...(journeyProof === null || journeyWebDriver === null || journeyOrigin === null
+        ? {}
+        : {
+            restore: async ({ strategy }: { readonly strategy: typeof plan.replay.reset.strategy }) => {
+              if (strategy === "clear-data") throw new Error(JOURNEY_RESTORE_DRIFT);
+              try {
+                if (replayDriver.reset === undefined) throw new Error(JOURNEY_RESTORE_UNAVAILABLE);
+                await replayDriver.reset(strategy);
+                // A framework may initially render a loading shell after a
+                // valid reset. Check only the original read-only terminal
+                // journey assertions and exact protected marker first; then
+                // compare full structural identity of the settled page.
+                // Never compare a loading skeleton with the finished original
+                // or treat a disappearing marker as a restored session.
+                if (journeyAssertions !== null) {
+                  await executeJourney(journeyWebDriver, journeyAssertions, {}, request.signal);
+                }
+                if (request.authReady !== undefined && !await validateProjectAuthReady(
+                  journeyWebDriver.getPage(), {
+                    expectedUrl: targetUrl(report.target.location, request.targetOverride),
+                    ...request.authReady,
+                    ...(authoredWaitMs === null ? {} : { authoredWaitMs }),
+                  })) throw new Error(JOURNEY_RESTORE_DRIFT);
+                const restored = await journeyStateProof(journeyWebDriver, journeyOrigin);
+                if (restored.url !== journeyProof.url
+                  || restored.uiFingerprint !== journeyProof.uiFingerprint) {
+                  throw new Error(JOURNEY_RESTORE_DRIFT);
+                }
+              } catch {
+                // Never forward Playwright errors: their URL/DOM detail may
+                // contain tokens from the authenticated session.
+                throw new Error(JOURNEY_RESTORE_DRIFT);
+              }
+            },
+          }),
     });
+    if (journey !== null && result.reason?.phase === "reset"
+      && result.reason.code === "reset-error" && result.reason.message === JOURNEY_RESTORE_DRIFT) {
+      return {
+        status: "inconclusive",
+        details: ["Authenticated journey state changed after replay reset", "Replay input was not sent."],
+      };
+    }
     const expectedSetupActions = plan.setup.steps.reduce(
       (total, step) => total + step.repeat,
       0,
     );
-    const completedSetupActions = result.evidence.setupActionResults.length;
+    const recordedSetupActions = result.evidence.setupActionResults.length;
+    const completedSetupActions = result.evidence.setupActionResults.filter((action) => action.outcome === "applied").length;
+    const assertionAction = result.evidence.assertionActionResult;
     const details = [
       "Launch PASS",
-      completedSetupActions === expectedSetupActions && result.evidence.beforeSnapshot !== null
+      recordedSetupActions === expectedSetupActions && completedSetupActions === expectedSetupActions
+        && result.evidence.beforeSnapshot !== null
         ? `Setup ${String(completedSetupActions)}/${String(expectedSetupActions)} remote action(s) PASS`
         : `Setup ${String(completedSetupActions)}/${String(expectedSetupActions)} remote action(s) INCOMPLETE`,
       result.evidence.beforeSnapshot === null
@@ -334,9 +551,9 @@ async function replayIssue(
         : result.reason?.phase === "checkpoint"
           ? "Checkpoint INCONCLUSIVE"
           : "Checkpoint PASS",
-      result.evidence.assertionActionResult === null
+      assertionAction === null
         ? `${plan.assertion.action} assertion NOT COMPLETED`
-        : `${plan.assertion.action} dispatch PASS`,
+        : `${plan.assertion.action} dispatch ${assertionAction.outcome === "applied" ? "PASS" : "INCOMPLETE"}`,
       `Replay classification ${result.status.toUpperCase()}`,
     ];
     if (result.reason !== null) {

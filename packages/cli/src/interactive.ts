@@ -103,8 +103,8 @@ export class ProcessStartTerminal implements StartTerminal {
         });
         process.stdout.write("Use Up/Down and Enter. Escape cancels.\n");
       };
-      function listener(character: string, key: { name?: string; sequence?: string; ctrl?: boolean }): void {
-        if (key.ctrl && key.name === "c") {
+      function listener(_character: string, key: { name?: string; sequence?: string; ctrl?: boolean }): void {
+        if ((key.ctrl && key.name === "c") || key.name === "escape") {
           process.stdout.write("\n");
           finish(null);
           return;
@@ -122,11 +122,6 @@ export class ProcessStartTerminal implements StartTerminal {
         if (key.name === "return" || key.name === "enter") {
           process.stdout.write("\n");
           finish(selected);
-          return;
-        }
-        if (key.name === "escape") {
-          process.stdout.write("\n");
-          finish(null);
           return;
         }
       }

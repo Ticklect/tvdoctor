@@ -142,10 +142,20 @@ export async function readSettleBaseline(page: Page): Promise<SettleBaseline> {
 
     const tracker = (window as TrackerWindow).__tvdoctorSettleTracker;
     const active = document.activeElement;
+    const textPrefix = (element: Element, maximumLength: number): string => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let prefix = "";
+      while (prefix.length < maximumLength) {
+        const node = walker.nextNode();
+        if (node === null) break;
+        prefix += (node.nodeValue ?? "").slice(0, maximumLength - prefix.length);
+      }
+      return prefix;
+    };
     const focusKey = active instanceof Element
       ? active.getAttribute("data-tv-id")
         || (active instanceof HTMLElement ? active.id : "")
-        || `${active.tagName}:${active.getAttribute("aria-label") ?? active.textContent?.slice(0, 80) ?? ""}`
+        || `${active.tagName}:${active.getAttribute("aria-label") ?? textPrefix(active, 80)}`
       : "";
     return {
       capturedAtEpochMs: Date.now(),
@@ -180,10 +190,20 @@ export async function waitForPageSettle(
       }
       const tracker = (window as TrackerWindow).__tvdoctorSettleTracker;
       const active = document.activeElement;
+      const textPrefix = (element: Element, maximumLength: number): string => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let prefix = "";
+        while (prefix.length < maximumLength) {
+          const node = walker.nextNode();
+          if (node === null) break;
+          prefix += (node.nodeValue ?? "").slice(0, maximumLength - prefix.length);
+        }
+        return prefix;
+      };
       const focusKey = active instanceof Element
         ? active.getAttribute("data-tv-id")
           || (active instanceof HTMLElement ? active.id : "")
-          || `${active.tagName}:${active.getAttribute("aria-label") ?? active.textContent?.slice(0, 80) ?? ""}`
+          || `${active.tagName}:${active.getAttribute("aria-label") ?? textPrefix(active, 80)}`
         : "";
       const focusChanged = focusKey !== actionBaseline.focusKey
         || (tracker?.focusVersion ?? 0) > actionBaseline.focusVersion;
@@ -251,10 +271,20 @@ export async function waitForPageSettle(
         const tracker = (window as TrackerWindow).__tvdoctorSettleTracker;
         const now = Date.now();
         const active = document.activeElement;
+        const textPrefix = (element: Element, maximumLength: number): string => {
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          let prefix = "";
+          while (prefix.length < maximumLength) {
+            const node = walker.nextNode();
+            if (node === null) break;
+            prefix += (node.nodeValue ?? "").slice(0, maximumLength - prefix.length);
+          }
+          return prefix;
+        };
         const focusKey = active instanceof Element
           ? active.getAttribute("data-tv-id")
             || (active instanceof HTMLElement ? active.id : "")
-            || `${active.tagName}:${active.getAttribute("aria-label") ?? active.textContent?.slice(0, 80) ?? ""}`
+            || `${active.tagName}:${active.getAttribute("aria-label") ?? textPrefix(active, 80)}`
           : "";
         const screen = document.body?.getAttribute("data-screen") ?? "";
         const responded = focusKey !== actionBaseline.focusKey

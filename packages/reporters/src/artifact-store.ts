@@ -30,6 +30,7 @@ export const ISSUE_EVIDENCE_SLOTS = [
   "navigation-path",
   "replay",
   "trace",
+  "issue-video",
 ] as const;
 
 export type IssueEvidenceSlot = (typeof ISSUE_EVIDENCE_SLOTS)[number];
@@ -153,6 +154,8 @@ export function issueEvidenceSlotDetails(
       return { extension: "yaml", kind: "replay", mediaType: "text/yaml" };
     case "trace":
       return { extension: "zip", kind: "trace", mediaType: "application/zip" };
+    case "issue-video":
+      return { extension: "webm", kind: "video", mediaType: "video/webm" };
   }
 }
 

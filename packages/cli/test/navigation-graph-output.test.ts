@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   NAVIGATION_GRAPH_JSON_PATH,
+  NAVIGATION_GRAPH_HTML_PATH,
   NAVIGATION_GRAPH_MARKDOWN_PATH,
   renderNavigationFocusGraphMermaid,
   renderNavigationFocusGraphMarkdown,
@@ -148,7 +149,11 @@ describe("navigation graph artifacts", () => {
     expect(descriptors).toMatchObject([
       { id: "run:navigation-graph-json", status: "available", path: NAVIGATION_GRAPH_JSON_PATH },
       { id: "run:navigation-graph-markdown", status: "available", path: NAVIGATION_GRAPH_MARKDOWN_PATH },
+      { id: "run:navigation-graph-html", status: "available", path: NAVIGATION_GRAPH_HTML_PATH },
     ]);
+    const viewerHtml = await readFile(join(root, NAVIGATION_GRAPH_HTML_PATH), "utf8");
+    expect(viewerHtml).toContain("Navigation explorer");
+    expect(viewerHtml).toContain("navigation-graph.json");
     const graph = JSON.parse(await readFile(join(root, NAVIGATION_GRAPH_JSON_PATH), "utf8")) as NavigationFocusGraphV2;
     expect(graph).toMatchObject({
       schemaVersion: "tvdoctor.navigation-focus-graph/v2",
@@ -180,6 +185,7 @@ describe("navigation graph artifacts", () => {
       reproductionPath: ["RIGHT"],
     });
     const markdown = await readFile(join(root, NAVIGATION_GRAPH_MARKDOWN_PATH), "utf8");
+    expect(markdown).toContain("Input mode: **remote**");
     expect(markdown).toContain("## Screens and focus targets");
     expect(markdown).toContain("## Exploration coverage");
     expect(markdown).toContain("Locally complete focus targets: **0 / 2**");
@@ -195,6 +201,16 @@ describe("navigation graph artifacts", () => {
     expect(markdown).toContain("**RIGHT**");
     expect(markdown).toContain("`RIGHT`");
     expect(markdown).toContain("Missing edges are not inferred.");
+  });
+
+  it("labels keyboard exploration and its edges without claiming remote coverage", () => {
+    const graph = createNavigationFocusGraphV2(explorationResult());
+    const markdown = renderNavigationFocusGraphMarkdown(graph, "keyboard");
+    expect(markdown).toContain("Input mode: **keyboard**");
+    expect(markdown).toContain("Configured keyboard actions:");
+    expect(markdown).toContain("## Observed keyboard edges");
+    expect(markdown).toContain("Only observed Tab/Shift+Tab transitions");
+    expect(markdown).not.toContain("## Observed remote edges");
   });
 
   it("bounds enormous Markdown edge tables and maps while identifying the complete JSON source", () => {

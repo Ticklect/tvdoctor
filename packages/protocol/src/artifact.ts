@@ -8,6 +8,7 @@ export const ARTIFACT_KINDS = [
   "transition",
   "console-log",
   "trace",
+  "video",
   "navigation-path",
   "replay",
   "report",

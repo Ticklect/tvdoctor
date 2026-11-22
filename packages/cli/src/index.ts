@@ -6,6 +6,9 @@ export {
   EXIT_CODES,
   HELP_TEXT,
   REPLAY_HELP_TEXT,
+  VERIFY_FIX_HELP_TEXT,
+  CHECK_HELP_TEXT,
+  FINDINGS_HELP_TEXT,
   SETUP_HELP_TEXT,
   START_HELP_TEXT,
   TEST_HELP_TEXT,
@@ -34,6 +37,16 @@ export {
   type TestRunMode,
 } from "./cli.js";
 export {
+  verifyOriginalFindingWorkflow,
+  type VerifyWorkflowRequest,
+  type VerifyWorkflowResult,
+  type VerifyWorkflowVerdict,
+  type VerifyWorkflowComparison,
+  type VerifyFreshScanOptions,
+  type VerifyWorkflowDependencies,
+} from "./node-verify-workflow.js";
+export { inspectReport, type ReportTriage, type ActionableTriageFinding, type InspectReportOptions } from "./node-triage.js";
+export {
   SUPPORTED_NODE_RANGE,
   diagnoseEnvironment,
   doctorSucceeded,
@@ -61,6 +74,32 @@ export {
   type NodeReplayDependencies,
 } from "./node-replay.js";
 export { defaultOutputDirectory } from "./product-output.js";
+export {
+  SITE_SCAN_LIMITS,
+  parseSiteArguments,
+  renderSiteReport,
+  scanSite,
+  type SiteScanIndex,
+  type SiteScanOptions,
+  type SiteSpaSummary,
+} from "./site-scan.js";
+export {
+  SPA_JOURNEY_LIMITS,
+  runSpaJourneyScan,
+  type SpaJourneyRequest,
+  type SpaJourneyResult,
+  type SpaJourneyState,
+  type SpaJourneyEdge,
+} from "./spa-journey.js";
+export { renderSpaJourneyGraph } from "./spa-graph.js";
+export { compareResponsiveBundles, renderResponsiveComparison, type ResponsiveComparison } from "./responsive-compare.js";
+export {
+  RESPONSIVE_VIEWPORTS,
+  runResponsiveScan,
+  type ResponsiveScanRequest,
+  type ResponsiveScanResult,
+  type ResponsiveFinding,
+} from "./responsive-scan.js";
 export { compareBaselineFromFiles, createBaselineFromFiles } from "./node-baseline.js";
 export {
   DEFAULT_SOURCE_CORRELATION_LIMITS,

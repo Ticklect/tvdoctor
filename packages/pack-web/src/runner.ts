@@ -1,6 +1,7 @@
 import type {
   ActionResult,
   Capability,
+  DriverOperationOptions,
   LogEntry,
   RemoteKey,
   StateSnapshot,
@@ -35,6 +36,7 @@ import {
   viewportClippingIssue,
 } from "./issues.js";
 import {
+  DIRECTION_KEYS,
   WebPackSession,
   WebPackStop,
   expandWebSurface,
@@ -141,16 +143,26 @@ async function findFocusedTarget(
   baseSequence: readonly RemoteKey[],
   restoreBase: () => Promise<StateSnapshot>,
   target: WebSemanticTarget,
+  initialSnapshot?: StateSnapshot,
 ): Promise<FoundTarget | null> {
+  const candidateCache = new WeakMap<StateSnapshot, RankedWebCandidate | null>();
+  const candidateFor = (snapshot: StateSnapshot): RankedWebCandidate | null => {
+    if (candidateCache.has(snapshot)) return candidateCache.get(snapshot) ?? null;
+    const candidate = focusedWebCandidate(snapshot, target);
+    candidateCache.set(snapshot, candidate);
+    return candidate;
+  };
   const expansion = await expandWebSurface(
     session,
     baseSequence,
     restoreBase,
-    (item) => focusedWebCandidate(item.snapshot, target) !== null,
+    (item) => candidateFor(item.snapshot) !== null,
+    initialSnapshot === undefined ? undefined : { initialSnapshot },
   );
-  const state = expansion.states.find((item) => focusedWebCandidate(item.snapshot, target) !== null);
+  if (expansion.reason !== "target-found") return null;
+  const state = expansion.states[expansion.states.length - 1];
   if (state === undefined) return null;
-  const candidate = focusedWebCandidate(state.snapshot, target);
+  const candidate = candidateFor(state.snapshot);
   return candidate === null ? null : { candidate, state, expansion };
 }
 
@@ -195,10 +207,131 @@ function expansionDetail(expansion: WebSurfaceExpansion): string {
     : `Expansion stopped at ${expansion.reason} after ${String(expansion.states.length)} semantic focus states.`;
 }
 
+interface KeyboardRouteCache {
+  readonly graph: ReadonlyMap<string, ReadonlyMap<RemoteKey, string>>;
+  readonly targets: ReadonlyMap<string, string>;
+}
+
+function buildKeyboardRouteCache(
+  expansion: WebSurfaceExpansion,
+  query: string,
+): KeyboardRouteCache | null {
+  if (!expansion.complete || expansion.transitions === undefined || expansion.transitions.length === 0) {
+    return null;
+  }
+
+  const characters = [...new Set([...query])];
+  const targets = new Map<string, string>();
+  const ambiguousTargets = new Set<string>();
+  for (const state of expansion.states) {
+    const focused = focusedWebEntry(state.snapshot);
+    const stableId = focused?.node.stableId;
+    if (typeof stableId !== "string" || stableId.length === 0) continue;
+    for (const character of characters) {
+      const matches = rankOnScreenKeyboardKeys(state.snapshot, character)
+        .filter((candidate) => candidate.node.stableId === stableId);
+      if (matches.length !== 1) continue;
+      const existing = targets.get(character);
+      if (existing !== undefined && existing !== stableId) {
+        targets.delete(character);
+        ambiguousTargets.add(character);
+      } else if (!ambiguousTargets.has(character)) {
+        targets.set(character, stableId);
+      }
+    }
+  }
+
+  const graph = new Map<string, Map<RemoteKey, string>>();
+  const ambiguousEdges = new Set<string>();
+  for (const transition of expansion.transitions) {
+    const edgeId = `${transition.fromStableId}\u0000${transition.key}`;
+    if (ambiguousEdges.has(edgeId)) continue;
+    let outgoing = graph.get(transition.fromStableId);
+    if (outgoing === undefined) {
+      outgoing = new Map<RemoteKey, string>();
+      graph.set(transition.fromStableId, outgoing);
+    }
+    const existing = outgoing.get(transition.key);
+    if (existing !== undefined && existing !== transition.toStableId) {
+      outgoing.delete(transition.key);
+      ambiguousEdges.add(edgeId);
+    } else if (existing === undefined) {
+      outgoing.set(transition.key, transition.toStableId);
+    }
+  }
+
+  return targets.size === 0 || graph.size === 0 ? null : { graph, targets };
+}
+
+function findCachedKeyboardRoute(
+  cache: KeyboardRouteCache,
+  fromStableId: string,
+  targetStableId: string,
+  maxDepth: number,
+): readonly RemoteKey[] | null {
+  if (fromStableId === targetStableId) return [];
+  const pending: { readonly stableId: string; readonly path: readonly RemoteKey[] }[] = [
+    { stableId: fromStableId, path: [] },
+  ];
+  const visited = new Set([fromStableId]);
+  for (const current of pending) {
+    if (current.path.length >= maxDepth) continue;
+    const outgoing = cache.graph.get(current.stableId);
+    if (outgoing === undefined) continue;
+    for (const key of DIRECTION_KEYS) {
+      const nextStableId = outgoing.get(key);
+      if (nextStableId === undefined || visited.has(nextStableId)) continue;
+      const path = [...current.path, key];
+      if (nextStableId === targetStableId) return path;
+      visited.add(nextStableId);
+      pending.push({ stableId: nextStableId, path });
+    }
+  }
+  return null;
+}
+
+async function tryCachedKeyboardRoute(
+  session: WebPackSession,
+  sequence: readonly RemoteKey[],
+  character: string,
+  cache: KeyboardRouteCache,
+  base: StateSnapshot,
+): Promise<{ readonly relativePath: readonly RemoteKey[]; readonly snapshot: StateSnapshot } | null> {
+  // `base` is the latest fresh session snapshot, never a driver's post-action snapshot.
+  const targetStableId = cache.targets.get(character);
+  if (targetStableId === undefined) return null;
+  const fromStableId = focusedWebEntry(base)?.node.stableId;
+  if (typeof fromStableId !== "string" || fromStableId.length === 0) return null;
+  const relativePath = findCachedKeyboardRoute(
+    cache,
+    fromStableId,
+    targetStableId,
+    session.budgets.maxLocalDepth,
+  );
+  if (relativePath === null) return null;
+  for (const key of relativePath) {
+    const action = await session.press(key, "discovery");
+    // An applied action can still carry a settling-timeout message. Do not
+    // continue a cached route from an observation taken after an unsettled key.
+    if (action.outcome !== "applied" || action.message !== undefined) return null;
+  }
+  const snapshot = relativePath.length === 0 ? base : await session.snapshot();
+  const expected = rankOnScreenKeyboardKeys(snapshot, character);
+  const focused = focusedWebEntry(snapshot);
+  if (expected.length !== 1
+    || focused === null
+    || focused.node.stableId !== targetStableId
+    || expected[0]?.node !== focused.node) {
+    return null;
+  }
+  return { relativePath, snapshot };
+}
+
 async function enterQueryWithRemote(
   context: StageContext,
   searchSequence: readonly RemoteKey[],
   input: WebElementDescriptor,
+  keyboardRouteCache: KeyboardRouteCache | null,
 ): Promise<{
   readonly status: "entered" | "unavailable";
   readonly detail: string;
@@ -209,43 +342,60 @@ async function enterQueryWithRemote(
 }> {
   const { session, config, options } = context;
   let sequence: readonly RemoteKey[] = [...searchSequence];
+  let activeKeyboardRouteCache = keyboardRouteCache;
   let latest = await session.restoreAndReplay(sequence, "probe");
   let remoteUnavailableReason: string | null = null;
 
   for (const character of [...config.searchQuery]) {
-    const expansion = await expandWebSurface(
-      session,
-      sequence,
-      async () => session.restoreAndReplay(sequence, "discovery"),
-      (item) => {
-        const focused = focusedWebEntry(item.snapshot);
-        return focused !== null
-          && rankOnScreenKeyboardKeys(item.snapshot, character).some((candidate) => candidate.node === focused.node);
-      },
-    );
-    const keyState = expansion.states.find((item) => {
-      const focused = focusedWebEntry(item.snapshot);
-      if (focused === null) return false;
-      return rankOnScreenKeyboardKeys(item.snapshot, character).some((candidate) => candidate.node === focused.node);
-    });
-    if (keyState === undefined) {
-      remoteUnavailableReason = expansion.complete
-        ? `No remote-reachable on-screen key represented '${character}'.`
-        : `On-screen key discovery stopped at ${expansion.reason} before '${character}' was found.`;
-      break;
-    }
-    latest = await session.restoreAndReplay(keyState.exactPath, "probe");
-    const expected = rankOnScreenKeyboardKeys(latest, character);
-    const focused = focusedWebEntry(latest);
-    if (focused === null || !expected.some((candidate) => candidate.node === focused.node)) {
-      throw new WebPackStop("restoration-failed", "An on-screen keyboard route diverged before character selection.");
+    let exactPath: readonly RemoteKey[];
+    const cachedKeyState = activeKeyboardRouteCache === null
+      ? null
+      : await tryCachedKeyboardRoute(session, sequence, character, activeKeyboardRouteCache, latest);
+    if (cachedKeyState !== null) {
+      exactPath = [...sequence, ...cachedKeyState.relativePath];
+      latest = cachedKeyState.snapshot;
+    } else {
+      const matchingKeyboardKey = new WeakMap<StateSnapshot, boolean>();
+      const hasFocusedKeyboardKey = (snapshot: StateSnapshot): boolean => {
+        if (matchingKeyboardKey.has(snapshot)) return matchingKeyboardKey.get(snapshot) === true;
+        const focused = focusedWebEntry(snapshot);
+        const matches = focused !== null
+          && rankOnScreenKeyboardKeys(snapshot, character).some((candidate) => candidate.node === focused.node);
+        matchingKeyboardKey.set(snapshot, matches);
+        return matches;
+      };
+      const expansion = await expandWebSurface(
+        session,
+        sequence,
+        async () => session.restoreAndReplay(sequence, "discovery"),
+        (item) => hasFocusedKeyboardKey(item.snapshot),
+      );
+      const keyState = expansion.reason === "target-found"
+        ? expansion.states[expansion.states.length - 1]
+        : undefined;
+      if (keyState === undefined) {
+        remoteUnavailableReason = expansion.complete
+          ? `No remote-reachable on-screen key represented '${character}'.`
+          : `On-screen key discovery stopped at ${expansion.reason} before '${character}' was found.`;
+        break;
+      }
+      exactPath = keyState.exactPath;
+      latest = await session.restoreAndReplay(exactPath, "probe");
+      const expected = rankOnScreenKeyboardKeys(latest, character);
+      const focused = focusedWebEntry(latest);
+      if (focused === null || !expected.some((candidate) => candidate.node === focused.node)) {
+        throw new WebPackStop("restoration-failed", "An on-screen keyboard route diverged before character selection.");
+      }
     }
     const select = await session.press("SELECT", "probe");
     if (select.outcome !== "applied") {
       remoteUnavailableReason = `The '${character}' on-screen key returned ${select.outcome}.`;
       break;
     }
-    sequence = [...keyState.exactPath, "SELECT"];
+    // Playwright can report delivered input as applied while its settling
+    // boundary timed out. Preserve the old reset-relative path for later keys.
+    if (select.message !== undefined) activeKeyboardRouteCache = null;
+    sequence = [...exactPath, "SELECT"];
     latest = await session.snapshot();
   }
 
@@ -348,7 +498,7 @@ function validateQueryHookResult(result: SearchQueryEntryResult, query: string):
 async function runSearchInternal(context: StageContext): Promise<WebStageResult> {
   const capabilityFailure = requireRemoteTree(context, "search");
   if (capabilityFailure !== null) return capabilityFailure;
-  const { session, options } = context;
+  const { session, options, config } = context;
   const observations: WebStageObservation[] = [];
   const issues: TVDoctorIssue[] = [];
 
@@ -385,7 +535,11 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
     session,
     opened.sequence,
     async () => session.restoreAndReplay(opened.sequence, "discovery"),
+    undefined,
+    // activateFoundTarget just captured this exact current state with session.snapshot().
+    { captureTransitions: true, initialSnapshot: opened.snapshot },
   );
+  const keyboardRouteCache = buildKeyboardRouteCache(searchExpansion, config.searchQuery);
   if (submit === null) {
     observations.push(observation("search-submit", "unavailable", "No unique stable visible search submit control was observable.", opened.sequence));
   } else {
@@ -428,7 +582,7 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
     }
   }
 
-  const query = await enterQueryWithRemote(context, opened.sequence, input.descriptor);
+  const query = await enterQueryWithRemote(context, opened.sequence, input.descriptor, keyboardRouteCache);
   observations.push(observation(
     "search-query",
     query.status === "entered" ? "available" : "unavailable",
@@ -446,11 +600,14 @@ async function runSearchInternal(context: StageContext): Promise<WebStageResult>
     );
   }
 
+  // The query snapshot was just captured after the final SELECT and no driver
+  // operation has intervened, so it is the current reset-relative base state.
   const result = await findFocusedTarget(
     session,
     query.sequence,
     query.restoreQuery,
     "search-result",
+    query.snapshot,
   );
   if (result === null) {
     observations.push(observation("search-result", "unavailable", "Results were visible, but no semantic result was remote reachable.", query.sequence));
@@ -1039,28 +1196,54 @@ function validateLogs(value: readonly LogEntry[], maximum: number): readonly Log
   return value;
 }
 
+interface BoundedLogSnapshot {
+  readonly logs: readonly LogEntry[];
+  readonly droppedEntries: number;
+}
+
+interface LogSnapshotDriver extends TVDoctorDriver {
+  getLogSnapshot(options?: DriverOperationOptions): Promise<BoundedLogSnapshot>;
+}
+
+function validateLogSnapshot(value: BoundedLogSnapshot, maximum: number): BoundedLogSnapshot {
+  if (typeof value !== "object" || value === null || !Number.isSafeInteger(value.droppedEntries)
+    || value.droppedEntries < 0) {
+    throw new TypeError("Driver log snapshot must expose a non-negative safe dropped-entry count.");
+  }
+  return { logs: validateLogs(value.logs, maximum), droppedEntries: value.droppedEntries };
+}
+
 async function runCrashInternal(context: StageContext): Promise<WebStageResult> {
-  const getLogs = context.session.driver.getLogs;
+  const driver = context.session.driver;
+  const getLogs = driver.getLogs;
   if (!context.capabilities.has("logs") || getLogs === undefined) {
     return stage("crash", "unobservable", "The driver did not expose bounded application logs.", [], [
       observation("driver-logs", "unavailable", "logs capability or getLogs implementation unavailable."),
     ]);
   }
-  let logs: readonly LogEntry[];
+  let snapshot: BoundedLogSnapshot;
   try {
-    logs = validateLogs(
-      await context.session.withinDuration(
-        (signal) => getLogs.call(context.session.driver, { signal }),
-      ),
-      context.session.budgets.maxLogs,
-    );
+    if ("getLogSnapshot" in driver && typeof driver.getLogSnapshot === "function") {
+      const snapshotDriver = driver as LogSnapshotDriver;
+      snapshot = validateLogSnapshot(await context.session.withinDuration(
+        (signal) => snapshotDriver.getLogSnapshot({ signal }),
+      ), context.session.budgets.maxLogs);
+    } else {
+      snapshot = {
+        logs: validateLogs(await context.session.withinDuration(
+          (signal) => getLogs.call(driver, { signal }),
+        ), context.session.budgets.maxLogs),
+        droppedEntries: 0,
+      };
+    }
   } catch (error) {
     rethrowPackStop(error);
     return stage("crash", "unobservable", `Log observation failed safely: ${safeErrorMessage(error)}`, [], [
       observation("driver-logs", "unavailable", safeErrorMessage(error)),
     ]);
   }
-  const errors = logs.filter((entry) => entry.level === "error");
+  const errors = snapshot.logs.filter((entry) => entry.level === "error");
+  const incompleteLogs = snapshot.droppedEntries > 0;
   const unique = new Map<string, { readonly entry: LogEntry; count: number }>();
   for (const entry of errors) {
     const signature = logSemanticSignature(entry);
@@ -1099,18 +1282,20 @@ async function runCrashInternal(context: StageContext): Promise<WebStageResult> 
   const observableHealthySurface = liveSurface.status === "available";
   return stage(
     "crash",
-    issues.length > 0 ? "failed" : observableHealthySurface ? "passed" : "partial",
+    issues.length > 0 ? "failed" : observableHealthySurface && !incompleteLogs ? "passed" : "partial",
     issues.length > 0
       ? `Captured ${String(errors.length)} error logs across ${String(issues.length)} stable signatures.`
-      : observableHealthySurface
-        ? `Captured ${String(logs.length)} bounded logs with no error-level entries and observed a live non-blank semantic surface.`
-        : `Captured ${String(logs.length)} bounded logs with no error-level entries, but live/blank-screen robustness remained unobservable.`,
+      : incompleteLogs
+        ? `Captured ${String(snapshot.logs.length)} bounded logs without an error; ${String(snapshot.droppedEntries)} earlier logs were discarded, so crash robustness is inconclusive.`
+        : observableHealthySurface
+          ? `Captured ${String(snapshot.logs.length)} bounded logs with no error-level entries and observed a live non-blank semantic surface.`
+          : `Captured ${String(snapshot.logs.length)} bounded logs with no error-level entries, but live/blank-screen robustness remained unobservable.`,
     issues,
     [
       observation(
         "driver-logs",
-        "available",
-        `Read ${String(logs.length)} bounded log entries; ${String(errors.length)} were error-level.`,
+        incompleteLogs ? "partial" : "available",
+        `Read ${String(snapshot.logs.length)} bounded log entries; ${String(errors.length)} were error-level; ${String(snapshot.droppedEntries)} were discarded since launch.`,
       ),
       liveSurface,
     ],

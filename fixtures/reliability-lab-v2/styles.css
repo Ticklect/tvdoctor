@@ -1,0 +1,129 @@
+:root {
+  color-scheme:light;
+  font:14px/1.5 "Segoe UI",Inter,Arial,sans-serif;
+  --ink:#16283d;--quiet:#697a8b;--line:#dfe7ee;--blue:#315ca3;--canvas:#f4f7f9;--white:white;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--canvas);color:var(--ink)}
+button,input,a{font:inherit}
+button{cursor:pointer}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #f6a33d;outline-offset:2px}
+[hidden]{display:none!important}
+a{text-decoration:none;color:#225d9c}
+a:hover{text-decoration:underline}
+.shell{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}
+.rail{background:#11273a;padding:25px 18px;color:#e3f1f6}
+.brand{font-weight:900;letter-spacing:-.06em;font-size:23px;margin-bottom:10px}
+.brand span{color:#9ed3ea}
+.rail-sub{font-size:10px;color:#9bb6c9;letter-spacing:.12em;margin-bottom:26px}
+.rail nav{display:grid;gap:6px}
+.rail nav a{display:block;color:#d3e7f5;padding:10px 12px;border-radius:9px}
+.rail nav a[aria-current="page"]{background:#284962;color:white;font-weight:760}
+.rail-note{background:#1b3950;margin-top:32px;border-radius:12px;padding:14px;font-size:11px;color:#b4d1e1}
+.main{padding:23px clamp(17px,3.5vw,56px) 55px;min-width:0}
+.header{display:flex;justify-content:space-between;align-items:center;gap:15px}
+.breadcrumb{font-size:12px;letter-spacing:.045em;color:#5a7288;font-weight:760}
+.header-right{display:flex;gap:9px}
+.pill{padding:6px 12px;border-radius:100px;background:#dceef3;color:#26526b;font-size:11px;font-weight:840}
+.pill.negative{background:#fae6d2;color:#865016}
+.variant{margin:17px 0 26px;display:flex;justify-content:space-between;gap:15px;align-items:center;background:#fff8e6;border:1px solid #eddbb4;border-radius:12px;padding:13px 18px;font-size:12px}
+body[data-fixed="true"] .variant{background:#e5f5eb;border-color:#c5e2d0}
+.variant a{font-weight:800;white-space:nowrap}
+.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.12em;font-weight:850;color:#3670aa}
+h1{font-size:clamp(31px,3.5vw,43px);letter-spacing:-1.4px;line-height:1.16;margin:9px 0}
+.lead{color:#61758a;font-size:14px;margin:0 0 25px;max-width:740px}
+h2{font-size:20px;margin:0;letter-spacing:-.04em}
+h3{font-size:15px;margin:0}
+.panel{background:white;border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 18px #1b344b09}
+.padded{padding:21px}
+.button{border:1px solid #c7d7e2;background:white;border-radius:9px;padding:9px 14px;color:#294c6a;font-weight:750}
+.button.active{background:#e1effd;border-color:#84b3e4}
+.button.dark{background:#1b538e;border:1px solid #1b538e;color:white}
+.button.red{background:#fee9e4;color:#833a27}
+.button:disabled{opacity:.55;cursor:not-allowed}
+.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:18px 0}
+.toolbar .spacer{flex:1}
+.status{color:#63788c;font-size:12px;margin:14px 0;min-height:20px}
+.menu-holder{position:relative}
+.popup-menu{position:absolute;top:43px;left:0;background:white;border:1px solid #c3d5e0;padding:7px;min-width:195px;z-index:3;box-shadow:0 12px 26px #1229402c;border-radius:10px}
+.popup-menu a{display:block;padding:9px 11px;border-radius:7px}
+.popup-menu a:hover{background:#eaf4fb}
+.two-col{display:grid;grid-template-columns:minmax(230px,.72fr) minmax(0,1.6fr);gap:17px}
+.list-panel{min-width:0}
+.list-panel h2{font-size:16px;margin-bottom:11px}
+.tree{display:grid;gap:5px}
+.tree a,.tree button{display:block;width:100%;border:0;text-align:left;background:transparent;border-radius:7px;padding:10px;color:#355778}
+.tree a:hover,.tree button:hover,.tree a[aria-current="page"]{background:#ebf3fc}
+.tree-nested{margin-left:19px;border-left:2px solid #e0edf6;padding-left:9px;display:grid;gap:4px}
+.article{min-height:345px}
+.article p{line-height:1.7;color:#576c7d}
+.article code{background:#e9f1f9;border-radius:4px;padding:3px 6px}
+.article .callout{background:#e9f5fb;border-left:3px solid #4d8cad;border-radius:4px;padding:14px 17px;margin-top:25px}
+.meta{font-size:11px;text-transform:uppercase;letter-spacing:.11em;color:#698095;margin:4px 0 17px}
+.dialog-overlay{position:fixed;inset:0;background:#0b1a2baf;display:grid;place-items:center;padding:20px;z-index:10}
+.dialog{background:#fff;width:min(455px,100%);padding:28px;border-radius:17px;box-shadow:0 28px 80px #09192870}
+.dialog p{color:#5e7083}
+.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:23px}
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;margin-top:20px}
+.lane{border-radius:13px;background:#e8eef4;padding:13px;min-width:0}
+.lane-header{display:flex;justify-content:space-between;align-items:center;font-weight:790;margin-bottom:13px}
+.ticket{background:white;border:1px solid #d3e0ea;border-radius:11px;margin-bottom:10px;padding:14px}
+.ticket h3{font-size:13px}
+.ticket p{font-size:11px;color:#708295;margin:9px 0}
+.ticket .ticket-flag{font-size:10px;color:#26776e;font-weight:780}
+.inbox-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}
+.metric strong{display:block;font-size:30px;margin-top:9px}
+.metric span{font-size:11px;color:#668096}
+.filters{display:flex;gap:8px;flex-wrap:wrap}
+.event-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.event-card{overflow:hidden}
+.event-art{height:140px;background:radial-gradient(circle at 70% 32%,#f0bf73,transparent 39%),linear-gradient(125deg,#527d88,#27485a);display:grid;place-items:center;color:white;font-size:45px}
+.event-card:nth-child(2n) .event-art{background:radial-gradient(circle at 29% 30%,#c39ad8,transparent 43%),linear-gradient(120deg,#865268,#314877)}
+.event-copy{padding:15px}
+.event-copy span{display:block;font-size:11px;color:#667b8d;margin:7px 0}
+.events-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:18px}
+.drawer{position:sticky;top:12px;align-self:start;background:white;border:1px solid #cbdae5;border-radius:14px;padding:15px}
+.drawer-scroll{max-height:230px;overflow-y:auto;border:1px solid #e1e8ee;border-radius:9px;position:relative}
+/* Deep-scroll challenge uses a genuine >=90px scroll range at mobile widths,
+   independently testable against the scanner's bounded inner-scroll policy. */
+body[data-app="events"][data-challenge="scroll-end"] .drawer-scroll{max-height:170px}
+body[data-app="events"][data-challenge="scroll-clean"] .drawer-scroll{max-height:170px}
+.drawer-scroll label{display:flex;gap:10px;align-items:center;padding:13px;border-bottom:1px solid #e2e9ef}
+.drawer-scroll input{accent-color:#315ca3}
+.drawer-action{position:sticky;bottom:0;background:white;display:block;padding:12px 0 0}
+body[data-app="events"][data-fixed="false"] .drawer-action{position:absolute;bottom:13px;left:15px;right:15px;z-index:2;background:#fff}
+body[data-app="events"][data-fixed="true"] .drawer-scroll{padding-bottom:50px;overscroll-behavior:contain}
+.table-scroller{overflow:auto;border:1px solid #e0e8ef;border-radius:13px}
+.data-table{width:100%;min-width:700px;border-collapse:collapse;text-align:left;background:white}
+.data-table th{background:#edf4f9;color:#435f79;font-size:12px}
+.data-table th,.data-table td{padding:13px 16px;border-bottom:1px solid #e5edf3}
+.data-table td{font-size:12px}
+.data-table tbody tr:hover{background:#f8fbfd}
+.muted{color:#708497}
+.tip{border-left:3px solid #7aacc4;padding:12px 17px;margin-top:25px;background:#edf6fa;font-size:12px}
+@media(max-width:900px){
+  .shell{grid-template-columns:1fr}
+  .rail{padding:12px 16px}
+  .rail-sub,.rail-note{display:none}
+  .brand{font-size:18px;margin:0}
+  .rail nav{display:flex;flex-wrap:wrap;margin-top:9px;gap:2px}
+  .rail nav a{padding:7px 9px;font-size:12px}
+  .events-layout{grid-template-columns:1fr}
+  .drawer{position:relative;top:auto;max-width:600px}
+}
+@media(max-width:640px){
+  .main{padding:14px 14px 40px}
+  .header{flex-wrap:wrap}
+  .variant{align-items:start}
+  .variant a{white-space:normal}
+  .two-col{grid-template-columns:1fr}
+  .board{grid-template-columns:1fr}
+  .inbox-summary{grid-template-columns:1fr}
+  .event-grid{grid-template-columns:1fr}
+  body[data-app="events"][data-fixed="false"] .drawer{position:sticky;top:6px;min-width:540px;z-index:5}
+  /* Independent nested obstruction: no document overflow masks the inner-scroll
+     hit-test; the intentionally broken absolute CTA still covers the option. */
+  body[data-app="events"][data-challenge="scroll-clean"][data-fixed="false"] .drawer{min-width:0;width:100%}
+  body[data-app="events"][data-fixed="true"] .drawer{position:sticky;top:6px;min-width:0;width:100%;z-index:5}
+  .event-art{height:110px}
+}

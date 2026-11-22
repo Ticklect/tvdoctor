@@ -1,5 +1,6 @@
 import { ISSUE_SEVERITIES, type ArtifactDescriptor, type TVDoctorIssue, type TVDoctorReportV1 } from "@tvdoctor/protocol";
 import { escapeHtml } from "./security.js";
+import { renderDeveloperHandoff } from "./render-developer-handoff.js";
 import {
   artifactHref,
   actionabilityCounts,
@@ -163,6 +164,13 @@ function renderConfidencePanel(report: TVDoctorReportV1): string {
   const automatedProof = completedPacks.length === 0
     ? "No automated pack completed."
     : `Completed automated checks: ${completedPacks.map((pack) => escapeHtml(pack)).join(", ")}.`;
+  if (report.target.platform === "web" && report.target.environment["inputMode"] === "keyboard") {
+    return `<section class="confidence-panel" aria-label="Scan confidence and next action">
+      <div><h2>What was tested</h2><p>${automatedProof}</p><p class="meta">Only the recorded keyboard states and interactions were observed. No browser-wide accessibility or regression certification is implied.</p></div>
+      <div><h2>What to test next</h2><ul><li>Other logged-in routes and menu/dialog states</li><li>Real user flows, forms, and different viewport sizes</li><li>Screen readers, keyboard-only navigation, and focus visibility</li><li>Cross-browser behavior and application-specific expectations</li></ul></div>
+      <div class="next-action"><h2>Next action</h2><p>Use the developer steps above to inspect evidence, reproduce supported issues, and verify fixes independently.</p></div>
+    </section>`;
+  }
   return `<section class="confidence-panel" aria-label="Scan confidence and next action">
     <div><h2>Recorded automated coverage</h2><p>${automatedProof}</p><p class="meta">This statement covers only the recorded automated observations and does not certify a TV model or operating system.</p></div>
     <div><h2>Still verify on real TV hardware</h2><ul><li>D-pad reachability and visible focus on every supported device</li><li>screen reader announcements, including TalkBack or VoiceView</li><li>text scaling and readability at normal viewing distance</li><li>captions and audio-description preferences</li><li>autoplay and playback interruptions, including pause, resume, and audio focus</li><li>launch, navigation, and playback performance on representative hardware</li></ul></div>
@@ -187,6 +195,7 @@ function renderNavigationOverview(report: TVDoctorReportV1): string {
 
 export function renderReportHtml(report: TVDoctorReportV1, options: ReportHtmlOptions = {}): string {
   const valid = validReport(report);
+  const developerHandoff = renderDeveloperHandoff(valid);
   const sidecars = options.sidecars ?? [];
   const counts = issueCounts(valid);
   const environmentRows = Object.entries(valid.target.environment)
@@ -215,7 +224,7 @@ export function renderReportHtml(report: TVDoctorReportV1, options: ReportHtmlOp
   <title>TVDoctor Report</title>
   <style>
     :root{color-scheme:dark;--bg:#0a0f1b;--panel:#121a2b;--panel2:#19233a;--text:#f3f6ff;--muted:#9dabca;--line:#2a3857;--accent:#64e0c1;--critical:#ff667a;--high:#ff9d62;--medium:#ffd166;--low:#6fb5ff;--info:#a9b8d6}*{box-sizing:border-box;min-width:0}body{margin:0;background:linear-gradient(135deg,#080d17,#111a2c);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{width:min(1000px,calc(100% - 32px));margin:0 auto;padding:42px 0 80px}header{padding:28px;border:1px solid var(--line);border-radius:18px;background:rgba(18,26,43,.94)}h1{margin:0;font-size:1rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}h2{margin-top:36px}h3,h4{margin-bottom:8px}.tagline,.meta{color:var(--muted)}.verdict{margin:.35rem 0 0;font-size:clamp(1.8rem,5vw,3rem);line-height:1.1}.severity-summary,.navigation-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.metric{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel2)}.metric strong{margin-right:5px}.navigation-overview{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}.navigation-overview h2{margin-top:0}.navigation-overview pre{display:inline}.run-warning{margin-top:18px;padding:18px 22px;border:2px solid var(--medium);border-radius:14px;background:#352d18}.run-warning h2{margin:0;color:#ffe59a}.run-warning p:last-child{margin-bottom:0}.confidence-panel{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}.confidence-panel h2{margin:0;font-size:1.05rem}.confidence-panel p,.confidence-panel ul{margin-bottom:0}.confidence-panel .next-action{border-left:4px solid var(--accent);padding-left:14px}.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:12px 0 18px}.panel{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{color:var(--muted);width:34%}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:inherit}code,kbd{font-family:ui-monospace,monospace}code,a,.meta,dd,li,summary span{overflow-wrap:anywhere;word-break:break-word}kbd{padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:#050913}ul{padding-left:1.35rem}.issue summary:focus-visible,.technical-details summary:focus-visible,.scan-details>summary:focus-visible,.artifact-inventory>summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}.issue{margin:12px 0;border:1px solid var(--line);border-left:5px solid var(--info);border-radius:12px;background:var(--panel)}.severity-critical{border-left-color:var(--critical)}.severity-high{border-left-color:var(--high)}.severity-medium{border-left-color:var(--medium)}.severity-low{border-left-color:var(--low)}summary{display:flex;align-items:center;gap:10px;cursor:pointer;padding:16px}.issue-body{padding:4px 20px 22px;overflow-wrap:anywhere}.badge{padding:3px 7px;border-radius:999px;font-size:.72rem;font-weight:750;letter-spacing:.04em}.badge.severity{background:#342438}.badge.confidence{margin-left:auto;background:#183848;color:var(--accent)}dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:6px 12px}dt{color:var(--muted)}dd{margin:0}.expected-observed,.screenshots{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.expected-observed section,figure,.shot{padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1322}figure{margin:0}img{display:block;width:100%;height:auto;border-radius:8px}figcaption{padding-top:8px;color:var(--muted)}a{color:var(--accent)}.status.failed{color:var(--critical)}.status.unavailable{color:var(--medium)}.technical-details,.scan-details,.artifact-inventory{margin-top:18px;border:1px solid var(--line);border-radius:12px;background:#0c1322}.technical-details>summary,.scan-details>summary,.artifact-inventory>summary{font-weight:700}.technical-body,.scan-body,.artifact-body{padding:0 18px 18px}.supporting{margin-top:14px;color:var(--muted);font-size:.92rem}@media(max-width:680px){main{width:calc(100% - 20px);padding-top:18px}header{padding:18px}.panels,.expected-observed,.screenshots{grid-template-columns:minmax(0,1fr)}summary{align-items:flex-start;flex-wrap:wrap}.badge.confidence{margin-left:0}.issue-body{padding-left:14px;padding-right:14px}dl{grid-template-columns:88px minmax(0,1fr)}.confidence-panel .next-action{border-left:0;border-top:4px solid var(--accent);padding:14px 0 0}}
-  </style>
+  </style>${developerHandoff === "" ? "" : `<style>.developer-handoff{margin:18px 0;padding:20px 22px;border:1px solid var(--line);border-top:4px solid var(--accent);border-radius:14px;background:var(--panel)}.developer-handoff h2{margin:0 0 10px;font-size:1.25rem}.developer-handoff ol{padding-left:1.5rem}.developer-handoff li{padding:6px 0}.handoff-command{margin:10px 0;padding:13px 14px;border:1px solid var(--line);border-radius:8px;background:#070d17;color:var(--accent);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}.handoff-difference{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.handoff-difference>div{padding:12px;border:1px solid var(--line);border-radius:10px;background:#0c1322}.handoff-difference h3{margin:0 0 6px;font-size:.94rem}.handoff-difference p{margin:0}</style>`}
 </head>
 <body><main>
   <header><h1>TVDoctor</h1><p class="verdict">${escapeHtml(verdictText(valid))}</p><p class="tagline">Start with the verdict, coverage, and next action. Technical evidence is available inside each finding.</p>
@@ -224,7 +233,7 @@ export function renderReportHtml(report: TVDoctorReportV1, options: ReportHtmlOp
     </div>
   </header>
   ${renderRunWarning(valid)}
-  ${sidecars.length === 0 ? "" : `${renderSidecars(sidecars)}\n  `}${renderConfidencePanel(valid)}
+  ${developerHandoff === "" ? "" : `${developerHandoff}\n  `}${sidecars.length === 0 ? "" : `${renderSidecars(sidecars)}\n  `}${renderConfidencePanel(valid)}
   ${renderNavigationOverview(valid)}
   ${(() => {
     const patterns = issuePatterns(valid);

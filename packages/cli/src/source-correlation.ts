@@ -208,14 +208,22 @@ function isBinary(buffer: Buffer): boolean {
   return suspicious / sampleLength > 0.08;
 }
 
-async function readBoundedFile(path: string, maximumBytes: number): Promise<{
+async function readBoundedFile(path: string, maximumBytes: number, expectedSize: number): Promise<{
   readonly buffer: Buffer;
   readonly exceeded: boolean;
 }> {
   const handle = await open(path, "r");
   try {
-    const buffer = Buffer.allocUnsafe(maximumBytes + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    // Most source files are far smaller than the per-file cap. Allocate for
+    // the observed size plus one byte, then retry at the full cap if the file
+    // grew after stat so the original oversize check remains intact.
+    const initialMaximum = Math.min(maximumBytes, expectedSize);
+    let buffer = Buffer.allocUnsafe(initialMaximum + 1);
+    let { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > expectedSize && initialMaximum < maximumBytes) {
+      buffer = Buffer.allocUnsafe(maximumBytes + 1);
+      ({ bytesRead } = await handle.read(buffer, 0, buffer.length, 0));
+    }
     return {
       buffer: buffer.subarray(0, Math.min(bytesRead, maximumBytes)),
       exceeded: bytesRead > maximumBytes,
@@ -227,6 +235,35 @@ async function readBoundedFile(path: string, maximumBytes: number): Promise<{
 
 function isIdentifierCharacter(character: string | undefined): boolean {
   return character !== undefined && /^[\p{L}\p{N}_.:$@/#-]$/u.test(character);
+}
+
+function codePointBefore(text: string, offset: number): string | undefined {
+  if (offset <= 0) return undefined;
+  const lastIndex = offset - 1;
+  const lastCodeUnit = text.charCodeAt(lastIndex);
+  if (lastCodeUnit >= 0xdc00 && lastCodeUnit <= 0xdfff && lastIndex > 0) {
+    const previousCodeUnit = text.charCodeAt(lastIndex - 1);
+    if (previousCodeUnit >= 0xd800 && previousCodeUnit <= 0xdbff) {
+      return text.slice(lastIndex - 1, offset);
+    }
+  }
+  return text.slice(lastIndex, offset);
+}
+
+function codePointAt(text: string, offset: number): string | undefined {
+  if (offset >= text.length) return undefined;
+  const firstCodeUnit = text.charCodeAt(offset);
+  if (firstCodeUnit >= 0xd800 && firstCodeUnit <= 0xdbff && offset + 1 < text.length) {
+    const nextCodeUnit = text.charCodeAt(offset + 1);
+    if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+      return text.slice(offset, offset + 2);
+    }
+  }
+  return text.slice(offset, offset + 1);
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function lineStarts(text: string): readonly number[] {
@@ -328,6 +365,18 @@ export async function correlateSource(
   if (allIdentifiers.length > limits.maxIdentifiers) addBound(boundedBy, "identifiers");
   const identifiers = allIdentifiers.slice(0, limits.maxIdentifiers);
   const identifierSet = new Set(identifiers);
+  // Scan each file once for all identifiers. Longest-first ordering ensures a
+  // complete identifier wins over a prefix; all identifier characters are
+  // boundary characters, so a consumed prefix cannot hide another valid hit.
+  const identifierPattern = identifiers.length === 0
+    ? null
+    : new RegExp(
+      [...identifiers]
+        .sort((left, right) => right.length - left.length || left.localeCompare(right, "en"))
+        .map(escapeRegularExpression)
+        .join("|"),
+      "gu",
+    );
   const matches = new Map<string, SourceCorrelationMatch[]>(
     identifiers.map((identifier) => [identifier, []]),
   );
@@ -383,13 +432,15 @@ export async function correlateSource(
         skippedBinary += 1;
         continue;
       }
-      let metadata;
-      try {
-        metadata = await stat(candidate);
-      } catch {
+      const [metadataResult, realPathResult] = await Promise.allSettled([
+        stat(candidate),
+        realpath(candidate),
+      ]);
+      if (metadataResult.status === "rejected") {
         skippedUnreadable += 1;
         continue;
       }
+      const metadata = metadataResult.value;
       if (!metadata.isFile()) continue;
       if (metadata.size > limits.maxFileBytes) {
         skippedOversize += 1;
@@ -404,15 +455,22 @@ export async function correlateSource(
         addBound(boundedBy, "bytes");
         continue;
       }
-      let realFile: string;
+      if (realPathResult.status === "rejected") {
+        skippedUnreadable += 1;
+        continue;
+      }
+      const realFile = realPathResult.value;
+      if (!isContained(root, realFile)) {
+        skippedUnreadable += 1;
+        continue;
+      }
       let buffer: Buffer;
       try {
-        realFile = await realpath(candidate);
-        if (!isContained(root, realFile)) {
-          skippedUnreadable += 1;
-          continue;
-        }
-        const read = await readBoundedFile(realFile, Math.min(limits.maxFileBytes, remainingBytes));
+        const read = await readBoundedFile(
+          realFile,
+          Math.min(limits.maxFileBytes, remainingBytes),
+          metadata.size,
+        );
         if (read.exceeded) {
           if (remainingBytes < limits.maxFileBytes) addBound(boundedBy, "bytes");
           else skippedOversize += 1;
@@ -431,29 +489,51 @@ export async function correlateSource(
       const path = portableRelativePath(root, realFile);
       if (path === null) continue;
       const text = buffer.toString("utf8");
-      const starts = lineStarts(text);
+      let starts: readonly number[] | undefined;
+      const identifierOffsets = new Map<string, number[]>();
+      const hasSearchableIdentifiers = identifiers.some((identifier) => {
+        const found = matches.get(identifier);
+        return found !== undefined && found.length < limits.maxMatchesPerIdentifier;
+      });
+      if (identifierPattern !== null && hasSearchableIdentifiers) {
+        identifierPattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = identifierPattern.exec(text)) !== null) {
+          const identifier = match[0];
+          const offset = match.index;
+          const identifierMatches = matches.get(identifier);
+          if (identifierMatches === undefined || identifierMatches.length >= limits.maxMatchesPerIdentifier) continue;
+          const afterOffset = offset + identifier.length;
+          const before = codePointBefore(text, offset);
+          const after = codePointAt(text, afterOffset);
+          if (isIdentifierCharacter(before) || isIdentifierCharacter(after)) continue;
+          const offsets = identifierOffsets.get(identifier) ?? [];
+          if (offsets.length < limits.maxMatchesPerIdentifier - identifierMatches.length) {
+            offsets.push(offset);
+            identifierOffsets.set(identifier, offsets);
+          }
+        }
+      }
+
+      // Preserve the original identifier-major and then source-offset ordering,
+      // including which bound is reported when a limit is reached.
       for (const identifier of identifiers) {
         const identifierMatches = matches.get(identifier);
-        if (identifierMatches === undefined || identifierMatches.length >= limits.maxMatchesPerIdentifier) continue;
-        let offset = text.indexOf(identifier);
-        while (offset >= 0) {
-          const before = offset === 0 ? undefined : text[offset - 1];
-          const afterOffset = offset + identifier.length;
-          const after = afterOffset >= text.length ? undefined : text[afterOffset];
-          if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) {
-            const location = locationForOffset(starts, offset);
-            identifierMatches.push({ path, ...location });
-            totalMatches += 1;
-            if (identifierMatches.length >= limits.maxMatchesPerIdentifier) {
-              addBound(boundedBy, "matches-per-identifier");
-              break;
-            }
-            if (totalMatches >= limits.maxMatches) {
-              addBound(boundedBy, "matches");
-              break scan;
-            }
+        const offsets = identifierOffsets.get(identifier);
+        if (identifierMatches === undefined || offsets === undefined) continue;
+        for (const offset of offsets) {
+          starts ??= lineStarts(text);
+          const location = locationForOffset(starts, offset);
+          identifierMatches.push({ path, ...location });
+          totalMatches += 1;
+          if (identifierMatches.length >= limits.maxMatchesPerIdentifier) {
+            addBound(boundedBy, "matches-per-identifier");
+            break;
           }
-          offset = text.indexOf(identifier, offset + Math.max(1, identifier.length));
+          if (totalMatches >= limits.maxMatches) {
+            addBound(boundedBy, "matches");
+            break scan;
+          }
         }
       }
     }

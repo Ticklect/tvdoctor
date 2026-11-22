@@ -17,7 +17,11 @@ import {
 } from "./replay-contracts.js";
 import { validateCompiledReplayPlan } from "./replay-compilation.js";
 import { elapsed, ReplayDeadlineExceeded, safeErrorMessage, withinDeadline, type ReplayDeadline } from "./replay-deadline.js";
-import { combinePredicates, evaluateElementPhase, evaluateFocus, type PredicateEvaluation } from "./replay-evaluation.js";
+import {
+  combinePredicates, evaluateElementPhase, evaluateFocus, evaluateKeyboardModalCheckpoint,
+  evaluateModalOpenCheckpoint, evaluateModalOpenOutcome,
+  evaluateRetainedKeyboardSource, type PredicateEvaluation,
+} from "./replay-evaluation.js";
 
 interface MutableReplayEvidence {
   beforeSnapshot: StateSnapshot | null;
@@ -129,6 +133,13 @@ export async function executeReplay(
     return executionResult(context(), "error", reason("invalid-plan", planValidation.reason, "preflight"));
   }
   plan = planValidation.plan;
+  if (plan.keyboardOracle === "review-only") {
+    return executionResult(context(), "inconclusive", reason(
+      "observation-unavailable",
+      "This keyboard rule records review-only evidence without a deterministic independent fix oracle.",
+      "preflight",
+    ));
+  }
   const preflightInterruption = interruptionResult("preflight");
   if (preflightInterruption !== null) return preflightInterruption;
   if (plan.totalActions > maxActions) {
@@ -237,6 +248,15 @@ export async function executeReplay(
   try {
     checkpoint = combinePredicates([
       evaluateFocus(evidence.beforeSnapshot, plan.setup.checkpointFocusElement),
+      ...(plan.keyboardOracle === "modal-focus-escape" || plan.keyboardOracle === "modal-tab-focus-loss"
+        ? [evaluateKeyboardModalCheckpoint(
+          evidence.beforeSnapshot, plan.assertion.fromElement, plan.assertion.expectedElement,
+        )]
+        : []),
+      ...(plan.keyboardOracle === "modal-open-focus-not-transferred"
+        && plan.keyboardModalOpenIdentity !== null
+        ? [evaluateModalOpenCheckpoint(evidence.beforeSnapshot, plan.keyboardModalOpenIdentity)]
+        : []),
       ...evaluateElementPhase(evidence.beforeSnapshot, plan.elementStateAssertions, "checkpoint"),
     ]);
   } catch (error) {
@@ -310,16 +330,46 @@ export async function executeReplay(
   }
   let reproduced: PredicateEvaluation;
   let fixed: PredicateEvaluation;
-  try {
-    reproduced = combinePredicates([
-      evaluateFocus(evidence.afterSnapshot, plan.assertion.observedElement),
-      ...evaluateElementPhase(evidence.afterSnapshot, plan.elementStateAssertions, "reproduced"),
+  const modalContainmentOracle = plan.keyboardOracle === "modal-focus-escape"
+    || plan.keyboardOracle === "modal-tab-focus-loss";
+  const modalOpenOracle = plan.keyboardOracle === "modal-open-focus-not-transferred";
+  const independentKeyboardOracle = modalContainmentOracle || modalOpenOracle;
+  const independentPhase = (
+    snapshot: StateSnapshot,
+    phase: "reproduced" | "fixed",
+  ): PredicateEvaluation => {
+    const checkpointSnapshot = evidence.beforeSnapshot;
+    if (checkpointSnapshot === null) {
+      return { status: "unobservable", detail: "The original keyboard checkpoint is unavailable." };
+    }
+    if (modalOpenOracle) {
+      const identity = plan.keyboardModalOpenIdentity;
+      return identity === null
+        ? { status: "unobservable", detail: "The original modal-open semantic witness is missing." }
+        : evaluateModalOpenOutcome(checkpointSnapshot, snapshot, identity, phase);
+    }
+    return combinePredicates([
+      ...evaluateElementPhase(snapshot, plan.elementStateAssertions, phase, checkpointSnapshot),
+      evaluateRetainedKeyboardSource(
+        checkpointSnapshot, snapshot, plan.assertion.fromElement, plan.assertion.expectedElement,
+      ),
     ]);
-    const fixedPredicates = [
-      ...(plan.assertion.expectedElement === null ? [] : [evaluateFocus(evidence.afterSnapshot, plan.assertion.expectedElement)]),
-      ...evaluateElementPhase(evidence.afterSnapshot, plan.elementStateAssertions, "fixed"),
-    ];
-    fixed = combinePredicates(fixedPredicates);
+  };
+  try {
+    if (independentKeyboardOracle) {
+      reproduced = independentPhase(evidence.afterSnapshot, "reproduced");
+      fixed = independentPhase(evidence.afterSnapshot, "fixed");
+    } else {
+      reproduced = combinePredicates([
+        evaluateFocus(evidence.afterSnapshot, plan.assertion.observedElement),
+        ...evaluateElementPhase(evidence.afterSnapshot, plan.elementStateAssertions, "reproduced"),
+      ]);
+      fixed = combinePredicates([
+        ...(plan.assertion.expectedElement === null
+          ? [] : [evaluateFocus(evidence.afterSnapshot, plan.assertion.expectedElement)]),
+        ...evaluateElementPhase(evidence.afterSnapshot, plan.elementStateAssertions, "fixed"),
+      ]);
+    }
   } catch (error) {
     return executionResult(context(), "error", reason("evaluation-error", safeErrorMessage(error), "evaluation"));
   }
@@ -335,18 +385,108 @@ export async function executeReplay(
       "assertion-ambiguous", "The observed failure and corrected-state predicates both matched.", "evaluation",
     ));
   }
-  if (reproduced.status === "match") return executionResult(context(), "reproduced", null);
+  if (reproduced.status === "unobservable" || fixed.status === "unobservable") {
+    const unavailable = reproduced.status === "unobservable" ? reproduced : fixed;
+    return executionResult(context(), "inconclusive", reason("observation-unavailable", unavailable.detail, "evaluation"));
+  }
+  if (reproduced.status === "match") {
+    if (independentKeyboardOracle) {
+      const originalCheckpoint = evidence.beforeSnapshot;
+      if (originalCheckpoint === null) {
+        return executionResult(context(), "inconclusive", reason(
+          "observation-unavailable", "The original modal checkpoint is missing.", "evaluation",
+        ));
+      }
+      // A momentary null focus may be a normal transient during event
+      // handling. It must persist through settled observations before the
+      // original failure can be classified as independently reproduced.
+      for (const delayMs of [180, 80, 80, 80, 80]) {
+        try {
+          await withinDeadline(deadline, async () => {
+            await new Promise<void>((resolve) => { setTimeout(resolve, delayMs); });
+          });
+        } catch (error) {
+          if (error instanceof ReplayDeadlineExceeded) return timeoutResult(context(), "evaluation");
+          return executionResult(context(), "inconclusive", reason("snapshot-error", safeErrorMessage(error), "evaluation"));
+        }
+        const interrupted = interruptionResult("evaluation");
+        if (interrupted !== null) return interrupted;
+        let fresh: StateSnapshot;
+        try {
+          fresh = await withinDeadline(deadline, () => driver.snapshot());
+        } catch (error) {
+          if (error instanceof ReplayDeadlineExceeded) return timeoutResult(context(), "evaluation");
+          return executionResult(context(), "inconclusive", reason("snapshot-error", safeErrorMessage(error), "evaluation"));
+        }
+        evidence.afterSnapshot = fresh;
+        const failure = independentPhase(fresh, "reproduced");
+        const corrected = independentPhase(fresh, "fixed");
+        if (failure.status !== "match" || corrected.status === "match") {
+          return executionResult(context(), "inconclusive", reason(
+            failure.status === "unobservable" || corrected.status === "unobservable"
+              ? "observation-unavailable" : "assertion-drift",
+            "The original modal failure was not stable across settled observations.",
+            "evaluation",
+          ));
+        }
+      }
+    }
+    return executionResult(context(), "reproduced", null);
+  }
   if (fixed.status === "match") {
-    if (plan.confidence === "deterministic") return executionResult(context(), "fixed", null);
+    if (plan.confidence === "deterministic") {
+      if (independentKeyboardOracle) {
+        // A single apparently fixed frame can precede a delayed focus leak.
+        // Never promote that transient frame to FIXED. Sample the original
+        // modal repeatedly after the input and fail closed on any uncertainty.
+        for (const delayMs of [180, 80, 80, 80, 80]) {
+          try {
+            await withinDeadline(deadline, async () => {
+              await new Promise<void>((resolve) => { setTimeout(resolve, delayMs); });
+            });
+          } catch (error) {
+            if (error instanceof ReplayDeadlineExceeded) return timeoutResult(context(), "evaluation");
+            return executionResult(context(), "error", reason("snapshot-error", safeErrorMessage(error), "evaluation"));
+          }
+          const interrupted = interruptionResult("evaluation");
+          if (interrupted !== null) return interrupted;
+          let fresh: StateSnapshot;
+          try {
+            fresh = await withinDeadline(deadline, () => driver.snapshot());
+          } catch (error) {
+            if (error instanceof ReplayDeadlineExceeded) return timeoutResult(context(), "evaluation");
+            return executionResult(context(), "inconclusive", reason("snapshot-error", safeErrorMessage(error), "evaluation"));
+          }
+          evidence.afterSnapshot = fresh;
+          const originalCheckpoint = evidence.beforeSnapshot;
+          if (originalCheckpoint === null) {
+            return executionResult(context(), "inconclusive", reason("observation-unavailable",
+              "The original replay checkpoint was unavailable for stability confirmation.", "evaluation"));
+          }
+          const repeatedFailure = independentPhase(fresh, "reproduced");
+          const repeatedFix = independentPhase(fresh, "fixed");
+          if (repeatedFailure.status === "unobservable" || repeatedFix.status === "unobservable") {
+            return executionResult(context(), "inconclusive", reason("observation-unavailable",
+              "The same modal or its focus could not be observed throughout confirmation.", "evaluation"));
+          }
+          if (repeatedFailure.status === "match" && repeatedFix.status === "match") {
+            return executionResult(context(), "inconclusive", reason("assertion-ambiguous",
+              "Both original failure and corrected state matched during confirmation.", "evaluation"));
+          }
+          if (repeatedFailure.status === "match") return executionResult(context(), "reproduced", null);
+          if (repeatedFix.status !== "match") {
+            return executionResult(context(), "inconclusive", reason("assertion-drift",
+              "The modal or focus changed during the post-action confirmation window.", "evaluation"));
+          }
+        }
+      }
+      return executionResult(context(), "fixed", null);
+    }
     return executionResult(context(), "inconclusive", reason(
       "best-effort-cannot-prove-fixed",
       "The expected state matched, but a best-effort replay cannot prove the issue fixed.",
       "evaluation",
     ));
-  }
-  if (reproduced.status === "unobservable" || fixed.status === "unobservable") {
-    const unavailable = reproduced.status === "unobservable" ? reproduced : fixed;
-    return executionResult(context(), "inconclusive", reason("observation-unavailable", unavailable.detail, "evaluation"));
   }
   return executionResult(context(), "inconclusive", reason(
     "assertion-drift", "The result matched neither the reproduced failure nor an explicit corrected state.", "evaluation",

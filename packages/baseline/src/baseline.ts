@@ -14,6 +14,7 @@ import {
   type BaselineComparisonChanges,
   type BaselineFocusObservation,
   type BaselineIssueObservation,
+  type IssueMetadataChange,
   type BaselineLatencyObservation,
   type BaselineObservationInventory,
   type BaselineScreenObservation,
@@ -333,12 +334,18 @@ export function parseBaseline(value: unknown): TVDoctorBaselineV1 {
     .map((entry, index) => untrustedText(entry, `$baseline.observability.completedPacks[${String(index)}]`, IDENTIFIER_LIMIT));
   uniqueBy(capabilities, (entry) => entry, "$baseline.observability.capabilities");
   uniqueBy(completedPacks, (entry) => entry, "$baseline.observability.completedPacks");
+  if (!completedPacks.includes("navigation")) {
+    throw new TypeError("$baseline.observability.completedPacks must include the navigation pack.");
+  }
   const issues = array(root["issues"], "$baseline.issues").map((entry, index) => (
     parseIssue(entry, `$baseline.issues[${String(index)}]`)
   )).sort((left, right) => compareText(`${left.rule}\u001f${left.id}`, `${right.rule}\u001f${right.id}`));
   uniqueBy(issues, (entry) => `${entry.rule}\u001f${entry.id}`, "$baseline.issues");
   const inventory = parseInventory(root["inventory"], "$baseline.inventory", true);
   if (inventory.status !== "complete") throw new TypeError("$baseline.inventory must be complete.");
+  if (inventory.screens.length === 0 || inventory.focusTargets.length === 0) {
+    throw new TypeError("$baseline.inventory requires observed screens and focus targets.");
+  }
   return {
     schemaVersion: BASELINE_SCHEMA_VERSION_V1,
     createdAt: parseDate(root["createdAt"], "$baseline.createdAt"),
@@ -386,6 +393,14 @@ function validateCompleteSource(report: TVDoctorReportV1, inventory: BaselineObs
   const incomplete = report.coverage.packs.filter((pack) => pack.status !== "completed");
   if (incomplete.length > 0) throw new TypeError("A baseline requires every recorded pack to be completed.");
   if (inventory.status !== "complete") throw new TypeError("A baseline requires a complete observation inventory.");
+  if (!report.coverage.packs.some((pack) => pack.pack === "navigation" && pack.status === "completed")) {
+    throw new TypeError("A semantic navigation baseline requires the navigation pack to be completed.");
+  }
+  if (inventory.screens.length === 0 || inventory.focusTargets.length === 0
+    || report.coverage.screenStatesDiscovered !== inventory.screens.length
+    || report.coverage.focusStatesDiscovered !== inventory.focusTargets.length) {
+    throw new TypeError("A semantic navigation baseline requires non-empty, report-consistent screen and focus evidence.");
+  }
 }
 
 export function createBaseline(
@@ -434,6 +449,7 @@ function emptyChanges(): BaselineComparisonChanges {
     newIssues: [],
     resolvedIssues: [],
     unchangedIssues: [],
+    issueMetadataChanges: [],
     screensAdded: [],
     screensRemoved: [],
     focusAdded: [],
@@ -533,6 +549,18 @@ export function compareBaseline(
       detail: "The baseline target identity or platform does not match the current run.",
     });
   }
+  if (baseline.tvdoctorVersion !== report.run.tvdoctorVersion) {
+    blockers.push({
+      code: "baseline-version-incompatible",
+      detail: "The TVDoctor engine version differs from the reviewed baseline; compare only after recreating the baseline with the current engine.",
+    });
+  }
+  if (baseline.source.runMode !== report.run.mode) {
+    blockers.push({
+      code: "baseline-mode-incompatible",
+      detail: "The scan mode differs from the reviewed baseline; matching coverage conditions are required.",
+    });
+  }
   if (report.run.status !== "completed" || report.coverage.budget.exhausted.length > 0) {
     blockers.push({
       code: "current-report-partial",
@@ -541,6 +569,13 @@ export function compareBaseline(
   }
   if (inventory.status !== "complete") {
     blockers.push({ code: "current-inventory-partial", detail: "The current observation inventory is partial." });
+  }
+  const navigationPack = report.coverage.packs.find((pack) => pack.pack === "navigation");
+  if (navigationPack?.status !== "completed" || inventory.screens.length === 0 || inventory.focusTargets.length === 0
+    || report.coverage.screenStatesDiscovered !== inventory.screens.length
+    || report.coverage.focusStatesDiscovered !== inventory.focusTargets.length) {
+    blockers.push({ code: "navigation-coverage-incomplete",
+      detail: "The current run lacks a completed navigation pack or report-consistent non-empty screen/focus evidence." });
   }
   const capabilities = new Set(report.coverage.capabilitiesObserved);
   for (const capability of baseline.observability.capabilities) {
@@ -572,6 +607,27 @@ export function compareBaseline(
   const issueDifference = difference(baseline.issues, currentIssues, (entry) => `${entry.rule}\u001f${entry.id}`);
   const baselineIssueKeys = new Set(baseline.issues.map((entry) => `${entry.rule}\u001f${entry.id}`));
   const unchangedIssues = currentIssues.filter((entry) => baselineIssueKeys.has(`${entry.rule}\u001f${entry.id}`));
+  const baselineIssueByKey = new Map(baseline.issues.map((entry) => [`${entry.rule}\u001f${entry.id}`, entry]));
+  const severityRank: Readonly<Record<IssueSeverity, number>> = {
+    info: 0, low: 1, medium: 2, high: 3, critical: 4,
+  };
+  const confidenceRank: Readonly<Record<IssueConfidence, number>> = {
+    unobservable: 0, inference: 1, heuristic: 2, deterministic: 3,
+  };
+  const issueMetadataChanges: IssueMetadataChange[] = [];
+  for (const after of unchangedIssues) {
+    const before = baselineIssueByKey.get(`${after.rule}\u001f${after.id}`);
+    if (before === undefined || (before.pack === after.pack && before.severity === after.severity
+      && before.confidence === after.confidence)) continue;
+    issueMetadataChanges.push({
+      id: after.id,
+      rule: after.rule,
+      before,
+      after,
+      severityEscalated: severityRank[after.severity] > severityRank[before.severity],
+      confidenceDowngraded: confidenceRank[after.confidence] < confidenceRank[before.confidence],
+    });
+  }
   const screenDifference = difference(baseline.inventory.screens, inventory.screens, (entry) => entry.key);
   const focusDifference = difference(
     baseline.inventory.focusTargets,
@@ -614,6 +670,7 @@ export function compareBaseline(
     newIssues: [...issueDifference.added].sort((left, right) => compareText(left.id, right.id)),
     resolvedIssues: [...issueDifference.removed].sort((left, right) => compareText(left.id, right.id)),
     unchangedIssues: [...unchangedIssues].sort((left, right) => compareText(left.id, right.id)),
+    issueMetadataChanges: issueMetadataChanges.sort((left, right) => compareText(left.id, right.id)),
     screensAdded: [...screenDifference.added].sort((left, right) => compareText(left.key, right.key)),
     screensRemoved: [...screenDifference.removed].sort((left, right) => compareText(left.key, right.key)),
     focusAdded: [...focusDifference.added].sort((left, right) => compareText(left.key, right.key)),
@@ -624,6 +681,7 @@ export function compareBaseline(
     latencyRegressions: latencyRegressions.sort((left, right) => compareText(left.key, right.key)),
   };
   const regressed = changes.newIssues.length > 0
+    || changes.issueMetadataChanges.some((change) => change.severityEscalated || change.confidenceDowngraded)
     || changes.screensRemoved.length > 0
     || changes.focusRemoved.length > 0
     || changes.transitionsRemoved.length > 0
@@ -631,6 +689,7 @@ export function compareBaseline(
     || changes.latencyRegressions.length > 0;
   const changed = changes.newIssues.length > 0
     || changes.resolvedIssues.length > 0
+    || changes.issueMetadataChanges.length > 0
     || changes.screensAdded.length > 0
     || changes.screensRemoved.length > 0
     || changes.focusAdded.length > 0

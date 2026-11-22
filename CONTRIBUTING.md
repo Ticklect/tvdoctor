@@ -1,6 +1,8 @@
 # Contributing to TVDoctor
 
-Keep changes small, scoped, and backed by tests or reproducible evidence.
+TVDoctor gives coding agents local MCP tools to scan running apps, inspect
+evidence, and independently verify supported fixes after a code change.
+Keep changes scoped and backed by reproducible evidence.
 
 ## Before opening work
 
@@ -57,6 +59,17 @@ under `artifacts/`; package smoke uses an isolated temporary consumer. A partial
 or flaky result is a failure in CI, not evidence to rerun until green.
 
 ## Change requirements
+
+### MCP and coding-agent workflows
+
+- Keep tool names and existing result fields compatible with current clients.
+- Report what the scan observed, how it terminated, and what coverage remains.
+- Verify fixes using the original scan and finding IDs. Record a fresh scan
+  as separate regression evidence.
+- Test against an authorised local fixture and keep private evidence out of
+  public issues and pull requests.
+
+[MCP setup and tool guide](docs/mcp-server.md)
 
 ### Core and diagnostics
 

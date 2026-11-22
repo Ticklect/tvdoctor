@@ -1,9 +1,11 @@
 # TVDoctor contributor instructions
 
-TVDoctor is a local-first TV remote-navigation auditor. The central promise is
-to discover screens and focus paths, report what was actually observed, and
-replay deterministic failures. Fast scans must never imply full coverage when
-their action, state, depth, time, or evidence limits were reached.
+TVDoctor is a local-first UI auditor for coding agents. Its MCP tools let an
+agent scan a running app, inspect evidence, and independently verify supported
+original failures after the agent edits the application. The shared engine
+discovers screens and focus paths for browser keyboard and TV remote navigation.
+Fast scans must never imply full coverage when their action, state, depth, time,
+or evidence limits were reached.
 
 ## Development
 

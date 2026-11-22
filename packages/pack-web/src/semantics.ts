@@ -114,6 +114,8 @@ export function normaliseWebSemanticText(value: string | null | undefined): stri
     .replace(/\s+/gu, " ") ?? "";
 }
 
+const NORMALISED_UNSAFE_SETTINGS_TERMS = UNSAFE_SETTINGS_TERMS.map(normaliseWebSemanticText);
+
 export function flattenWebUiTree(nodes: readonly UiNodeSnapshot[]): readonly SemanticNodeEntry[] {
   if (!Array.isArray(nodes)) throw new TypeError("The UI tree roots must be an array.");
   if (nodes.length > WEB_UI_TREE_LIMITS.maxNodes) {
@@ -192,18 +194,32 @@ function availableEntries(snapshot: StateSnapshot): readonly SemanticNodeEntry[]
 
 /** Restricts matching to the deepest visible modal surface when one exists. */
 export function activeWebSurfaceEntries(snapshot: StateSnapshot): readonly SemanticNodeEntry[] {
-  const entries = availableEntries(snapshot);
-  const modals = entries.filter((entry) => entry.node.visible === true && entry.node.modal === true);
-  if (modals.length === 0) return entries;
-  const modal = [...modals].sort((left, right) => (
-    right.ancestors.length - left.ancestors.length || left.order - right.order
-  ))[0];
+  return activeWebSurfaceEntriesFromEntries(availableEntries(snapshot));
+}
+
+function activeWebSurfaceEntriesFromEntries(
+  entries: readonly SemanticNodeEntry[],
+): readonly SemanticNodeEntry[] {
+  let modal: SemanticNodeEntry | undefined;
+  for (const entry of entries) {
+    if (entry.node.visible !== true || entry.node.modal !== true) continue;
+    if (modal === undefined
+      || entry.ancestors.length > modal.ancestors.length
+      || (entry.ancestors.length === modal.ancestors.length && entry.order < modal.order)) {
+      modal = entry;
+    }
+  }
   if (modal === undefined) return entries;
   return entries.filter((entry) => entry.node === modal.node || entry.ancestors.includes(modal.node));
 }
 
 export function ownText(node: UiNodeSnapshot): string {
-  return normaliseWebSemanticText([node.name, node.text].filter((value) => value !== null).join(" "));
+  const name = node.name;
+  const text = node.text;
+  const hasName = typeof name === "string";
+  const hasText = typeof text === "string";
+  const value = hasName ? (hasText ? `${name} ${text}` : name) : (hasText ? text : "");
+  return normaliseWebSemanticText(value);
 }
 
 const MAX_VISIBLE_SURFACE_SIGNATURE_ENTRIES = 96;
@@ -223,14 +239,16 @@ export function distinctVisibleSurfaceChange(
   const collect = (roots: readonly UiNodeSnapshot[]): Set<string> => {
     const entries = new Set<string>();
     const pending = [...roots];
-    while (pending.length > 0 && entries.size < MAX_VISIBLE_SURFACE_SIGNATURE_ENTRIES) {
-      const node = pending.shift();
+    let head = 0;
+    while (head < pending.length && entries.size < MAX_VISIBLE_SURFACE_SIGNATURE_ENTRIES) {
+      const node = pending[head];
+      head += 1;
       if (node === undefined) break;
       if (node.visible === true) {
         const text = ownText(node).slice(0, MAX_VISIBLE_SURFACE_TEXT_LENGTH);
         if (text.length > 0) entries.add(`${normaliseWebSemanticText(node.role)}|${text}`);
       }
-      pending.push(...node.children);
+      for (const child of node.children) pending.push(child);
     }
     return entries;
   };
@@ -242,15 +260,18 @@ export function distinctVisibleSurfaceChange(
 }
 
 export function webSemanticContext(entry: SemanticNodeEntry): string {
-  return normaliseWebSemanticText([
-    ...entry.ancestors.flatMap((ancestor) => [ancestor.name, ancestor.text]),
-    entry.node.name,
-    entry.node.text,
-  ].filter((value) => value !== null).join(" "));
+  const values: string[] = [];
+  for (const ancestor of entry.ancestors) {
+    if (ancestor.name !== null) values.push(ancestor.name);
+    if (ancestor.text !== null) values.push(ancestor.text);
+  }
+  if (entry.node.name !== null) values.push(entry.node.name);
+  if (entry.node.text !== null) values.push(entry.node.text);
+  return normaliseWebSemanticText(values.join(" "));
 }
 
 function hasToken(value: string, token: string): boolean {
-  return ` ${value} `.includes(` ${normaliseWebSemanticText(token)} `);
+  return ` ${value} `.includes(` ${token} `);
 }
 
 export function isWebInteractiveNode(node: UiNodeSnapshot): boolean {
@@ -260,7 +281,18 @@ export function isWebInteractiveNode(node: UiNodeSnapshot): boolean {
 export function isSafeWebControl(node: UiNodeSnapshot, context = ""): boolean {
   if (node.visible !== true || node.enabled === false || !isWebInteractiveNode(node)) return false;
   const semantics = ` ${normaliseWebSemanticText(`${ownText(node)} ${context}`)} `;
-  return !UNSAFE_SETTINGS_TERMS.some((term) => semantics.includes(` ${normaliseWebSemanticText(term)} `));
+  return !NORMALISED_UNSAFE_SETTINGS_TERMS.some((term) => semantics.includes(` ${term} `));
+}
+
+function isSafeWebControlWithNormalisedParts(
+  node: UiNodeSnapshot,
+  own: string,
+  context: string,
+  role: string,
+): boolean {
+  if (node.visible !== true || node.enabled === false || !INTERACTIVE_ROLES.has(role)) return false;
+  const semantics = ` ${own} ${context} `;
+  return !NORMALISED_UNSAFE_SETTINGS_TERMS.some((term) => semantics.includes(` ${term} `));
 }
 
 /**
@@ -268,10 +300,11 @@ export function isSafeWebControl(node: UiNodeSnapshot, context = ""): boolean {
  * navigation is eligible; toggles/value controls and destructive context fail closed.
  */
 export function isSafeSettingsSubmenu(entry: SemanticNodeEntry): boolean {
-  if (!isSafeWebControl(entry.node, webSemanticContext(entry))) return false;
-  if (entry.node.selectionState !== null || entry.node.valueNow !== null) return false;
   const own = ownText(entry.node);
+  const context = webSemanticContext(entry);
   const role = normaliseWebSemanticText(entry.node.role);
+  if (!isSafeWebControlWithNormalisedParts(entry.node, own, context, role)) return false;
+  if (entry.node.selectionState !== null || entry.node.valueNow !== null) return false;
   return role === "link" && /\b(menu|settings|preferences|options|accessibility)\b/u.test(own);
 }
 
@@ -287,12 +320,15 @@ export function describeWebElement(node: UiNodeSnapshot): WebElementDescriptor {
   };
 }
 
-function scoreCandidate(target: WebSemanticTarget, entry: SemanticNodeEntry): number | null {
+function scoreCandidate(
+  target: WebSemanticTarget,
+  entry: SemanticNodeEntry,
+  own: string,
+  context: string,
+  role: string,
+): number | null {
   const node = entry.node;
-  const own = ownText(node);
-  const context = webSemanticContext(entry);
-  const role = normaliseWebSemanticText(node.role);
-  if (target !== "details-marker" && !isSafeWebControl(node, context)) return null;
+  if (target !== "details-marker" && !isSafeWebControlWithNormalisedParts(node, own, context, role)) return null;
   let score = role === "button" ? 20 : role === "link" ? 15 : 8;
 
   switch (target) {
@@ -332,22 +368,34 @@ export function rankWebCandidates(
   snapshot: StateSnapshot,
   target: WebSemanticTarget,
 ): readonly RankedWebCandidate[] {
-  return activeWebSurfaceEntries(snapshot)
-    .map((entry): RankedWebCandidate | null => {
-      const score = scoreCandidate(target, entry);
-      return score === null ? null : {
-        ...entry,
-        score,
-        descriptor: describeWebElement(entry.node),
-      };
-    })
-    .filter((entry): entry is RankedWebCandidate => entry !== null)
-    .sort((left, right) => (
-      right.score - left.score
-      || ownText(left.node).localeCompare(ownText(right.node), "en")
-      || normaliseWebSemanticText(left.node.role).localeCompare(normaliseWebSemanticText(right.node.role), "en")
-      || left.order - right.order
-    ));
+  const ranked: RankedWebCandidate[] = [];
+  const sortKeys = new WeakMap<RankedWebCandidate, readonly [string, string]>();
+  for (const entry of activeWebSurfaceEntries(snapshot)) {
+    const own = ownText(entry.node);
+    const context = webSemanticContext(entry);
+    const role = normaliseWebSemanticText(entry.node.role);
+    const score = scoreCandidate(target, entry, own, context, role);
+    if (score === null) continue;
+    const candidate: RankedWebCandidate = {
+      ...entry,
+      score,
+      descriptor: describeWebElement(entry.node),
+    };
+    ranked.push(candidate);
+    sortKeys.set(candidate, [own, role]);
+  }
+  ranked.sort((left, right) => {
+    const leftKeys = sortKeys.get(left);
+    const rightKeys = sortKeys.get(right);
+    if (leftKeys === undefined || rightKeys === undefined) {
+      throw new Error("A ranked web candidate was missing its semantic sort keys.");
+    }
+    return right.score - left.score
+      || leftKeys[0].localeCompare(rightKeys[0], "en")
+      || leftKeys[1].localeCompare(rightKeys[1], "en")
+      || left.order - right.order;
+  });
+  return ranked;
 }
 
 export function rankOnScreenKeyboardKeys(
@@ -362,7 +410,8 @@ export function rankOnScreenKeyboardKeys(
     .map((entry): RankedWebCandidate | null => {
       const own = ownText(entry.node);
       const context = webSemanticContext(entry);
-      if (!isSafeWebControl(entry.node, context)) return null;
+      const role = normaliseWebSemanticText(entry.node.role);
+      if (!isSafeWebControlWithNormalisedParts(entry.node, own, context, role)) return null;
       if (!/\b(keyboard|keypad|search key)\b/u.test(context)) return null;
       const ownTokens = own.split(" ").filter((token) => token.length > 0);
       // Browser snapshots can expose the same short label as both accessible
@@ -376,7 +425,7 @@ export function rankOnScreenKeyboardKeys(
       if (!exact) return null;
       return {
         ...entry,
-        score: 200 + (normaliseWebSemanticText(entry.node.role) === "button" ? 20 : 0),
+        score: 200 + (role === "button" ? 20 : 0),
         descriptor: describeWebElement(entry.node),
       };
     })
@@ -395,12 +444,22 @@ function focusMatchesNode(focus: FocusTarget | null, node: UiNodeSnapshot): bool
 }
 
 export function focusedWebEntry(snapshot: StateSnapshot): SemanticNodeEntry | null {
+  return focusedWebEntryFromEntries(snapshot, availableEntries(snapshot));
+}
+
+function focusedWebEntryFromEntries(
+  snapshot: StateSnapshot,
+  entries: readonly SemanticNodeEntry[],
+): SemanticNodeEntry | null {
   if (snapshot.focusedElement.status !== "available") return null;
   const focus = snapshot.focusedElement.value;
   if (focus?.stableId === undefined) return null;
-  const matches = availableEntries(snapshot).filter((entry) => entry.node.stableId === focus.stableId);
-  if (matches.length !== 1) return null;
-  const match = matches[0];
+  let match: SemanticNodeEntry | undefined;
+  for (const entry of entries) {
+    if (entry.node.stableId !== focus.stableId) continue;
+    if (match !== undefined) return null;
+    match = entry;
+  }
   return match !== undefined && focusMatchesNode(focus, match.node) ? match : null;
 }
 
@@ -439,10 +498,11 @@ function boundedStableId(value: string | undefined): string {
 export function webSemanticStateIdentity(snapshot: StateSnapshot): string | null {
   if (snapshot.uiTree.status === "unavailable" || snapshot.focusedElement.status === "unavailable") return null;
   const focus = snapshot.focusedElement.value;
-  if (focus?.stableId !== undefined && focusedWebEntry(snapshot) === null) {
+  const entries = availableEntries(snapshot);
+  if (focus?.stableId !== undefined && focusedWebEntryFromEntries(snapshot, entries) === null) {
     return null;
   }
-  const surface = activeWebSurfaceEntries(snapshot)
+  const surface = activeWebSurfaceEntriesFromEntries(entries)
     .filter((entry) => entry.node.visible === true && (
       entry.node.modal === true
       || normaliseWebSemanticText(entry.node.role) === "heading"

@@ -35,14 +35,30 @@ import {
 import type {
   PlaywrightWebDriverOptions,
   WebDriverPerformanceProfile,
+  WebActionRuntimeErrorEvidence,
+  WebActionRuntimeErrorSnapshot,
   WebLogEntry,
+  WebLogSnapshot,
   WebNetworkEntry,
   WebNetworkSnapshot,
   WebStateSnapshot,
 } from "./types.js";
 
+export {
+  confirmWebSafeKeyboardPageError,
+  WEB_SAFE_KEYBOARD_PAGE_ERROR_RULE,
+  type VerifiedWebRuntimeErrorFinding,
+  type WebRuntimeErrorActionWitness,
+} from "./action-runtime-diagnostics.js";
+
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 } as const;
 const DEFAULT_MAX_LOG_ENTRIES = 500;
+const MAX_ACTION_RUNTIME_EVIDENCE = 64;
+const MAX_ERRORS_PER_ACTION = 8;
+const SAFE_ERROR_NAMES = new Set([
+  "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError",
+  "URIError", "EvalError", "AggregateError",
+]);
 const DEFAULT_MAX_PENDING_NETWORK_REQUESTS = 1_000;
 const DEFAULT_MAX_UI_DEPTH = 128;
 const DEFAULT_MAX_UI_NODES = 750;
@@ -65,6 +81,7 @@ export const WEB_REMOTE_KEYBOARD_MAP: Readonly<Record<RemoteKey, string>> = {
   SELECT: "Enter",
   BACK: "Escape",
   TAB: "Tab",
+  SHIFT_TAB: "Shift+Tab",
   HOME: "Home",
   PLAY_PAUSE: "MediaPlayPause",
   PLAY: "MediaPlay",
@@ -202,6 +219,23 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   #context: BrowserContext | null = null;
   #currentApp: AppReference | null = null;
   #logs: WebLogEntry[] = [];
+  #logHead = 0;
+  #logCount = 0;
+  #runtimeActionToken = 0;
+  #runtimeActionGeneration = 0;
+  #activeRuntimeAction: {
+    token: number;
+    key: RemoteKey;
+    inputSentAtMs: number;
+    pageErrorCount: number;
+    errorNames: Set<string>;
+    ambiguous: boolean;
+    dispatching: boolean;
+  } | null = null;
+  #actionRuntimeErrors: WebActionRuntimeErrorEvidence[] = [];
+  #lastActionRuntimeEvidence: WebActionRuntimeErrorEvidence | null = null;
+  #droppedActionRuntimeErrors = 0;
+  #droppedLogEntries = 0;
   #networkEntries: MutableNetworkEntry[] = [];
   #pendingRequestEntries = new WeakMap<Request, MutableNetworkEntry>();
   #pendingRequestsRetained = new Set<Request>();
@@ -259,7 +293,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     }
 
     await this.#closeContext();
-    this.#clearTelemetry();
+    this.#clearTelemetry(true);
     this.#currentApp = app;
     this.#recordedVideoPath = null;
 
@@ -323,6 +357,7 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
   async press(key: RemoteKey, options?: DriverOperationOptions): Promise<ActionResult> {
     return await this.#runOperation(options, async () => {
+    this.#lastActionRuntimeEvidence = null;
     this.#performanceProfile.pressCount += 1;
     const profileStartedAt = performance.now();
     try {
@@ -339,8 +374,37 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
 
     try {
       const baseline = await readSettleBaseline(page);
-      await page.keyboard.press(WEB_REMOTE_KEYBOARD_MAP[key]);
+      // Only the key dispatch can be credited with an immediate pageerror;
+      // waiting for UI settlement also runs unrelated timers/network work.
+      // A failed or unsettled action is never a defect proof.
+      const active = {
+        token: ++this.#runtimeActionToken,
+        generation: this.#runtimeActionGeneration,
+        key,
+        inputSentAtMs,
+        pageErrorCount: 0,
+        errorNames: new Set<string>(),
+        ambiguous: false,
+        dispatching: true,
+      };
+      const concurrent = this.#activeRuntimeAction !== null;
+      if (concurrent && this.#activeRuntimeAction !== null) {
+        // Overlapping keys cannot be assigned a unique pageerror source.
+        this.#activeRuntimeAction.ambiguous = true;
+      }
+      if (!concurrent) this.#activeRuntimeAction = active;
+      let outcome: ActionResult["outcome"] = "failed";
+      try {
+      try {
+        await page.keyboard.press(WEB_REMOTE_KEYBOARD_MAP[key]);
+      } finally {
+        // Chromium can deliver pageerror events after the key is dispatched
+        // while waitForPageSettle polls the page for much longer. Those late
+        // exceptions cannot be causally attributed to this input.
+        active.dispatching = false;
+      }
       const settled = await waitForPageSettle(page, baseline, this.#options.settle);
+      outcome = settled.timedOut ? "inconclusive" : "applied";
       const timing: ActionTiming = {
         inputSentAtMs,
         ...(settled.firstResponseAtMs === null ? {} : { firstResponseAtMs: settled.firstResponseAtMs }),
@@ -349,12 +413,40 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
       };
       return {
         key,
-        outcome: "applied",
+        outcome,
         timing,
         ...(settled.timedOut
           ? { message: "Input was delivered, but the page did not reach the configured stability threshold." }
           : {}),
       };
+      } finally {
+        if (!concurrent && this.#activeRuntimeAction === active) {
+          this.#activeRuntimeAction = null;
+          if (outcome === "applied" && !active.ambiguous) {
+            const event: WebActionRuntimeErrorEvidence = {
+              token: active.token,
+              generation: active.generation,
+              key: active.key,
+              inputSentAtMs: active.inputSentAtMs,
+              outcome,
+              correlation: "press-window",
+              pageErrorCount: active.pageErrorCount,
+              errorNames: [...active.errorNames],
+              truncated: active.pageErrorCount > MAX_ERRORS_PER_ACTION,
+            };
+            this.#lastActionRuntimeEvidence = event;
+            if (active.pageErrorCount > 0) {
+              if (this.#actionRuntimeErrors.length >= MAX_ACTION_RUNTIME_EVIDENCE) {
+                this.#actionRuntimeErrors.shift();
+                this.#droppedActionRuntimeErrors += 1;
+              }
+              this.#actionRuntimeErrors.push(event);
+            }
+          } else {
+            this.#lastActionRuntimeEvidence = null;
+          }
+        }
+      }
     } catch (error) {
       return {
         key,
@@ -522,7 +614,46 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   }
 
   async getLogs(options?: DriverOperationOptions): Promise<readonly WebLogEntry[]> {
-    return await this.#runOperation(options, async () => this.#logs.map((entry) => ({ ...entry })));
+    return (await this.getLogSnapshot(options)).logs;
+  }
+
+  async getLogSnapshot(options?: DriverOperationOptions): Promise<WebLogSnapshot> {
+    return await this.#runOperation(options, async () => {
+      const logs = new Array<WebLogEntry>(this.#logCount);
+      for (let index = 0; index < this.#logCount; index += 1) {
+        const entry = this.#logs[(this.#logHead + index) % this.#options.maxLogEntries];
+        if (entry === undefined) throw new Error("Web log retention buffer is inconsistent.");
+        logs[index] = { ...entry };
+      }
+      return { logs, droppedEntries: this.#droppedLogEntries };
+    });
+  }
+
+  /**
+   * Drains only newly observed, action-scoped uncaught page errors. This is
+   * intentionally separate from general console/log telemetry and has no
+   * application-authored messages or URL fields.
+   */
+  consumeActionRuntimeErrors(): WebActionRuntimeErrorSnapshot {
+    const snapshot = {
+      events: this.#actionRuntimeErrors.map((event) => ({
+        ...event, errorNames: [...event.errorNames],
+      })),
+      droppedRecords: this.#droppedActionRuntimeErrors,
+    };
+    this.#actionRuntimeErrors = [];
+    this.#droppedActionRuntimeErrors = 0;
+    return snapshot;
+  }
+
+  /**
+   * The last completed key press, including an error-free press. Call this in
+   * onActionObserved to avoid accidentally crediting an older restoration
+   * input's error to a later graph action.
+   */
+  getLastActionRuntimeEvidence(): WebActionRuntimeErrorEvidence | null {
+    const evidence = this.#lastActionRuntimeEvidence;
+    return evidence === null ? null : { ...evidence, errorNames: [...evidence.errorNames] };
   }
 
   getNetworkSnapshot(): WebNetworkSnapshot {
@@ -624,8 +755,20 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     }
   }
 
-  #clearTelemetry(): void {
+  #clearTelemetry(newLaunch = false): void {
+    this.#runtimeActionGeneration += 1;
+    this.#activeRuntimeAction = null;
+    this.#actionRuntimeErrors = [];
+    this.#lastActionRuntimeEvidence = null;
+    this.#droppedActionRuntimeErrors = 0;
+    // A reset discards observed logs too. Keep their loss visible until the
+    // next launch, otherwise a subsequent crash stage could report a false PASS.
+    this.#droppedLogEntries = newLaunch
+      ? 0
+      : this.#droppedLogEntries + this.#logCount;
     this.#logs = [];
+    this.#logHead = 0;
+    this.#logCount = 0;
     this.#networkEntries = [];
     this.#pendingRequestEntries = new WeakMap();
     this.#pendingRequestsRetained.clear();
@@ -637,10 +780,18 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
   }
 
   #pushLog(entry: WebLogEntry): void {
-    this.#logs.push(entry);
-    if (this.#logs.length > this.#options.maxLogEntries) {
-      this.#logs.splice(0, this.#logs.length - this.#options.maxLogEntries);
+    const maximum = this.#options.maxLogEntries;
+    if (this.#logCount < maximum) {
+      this.#logs[(this.#logHead + this.#logCount) % maximum] = entry;
+      this.#logCount += 1;
+      return;
     }
+
+    // Keep a fixed-capacity ring once full so sustained console floods evict
+    // one oldest entry in O(1), rather than shifting every retained log.
+    this.#logs[this.#logHead] = entry;
+    this.#logHead = (this.#logHead + 1) % maximum;
+    this.#droppedLogEntries += 1;
   }
 
   #pushNetworkEntry(entry: MutableNetworkEntry): void {
@@ -667,6 +818,13 @@ export class PlaywrightWebDriver implements TVDoctorDriver {
     });
 
     page.on("pageerror", (error) => {
+      const active = this.#activeRuntimeAction;
+      if (active !== null && active.dispatching && !active.ambiguous) {
+        active.pageErrorCount = Math.min(MAX_ERRORS_PER_ACTION + 1, active.pageErrorCount + 1);
+        if (active.errorNames.size < MAX_ERRORS_PER_ACTION) {
+          active.errorNames.add(SAFE_ERROR_NAMES.has(error.name) ? error.name : "Error");
+        }
+      }
       this.#pushLog({
         timestamp: new Date().toISOString(),
         level: "error",

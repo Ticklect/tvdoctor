@@ -69,5 +69,5 @@ describe("Deep aggregate audit artifacts", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000); // Large filesystem/digest stress test can exceed Vitest's 5s default under full-suite parallel load.
 });

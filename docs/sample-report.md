@@ -23,12 +23,10 @@ demo surface: 6 remote actions, 1 focus state, 1 finding, and no evidence failur
 | Portable replay | Available |
 | Replay result | **REPRODUCED** |
 
-![Northstar demo showing Explore film focused beside the unreachable More info control](assets/tvdoctor-sample-navigation-failure.png)
-
-The screenshot is intentionally unchanged after `RIGHT`: that is the failure.
-`More info` is visible and pointer-operable, but the D-pad focus graph has no route
-to it. TVDoctor records the transition, the aligned candidate, screenshots, and a
-portable replay rather than treating the self-loop as a clean navigation result.
+Focus stays on `Explore film` after `RIGHT`. `More info` is visible and
+pointer-operable, and the D-pad focus graph has no route to it. The generated
+report includes the transition, the aligned candidate, before-and-after
+screenshots, and the portable replay.
 
 ## Reproduce it locally
 

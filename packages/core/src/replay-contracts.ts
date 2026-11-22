@@ -44,6 +44,14 @@ export interface ReplayElementStateExpectation {
   readonly focusable?: boolean;
   readonly focused?: boolean;
   readonly modal?: boolean;
+  /** Proves the uniquely observed focused element is (or is not) inside this node. */
+  readonly containsFocus?: boolean;
+  /** Requires explicitly absent browser focus AND zero focused nodes in a complete tree. */
+  readonly focusAbsent?: true;
+  /** Requires this node's stable identity to match the checkpoint snapshot. */
+  readonly sameAsCheckpoint?: boolean;
+  /** A replacement page or dialog route cannot establish a fix for the original. */
+  readonly sameLocationAsCheckpoint?: boolean;
 }
 
 /** Element predicates supplement the transition assertion. */
@@ -52,6 +60,20 @@ export interface ReplayElementStateAssertion {
   readonly checkpoint?: ReplayElementStateExpectation;
   readonly reproduced?: ReplayElementStateExpectation;
   readonly fixed?: ReplayElementStateExpectation;
+}
+
+/** Immutable semantic witness from the original observed modal-open action. */
+export interface ReplayModalOpenIdentity {
+  readonly modal: {
+    readonly stableId: string;
+    readonly role: "dialog" | "alertdialog";
+    readonly name: string;
+  };
+  readonly opener: {
+    readonly stableId: string;
+    readonly role: "button";
+    readonly name: string;
+  };
 }
 
 export interface ReplaySequenceSourceMetadata {
@@ -89,6 +111,11 @@ export interface CompiledReplayPlan {
   readonly setup: ReplaySetupPlan;
   readonly assertion: ReplayTransitionAssertion;
   readonly elementStateAssertions: readonly ReplayElementStateAssertion[];
+  /** Compiled from the original rule and its correlated provenance, never client assertions. */
+  readonly keyboardOracle: "modal-focus-escape" | "modal-tab-focus-loss"
+    | "modal-open-focus-not-transferred" | "review-only" | null;
+  /** Strictly decoded from the correlated original source issue; absent for other rules. */
+  readonly keyboardModalOpenIdentity: ReplayModalOpenIdentity | null;
   readonly confidence: ReproductionConfidence;
   readonly totalActions: number;
   readonly sequence: ReplaySequenceMetadata;
@@ -137,6 +164,8 @@ export interface ReplayEvidenceHooks {
 export interface ReplayExecutionOptions {
   readonly budgets?: Partial<ReplayExecutionBudgets>;
   readonly signal?: AbortSignal;
+  /** Recheck a candidate modal-focus fix across a short settled observation window. */
+  readonly confirmStableFix?: boolean;
   /** Overrides driver.reset for environments with a stronger restoration hook. */
   readonly restore?: (context: ReplayRestoreContext) => void | Promise<void>;
   readonly evidence?: ReplayEvidenceHooks;

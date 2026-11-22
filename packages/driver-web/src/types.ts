@@ -2,6 +2,8 @@ import type {
   ElementBounds,
   LogEntry,
   Observation,
+  RemoteKey,
+  ActionResult,
   StateSnapshot,
   UiNodeSnapshot,
 } from "@tvdoctor/protocol";
@@ -125,6 +127,42 @@ export interface WebLogEntry extends LogEntry {
   readonly source: WebLogSource;
   readonly location: string | null;
   readonly stack: string | null;
+}
+
+/** Atomic bounded log read for the current launch. Loss is cumulative across resets. */
+export interface WebLogSnapshot {
+  readonly logs: readonly WebLogEntry[];
+  /** Entries evicted by the retention cap or discarded by a reset since launch. */
+  readonly droppedEntries: number;
+}
+
+/**
+ * Uncaught page errors observed within a single real keyboard press boundary.
+ * Only error class names are retained. In particular, application exception
+ * messages, URLs, stacks and browser console text are excluded.
+ *
+ * A press-window correlation is a direct observation of timing, not proof that
+ * this key caused the exception. Independent replay must establish recurrence.
+ */
+export interface WebActionRuntimeErrorEvidence {
+  readonly token: number;
+  /** Increments on every launch/reset. A repeat needs a distinct generation. */
+  readonly generation: number;
+  readonly key: RemoteKey;
+  readonly inputSentAtMs: number;
+  readonly outcome: ActionResult["outcome"];
+  readonly correlation: "press-window";
+  readonly pageErrorCount: number;
+  /** Safe built-in JavaScript error classes only. */
+  readonly errorNames: readonly string[];
+  /** More than eight error events occurred during this action. */
+  readonly truncated: boolean;
+}
+
+export interface WebActionRuntimeErrorSnapshot {
+  readonly events: readonly WebActionRuntimeErrorEvidence[];
+  /** Old action records discarded by the bounded retention cap. */
+  readonly droppedRecords: number;
 }
 
 export type WebNetworkOutcome = "failed" | "pending" | "succeeded";

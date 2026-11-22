@@ -43,6 +43,9 @@ export const NAVIGATION_FOCUS_GRAPH_ACTIONS = [
   "RIGHT",
   "SELECT",
   "BACK",
+  // Only emitted when a browser scan explicitly requests keyboard input.
+  "TAB",
+  "SHIFT_TAB",
 ] as const satisfies readonly RemoteKey[];
 
 export type NavigationFocusGraphAction = (typeof NAVIGATION_FOCUS_GRAPH_ACTIONS)[number];
@@ -126,6 +129,11 @@ export const NAVIGATION_FOCUS_GRAPH_V2_PROBLEM_KINDS = [
   "focus-not-visible",
   "focus-escape",
   "stale-focus",
+  "keyboard-modal-focus-escape",
+  "keyboard-focus-offscreen",
+  "keyboard-possible-focus-trap",
+  "keyboard-unvisited-control",
+  "keyboard-escape-focus-loss",
 ] as const;
 
 export type NavigationFocusGraphV2ProblemKind =
@@ -278,6 +286,16 @@ function problemKindV2(finding: NavigationDiagnosticFinding): NavigationFocusGra
       return "focus-escape";
     case NAVIGATION_DIAGNOSTIC_RULES.staleFocus:
       return "stale-focus";
+    case NAVIGATION_DIAGNOSTIC_RULES.keyboardModalFocusEscape:
+      return "keyboard-modal-focus-escape";
+    case NAVIGATION_DIAGNOSTIC_RULES.keyboardOffscreenFocus:
+      return "keyboard-focus-offscreen";
+    case NAVIGATION_DIAGNOSTIC_RULES.keyboardPossibleTrap:
+      return "keyboard-possible-focus-trap";
+    case NAVIGATION_DIAGNOSTIC_RULES.keyboardUnvisitedControl:
+      return "keyboard-unvisited-control";
+    case NAVIGATION_DIAGNOSTIC_RULES.keyboardEscapeFocusLoss:
+      return "keyboard-escape-focus-loss";
     default:
       return null;
   }

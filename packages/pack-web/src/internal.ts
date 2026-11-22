@@ -426,6 +426,23 @@ export interface WebSurfaceExpansion {
   readonly states: readonly ExpandedWebState[];
   readonly complete: boolean;
   readonly reason: "complete" | "max-local-depth" | "max-local-states" | "target-found" | "unobservable";
+  readonly transitions?: readonly WebSurfaceTransition[];
+}
+
+export interface WebSurfaceTransition {
+  readonly fromStableId: string;
+  readonly key: RemoteKey;
+  readonly toStableId: string;
+}
+
+/**
+ * `initialSnapshot` is valid only when it is the latest fresh snapshot from
+ * this session for `baseSequence` and no driver operation has occurred since
+ * it was captured. The snapshot has already been counted by the session.
+ */
+interface ExpandWebSurfaceOptions {
+  readonly captureTransitions?: boolean;
+  readonly initialSnapshot?: StateSnapshot;
 }
 
 function descriptorFromFocused(snapshot: StateSnapshot): WebElementDescriptor | null {
@@ -447,11 +464,24 @@ export async function expandWebSurface(
   baseSequence: readonly RemoteKey[],
   restoreBase: () => Promise<StateSnapshot>,
   stopWhen?: (state: ExpandedWebState) => boolean,
+  options?: ExpandWebSurfaceOptions,
 ): Promise<WebSurfaceExpansion> {
-  const initial = await restoreBase();
+  const transitions = options?.captureTransitions === true ? [] as WebSurfaceTransition[] : undefined;
+  const finish = (
+    states: readonly ExpandedWebState[],
+    complete: boolean,
+    reason: WebSurfaceExpansion["reason"],
+  ): WebSurfaceExpansion => ({
+    states,
+    complete,
+    reason,
+    ...(transitions === undefined ? {} : { transitions }),
+  });
+
+  const initial = options?.initialSnapshot ?? await restoreBase();
   const initialIdentity = webSemanticStateIdentity(initial);
   if (initialIdentity === null) {
-    return { states: [], complete: false, reason: "unobservable" };
+    return finish([], false, "unobservable");
   }
 
   const states: ExpandedWebState[] = [{
@@ -461,7 +491,7 @@ export async function expandWebSurface(
     focused: descriptorFromFocused(initial),
   }];
   if (stopWhen?.(states[0] as ExpandedWebState) === true) {
-    return { states, complete: false, reason: "target-found" };
+    return finish(states, false, "target-found");
   }
   const seen = new Set([initialIdentity]);
   let cursor = 0;
@@ -496,9 +526,18 @@ export async function expandWebSurface(
         unobservableTransition = true;
         continue;
       }
+      const focused = descriptorFromFocused(snapshot);
+      const fromStableId = source.focused?.stableId;
+      const toStableId = focused?.stableId;
+      if (transitions !== undefined
+        && typeof fromStableId === "string" && fromStableId.length > 0
+        && typeof toStableId === "string" && toStableId.length > 0
+        && fromStableId !== toStableId) {
+        transitions.push({ fromStableId, key: direction, toStableId });
+      }
       if (seen.has(identity)) continue;
       if (states.length >= session.budgets.maxLocalStates) {
-        return { states, complete: false, reason: "max-local-states" };
+        return finish(states, false, "max-local-states");
       }
       seen.add(identity);
       const relativePath = [...source.relativePath, direction];
@@ -506,20 +545,20 @@ export async function expandWebSurface(
         snapshot,
         relativePath,
         exactPath: [...baseSequence, ...relativePath],
-        focused: descriptorFromFocused(snapshot),
+        focused,
       };
       states.push(retained);
       if (stopWhen?.(retained) === true) {
-        return { states, complete: false, reason: "target-found" };
+        return finish(states, false, "target-found");
       }
     }
   }
 
-  return {
+  return finish(
     states,
-    complete: !depthLimited && !unobservableTransition,
-    reason: depthLimited ? "max-local-depth" : unobservableTransition ? "unobservable" : "complete",
-  };
+    !depthLimited && !unobservableTransition,
+    depthLimited ? "max-local-depth" : unobservableTransition ? "unobservable" : "complete",
+  );
 }
 
 export function safeErrorMessage(error: unknown): string {
